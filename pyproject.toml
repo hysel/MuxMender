@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "muxmender"
+version = "0.1.0"
+description = "Safely analyze and optimize media libraries for efficient direct playback"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "MuxMender contributors" }]
+classifiers = [
+  "Environment :: Console",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+]
+
+[project.scripts]
+muxmender = "muxmender:main"
+
+[tool.setuptools]
+py-modules = ["muxmender"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
