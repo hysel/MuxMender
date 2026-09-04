@@ -9,3 +9,6 @@ dist/
 build/
 *.egg-info/
 reports/
+dist/
+vscode-extension/*.vsix
+vscode-extension/node_modules/

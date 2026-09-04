@@ -1,0 +1,57 @@
+{
+  "name": "muxmender-vscode",
+  "displayName": "MuxMender",
+  "description": "Run safe MuxMender dry-run scans in a dedicated VS Code Output channel.",
+  "version": "0.1.0",
+  "publisher": "hysel",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hysel/MuxMender.git"
+  },
+  "files": [
+    "extension.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:muxmender.scanFolder",
+    "onUri"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "muxmender.scanFolder",
+        "title": "MuxMender: Scan Media Folder (Dry Run)"
+      }
+    ],
+    "configuration": {
+      "title": "MuxMender",
+      "properties": {
+        "muxmender.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Python executable used to run MuxMender."
+        },
+        "muxmender.scriptPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional absolute path to muxmender.py. The active workspace is searched when empty."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.6.0"
+  }
+}
