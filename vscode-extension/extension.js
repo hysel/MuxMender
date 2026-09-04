@@ -34,6 +34,59 @@ function reportPath(scriptPath) {
   return path.join(reportDirectory, "vscode-scan.json");
 }
 
+function configuredHardware() {
+  return vscode.workspace
+    .getConfiguration("muxmender")
+    .get("hardware", "auto");
+}
+
+function configuredResolution() {
+  return vscode.workspace
+    .getConfiguration("muxmender")
+    .get("resolution", "keep");
+}
+
+function actionFromOutput(output, marker) {
+  const prefix = `${marker}=`;
+  const line = output.split(/\r?\n/).findLast((item) => item.startsWith(prefix));
+  if (!line) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(line.slice(prefix.length));
+  } catch {
+    return undefined;
+  }
+}
+
+async function offerRecovery(file, channel, output) {
+  const requirement = actionFromOutput(output, "MUXMENDER_REQUIREMENT");
+  const failure = actionFromOutput(output, "MUXMENDER_HARDWARE_FAILURE");
+  const action = requirement || failure;
+  if (!action) {
+    return;
+  }
+
+  const choices = ["Download / Install"];
+  if (failure || requirement?.cpu_available) {
+    choices.unshift("Use CPU");
+  }
+  const selected = await vscode.window.showWarningMessage(
+    action.message || "MuxMender hardware encoding is unavailable.",
+    ...choices,
+  );
+  if (selected === "Use CPU") {
+    channel.appendLine("\nUser selected CPU fallback.\n");
+    return runSafeCopy(file, channel, "cpu");
+  }
+  if (selected === "Download / Install" && action.download_url) {
+    await vscode.env.openExternal(vscode.Uri.parse(action.download_url));
+    vscode.window.showInformationMessage(
+      "Complete the official installer, restart VS Code if requested, then run MuxMender again."
+    );
+  }
+}
+
 function runDryScan(folder, channel) {
   if (activeProcess) {
     vscode.window.showWarningMessage("A MuxMender scan is already running.");
@@ -66,7 +119,11 @@ function runDryScan(folder, channel) {
 
   const child = spawn(
     python,
-    [script, folder, "--dry-run", "--report", report],
+    [
+      script, folder, "--dry-run", "--hardware", configuredHardware(),
+      "--resolution", configuredResolution(), "--hardware-fallback", "never",
+      "--report", report,
+    ],
     {
       cwd: path.dirname(script),
       windowsHide: true,
@@ -92,7 +149,7 @@ function runDryScan(folder, channel) {
   });
 }
 
-function runSafeCopy(file, channel) {
+function runSafeCopy(file, channel, hardwareOverride) {
   if (activeProcess) {
     vscode.window.showWarningMessage("A MuxMender operation is already running.");
     channel.show(true);
@@ -119,11 +176,15 @@ function runSafeCopy(file, channel) {
   fs.mkdirSync(outputDirectory, { recursive: true });
   fs.mkdirSync(reportDirectory, { recursive: true });
   const report = path.join(reportDirectory, "vscode-optimize.json");
+  const hardware = hardwareOverride || configuredHardware();
+  const resolution = configuredResolution();
 
   channel.clear();
   channel.appendLine("MuxMender safe single-file optimization");
   channel.appendLine(`Source: ${file}`);
   channel.appendLine(`Output directory: ${outputDirectory}`);
+  channel.appendLine(`Hardware preference: ${hardware} (GPU-first when auto)`);
+  channel.appendLine(`Resolution policy: ${resolution} (upscaling disabled)`);
   channel.appendLine("Original protection: ON (the source cannot be deleted or overwritten)\n");
   channel.show(true);
 
@@ -141,6 +202,12 @@ function runSafeCopy(file, channel) {
             script,
             file,
             "--execute",
+            "--hardware",
+            hardware,
+            "--hardware-fallback",
+            "never",
+            "--resolution",
+            resolution,
             "--output-dir",
             outputDirectory,
             "--report",
@@ -155,9 +222,11 @@ function runSafeCopy(file, channel) {
         );
         activeProcess = child;
         let lastPercent = 0;
+        let processOutput = "";
         child.stdout.setEncoding("utf8");
         child.stderr.setEncoding("utf8");
         child.stdout.on("data", (data) => {
+          processOutput += data;
           channel.append(data);
           for (const match of data.matchAll(/MUXMENDER_PROGRESS=(\d+(?:\.\d+)?)/g)) {
             const percent = Math.min(100, Number(match[1]));
@@ -168,7 +237,10 @@ function runSafeCopy(file, channel) {
             lastPercent = Math.max(lastPercent, percent);
           }
         });
-        child.stderr.on("data", (data) => channel.append(data));
+        child.stderr.on("data", (data) => {
+          processOutput += data;
+          channel.append(data);
+        });
         child.on("error", (error) => {
           channel.appendLine(`\nFailed to start optimization: ${error.message}`);
           activeProcess = undefined;
@@ -181,6 +253,7 @@ function runSafeCopy(file, channel) {
           channel.appendLine(`JSON report: ${report}`);
           activeProcess = undefined;
           resolve();
+          setTimeout(() => offerRecovery(file, channel, processOutput), 0);
         });
       })
   );
@@ -229,6 +302,11 @@ function activate(context) {
   context.subscriptions.push(
     vscode.commands.registerCommand("muxmender.optimizeFile", () =>
       chooseAndOptimize(channel)
+    )
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand("muxmender.optimizePath", (file, hardware) =>
+      runSafeCopy(file, channel, hardware)
     )
   );
   context.subscriptions.push(

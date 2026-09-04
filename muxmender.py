@@ -6,10 +6,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
+import queue
 import shutil
 import subprocess
 import sys
+import threading
 import time
+import webbrowser
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -19,7 +23,25 @@ MEDIA_EXTENSIONS = {
     ".3gp", ".avi", ".flv", ".m2ts", ".m4v", ".mkv", ".mov",
     ".mp4", ".mpeg", ".mpg", ".mts", ".ts", ".webm", ".wmv",
 }
-TARGET_VIDEO_CODECS = {"hevc": "libx265", "av1": "libsvtav1"}
+SOFTWARE_ENCODERS = {"hevc": "libx265", "av1": "libsvtav1"}
+HARDWARE_ENCODERS = {
+    "amd": {"hevc": "hevc_amf", "av1": "av1_amf"},
+    "nvidia": {"hevc": "hevc_nvenc", "av1": "av1_nvenc"},
+    "intel": {"hevc": "hevc_qsv", "av1": "av1_qsv"},
+}
+VENDOR_LABELS = {"amd": "AMD", "nvidia": "NVIDIA", "intel": "Intel", "cpu": "CPU"}
+DOWNLOAD_URLS = {
+    "ffmpeg": "https://ffmpeg.org/download.html",
+    "amd": "https://www.amd.com/en/support/download/drivers.html",
+    "nvidia": "https://www.nvidia.com/Download/index.aspx",
+    "intel": "https://www.intel.com/content/www/us/en/support/detect.html",
+}
+RESOLUTION_LIMITS = {
+    "2160p": (3840, 2160),
+    "1080p": (1920, 1080),
+    "720p": (1280, 720),
+    "480p": (854, 480),
+}
 KNOWN_HDR_TRANSFERS = {"smpte2084", "arib-std-b67"}
 
 
@@ -44,6 +66,27 @@ class MediaInfo:
     subtitle_codecs: list[str]
     recommendation: str = ""
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class EncoderSelection:
+    vendor: str
+    encoder: str
+
+    @property
+    def hardware(self) -> bool:
+        return self.vendor != "cpu"
+
+    @property
+    def label(self) -> str:
+        return f"{VENDOR_LABELS[self.vendor]} ({self.encoder})"
+
+
+class HardwareRequirementError(RuntimeError):
+    def __init__(self, component: str, message: str, download_url: str):
+        super().__init__(message)
+        self.component = component
+        self.download_url = download_url
 
 
 def human_size(size: int) -> str:
@@ -148,10 +191,180 @@ def choose_target_codec(requested: str) -> str:
     return "hevc" if requested == "auto" else requested
 
 
-def recommend(info: MediaInfo, target_codec: str) -> MediaInfo:
+def ffmpeg_encoder_names(ffmpeg: str = "ffmpeg") -> set[str]:
+    result = subprocess.run(
+        [ffmpeg, "-hide_banner", "-encoders"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=15,
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "could not list FFmpeg encoders")
+    names: set[str] = set()
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and len(parts[0]) == 6 and parts[0][0] == "V":
+            names.add(parts[1])
+    return names
+
+
+def gpu_vendors() -> list[str]:
+    """Detect display-adapter vendors without initializing an encoder."""
+    commands: list[list[str]] = []
+    if platform.system() == "Windows":
+        commands.append([
+            "powershell", "-NoProfile", "-NonInteractive", "-Command",
+            "(Get-CimInstance Win32_VideoController).Name",
+        ])
+    elif platform.system() == "Linux" and shutil.which("lspci"):
+        commands.append(["lspci"])
+    elif platform.system() == "Darwin":
+        commands.append(["system_profiler", "SPDisplaysDataType"])
+
+    text = ""
+    for command in commands:
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                timeout=10,
+            )
+            text += "\n" + result.stdout.lower()
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+
+    detected: list[str] = []
+    if any(name in text for name in ("nvidia", "geforce", "quadro")):
+        detected.append("nvidia")
+    if any(name in text for name in ("amd", "radeon", "advanced micro devices")):
+        detected.append("amd")
+    if any(name in text for name in ("intel", "arc", "iris", "uhd graphics")):
+        detected.append("intel")
+    return detected
+
+
+def select_encoder(
+    codec: str,
+    requested_hardware: str,
+    available_encoders: set[str],
+    detected_vendors: list[str],
+) -> EncoderSelection:
+    software = SOFTWARE_ENCODERS[codec]
+    if requested_hardware == "cpu":
+        if software not in available_encoders:
+            raise HardwareRequirementError(
+                "ffmpeg",
+                f"FFmpeg does not provide the required CPU encoder {software}.",
+                DOWNLOAD_URLS["ffmpeg"],
+            )
+        return EncoderSelection("cpu", software)
+
+    candidates = detected_vendors if requested_hardware == "auto" else [requested_hardware]
+    if requested_hardware != "auto" and requested_hardware not in detected_vendors:
+        raise HardwareRequirementError(
+            requested_hardware,
+            f"No {VENDOR_LABELS[requested_hardware]} GPU was detected. Install its official driver or choose CPU.",
+            DOWNLOAD_URLS[requested_hardware],
+        )
+
+    for vendor in candidates:
+        encoder = HARDWARE_ENCODERS[vendor][codec]
+        if encoder in available_encoders:
+            return EncoderSelection(vendor, encoder)
+
+    if candidates:
+        vendor_names = ", ".join(VENDOR_LABELS[vendor] for vendor in candidates)
+        expected = ", ".join(HARDWARE_ENCODERS[vendor][codec] for vendor in candidates)
+        raise HardwareRequirementError(
+            "ffmpeg",
+            f"Detected {vendor_names}, but FFmpeg is missing the required hardware encoder ({expected}).",
+            DOWNLOAD_URLS["ffmpeg"],
+        )
+
+    if software not in available_encoders:
+        raise HardwareRequirementError(
+            "ffmpeg",
+            f"No supported GPU was detected and FFmpeg is missing {software} for CPU fallback.",
+            DOWNLOAD_URLS["ffmpeg"],
+        )
+    return EncoderSelection("cpu", software)
+
+
+def emit_action(marker: str, payload: dict[str, Any]) -> None:
+    print(f"{marker}={json.dumps(payload, separators=(',', ':'))}", flush=True)
+
+
+def offer_requirement(error: HardwareRequirementError, allow_cpu: bool) -> bool:
+    payload = {
+        "component": error.component,
+        "message": str(error),
+        "download_url": error.download_url,
+        "cpu_available": allow_cpu,
+    }
+    emit_action("MUXMENDER_REQUIREMENT", payload)
+    print(f"Requirement: {error}")
+    print(f"Official download: {error.download_url}")
+    if not sys.stdin.isatty():
+        return False
+    choices = "[D]ownload/install page, [C]PU fallback, [Q]uit" if allow_cpu else "[D]ownload/install page, [Q]uit"
+    answer = input(f"{choices}: ").strip().lower()
+    if answer == "d":
+        webbrowser.open(error.download_url)
+        return False
+    return allow_cpu and answer == "c"
+
+
+def offer_cpu_fallback(selection: EncoderSelection, message: str) -> bool:
+    payload = {
+        "vendor": selection.vendor,
+        "encoder": selection.encoder,
+        "message": message,
+        "download_url": DOWNLOAD_URLS[selection.vendor],
+    }
+    emit_action("MUXMENDER_HARDWARE_FAILURE", payload)
+    if not sys.stdin.isatty():
+        return False
+    answer = input(
+        f"{selection.label} failed. Retry this file using CPU? [Y/n/d=driver page]: "
+    ).strip().lower()
+    if answer == "d":
+        webbrowser.open(DOWNLOAD_URLS[selection.vendor])
+        return False
+    return answer in {"", "y", "yes"}
+
+
+def output_dimensions(info: MediaInfo, resolution: str = "keep") -> tuple[int, int]:
+    """Return aspect-preserving even dimensions, never larger than the source."""
+    if resolution == "keep" or not info.width or not info.height:
+        return info.width, info.height
+    max_width, max_height = RESOLUTION_LIMITS[resolution]
+    scale = min(max_width / info.width, max_height / info.height, 1.0)
+    if scale >= 1.0:
+        return info.width, info.height
+    width = max(2, int(info.width * scale) // 2 * 2)
+    height = max(2, int(info.height * scale) // 2 * 2)
+    return width, height
+
+
+def recommend(info: MediaInfo, target_codec: str, resolution: str = "keep") -> MediaInfo:
+    target_width, target_height = output_dimensions(info, resolution)
+    resizing = (target_width, target_height) != (info.width, info.height)
     if info.dolby_vision:
         info.recommendation = "skip"
         info.reason = "Dolby Vision conversion may discard dynamic metadata; manual review required"
+    elif resizing:
+        info.recommendation = "transcode"
+        info.reason = (
+            f"user requested {resolution}: downscale {info.width}x{info.height} to "
+            f"{target_width}x{target_height}; encode video as {target_codec}; copy all audio streams"
+        )
     elif info.video_codec == target_codec:
         info.recommendation = "keep" if "matroska" in info.container else "remux"
         info.reason = (
@@ -180,17 +393,52 @@ def output_path(source: Path, root: Path, output_dir: Path | None) -> Path:
     return source.with_name(f"{source.name}.muxmender.mkv")
 
 
-def encoder_options(codec: str, quality: str, info: MediaInfo) -> list[str]:
-    if codec == "hevc":
+def encoder_options(
+    codec: str,
+    quality: str,
+    info: MediaInfo,
+    encoder: str | None = None,
+) -> list[str]:
+    encoder = encoder or SOFTWARE_ENCODERS[codec]
+    ten_bit = info.bit_depth > 8 or info.hdr
+
+    if encoder == "libx265":
         crf = {"transparent": "18", "balanced": "21", "compact": "24"}[quality]
         options = ["-c:v", "libx265", "-preset", "slow", "-crf", crf]
-        if info.bit_depth > 8 or info.hdr:
+        if ten_bit:
             options += ["-pix_fmt", "yuv420p10le", "-profile:v", "main10"]
-    else:
+    elif encoder == "libsvtav1":
         crf = {"transparent": "24", "balanced": "28", "compact": "32"}[quality]
         options = ["-c:v", "libsvtav1", "-preset", "6", "-crf", crf]
-        if info.bit_depth > 8 or info.hdr:
+        if ten_bit:
             options += ["-pix_fmt", "yuv420p10le"]
+    elif encoder.endswith("_nvenc"):
+        cq = {"transparent": "18", "balanced": "21", "compact": "25"}[quality]
+        preset = {"transparent": "p7", "balanced": "p6", "compact": "p5"}[quality]
+        options = [
+            "-c:v", encoder, "-preset", preset, "-tune", "hq",
+            "-rc", "vbr", "-cq", cq, "-b:v", "0",
+        ]
+        if ten_bit:
+            options += ["-pix_fmt", "p010le"]
+    elif encoder.endswith("_amf"):
+        qp_i = {"transparent": "18", "balanced": "21", "compact": "24"}[quality]
+        qp_p = {"transparent": "20", "balanced": "23", "compact": "26"}[quality]
+        preset = {"transparent": "quality", "balanced": "balanced", "compact": "speed"}[quality]
+        options = [
+            "-c:v", encoder, "-usage", "transcoding", "-quality", preset,
+            "-rc", "cqp", "-qp_i", qp_i, "-qp_p", qp_p,
+        ]
+        if ten_bit:
+            options += ["-pix_fmt", "p010le"]
+    elif encoder.endswith("_qsv"):
+        quality_value = {"transparent": "18", "balanced": "21", "compact": "25"}[quality]
+        preset = {"transparent": "veryslow", "balanced": "slower", "compact": "medium"}[quality]
+        options = ["-c:v", encoder, "-preset", preset, "-global_quality", quality_value]
+        if ten_bit:
+            options += ["-pix_fmt", "p010le"]
+    else:
+        raise ValueError(f"unsupported encoder: {encoder}")
 
     color_flags = {
         "-color_primaries": info.color_primaries,
@@ -211,12 +459,21 @@ def build_ffmpeg_command(
     codec: str,
     quality: str,
     ffmpeg: str = "ffmpeg",
+    encoder: str | None = None,
+    resolution: str = "keep",
 ) -> list[str]:
+    target_width, target_height = output_dimensions(info, resolution)
+    scale_options = (
+        ["-vf", f"scale={target_width}:{target_height}:flags=lanczos"]
+        if (target_width, target_height) != (info.width, info.height)
+        else []
+    )
     video_options = (
         ["-c", "copy"]
         if info.recommendation == "remux"
         else [
-            *encoder_options(codec, quality, info),
+            *scale_options,
+            *encoder_options(codec, quality, info, encoder),
             "-c:a", "copy", "-c:s", "copy", "-c:d", "copy", "-c:t", "copy",
         ]
     )
@@ -245,7 +502,28 @@ def progress_percent(line: str, duration_seconds: float) -> float | None:
     return min(100.0, max(0.0, elapsed_seconds * 100.0 / duration_seconds))
 
 
-def run_ffmpeg(command: list[str], duration_seconds: float) -> int:
+def stop_process_tree(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    if platform.system() == "Windows":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
+def run_ffmpeg(
+    command: list[str],
+    duration_seconds: float,
+    stall_timeout: float = 0,
+) -> tuple[int, bool]:
     progress_command = [*command[:-1], "-progress", "pipe:1", "-nostats", command[-1]]
     process = subprocess.Popen(
         progress_command,
@@ -255,16 +533,48 @@ def run_ffmpeg(command: list[str], duration_seconds: float) -> int:
         errors="replace",
     )
     last_reported = -1
+    last_progress_at = time.monotonic()
+    lines: queue.Queue[str | None] = queue.Queue()
     assert process.stdout is not None
-    for line in process.stdout:
+
+    def read_progress() -> None:
+        for output_line in process.stdout:
+            lines.put(output_line)
+        lines.put(None)
+
+    threading.Thread(target=read_progress, daemon=True).start()
+    stalled = False
+    while True:
+        try:
+            line = lines.get(timeout=0.5)
+        except queue.Empty:
+            if (
+                stall_timeout > 0
+                and process.poll() is None
+                and time.monotonic() - last_progress_at >= stall_timeout
+            ):
+                stalled = True
+                print(
+                    f"Hardware encoder made no progress for {stall_timeout:.0f} seconds; stopping it.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                stop_process_tree(process)
+                break
+            continue
+        if line is None:
+            break
         percent = progress_percent(line, duration_seconds)
-        if percent is not None and int(percent) > last_reported:
-            last_reported = int(percent)
-            print(f"MUXMENDER_PROGRESS={percent:.1f}", flush=True)
+        if percent is not None:
+            if percent > max(0, last_reported):
+                last_progress_at = time.monotonic()
+            if int(percent) > last_reported:
+                last_reported = int(percent)
+                print(f"MUXMENDER_PROGRESS={percent:.1f}", flush=True)
     return_code = process.wait()
     if return_code == 0 and last_reported < 100:
         print("MUXMENDER_PROGRESS=100.0", flush=True)
-    return return_code
+    return return_code, stalled
 
 
 def verify_output(
@@ -274,12 +584,17 @@ def verify_output(
     min_savings: float,
     expected_video_codec: str,
     enforce_min_savings: bool = True,
+    expected_dimensions: tuple[int, int] | None = None,
 ) -> tuple[bool, str]:
     result = probe(output, ffprobe)
     if result.video_codec != expected_video_codec:
         return False, f"expected {expected_video_codec} video but found {result.video_codec}"
-    if (result.width, result.height) != (source_info.width, source_info.height):
-        return False, "resolution changed"
+    expected_dimensions = expected_dimensions or (source_info.width, source_info.height)
+    if (result.width, result.height) != expected_dimensions:
+        return False, (
+            f"resolution is {result.width}x{result.height}; expected "
+            f"{expected_dimensions[0]}x{expected_dimensions[1]}"
+        )
     if source_info.duration_seconds and abs(result.duration_seconds - source_info.duration_seconds) > 2.0:
         return False, "duration differs by more than two seconds"
     if len(result.audio_codecs) != len(source_info.audio_codecs):
@@ -330,6 +645,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("folder", type=Path, help="media file or library folder")
     parser.add_argument("--codec", choices=("auto", "hevc", "av1"), default="auto")
+    parser.add_argument(
+        "--resolution",
+        choices=("keep", "2160p", "1080p", "720p", "480p"),
+        default="keep",
+        help="keep source resolution by default, or explicitly set a downscale ceiling; never upscales",
+    )
+    parser.add_argument(
+        "--hardware",
+        choices=("auto", "amd", "nvidia", "intel", "cpu"),
+        default="auto",
+        help="prefer a detected GPU by default; choose cpu to disable hardware encoding",
+    )
+    parser.add_argument(
+        "--hardware-fallback",
+        choices=("ask", "cpu", "never"),
+        default="ask",
+        help="what to do when a hardware encoder fails (default: ask)",
+    )
+    parser.add_argument(
+        "--hardware-stall-timeout",
+        type=float,
+        default=20.0,
+        metavar="SECONDS",
+        help="stop a hardware encoder that makes no progress (default: 20)",
+    )
     parser.add_argument("--quality", choices=("transparent", "balanced", "compact"), default="balanced")
     parser.add_argument("--execute", action="store_true", help="run ffmpeg; otherwise only show the plan")
     parser.add_argument("--dry-run", action="store_true", help="explicitly request the default dry-run behavior")
@@ -360,46 +700,87 @@ def main(argv: list[str] | None = None) -> int:
     if args.min_savings < 0 or args.min_savings >= 100:
         print("error: --min-savings must be between 0 and 100", file=sys.stderr)
         return 2
+    if args.hardware_stall_timeout < 5:
+        print("error: --hardware-stall-timeout must be at least 5 seconds", file=sys.stderr)
+        return 2
     try:
         may_delete = delete_original_allowed(args)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    for tool in (args.ffprobe, args.ffmpeg) if args.execute else (args.ffprobe,):
+    for tool in (args.ffprobe, args.ffmpeg):
         if shutil.which(tool) is None:
-            print(f"error: required executable not found: {tool}", file=sys.stderr)
-            return 2
+            error = HardwareRequirementError(
+                "ffmpeg",
+                f"Required executable was not found: {tool}.",
+                DOWNLOAD_URLS["ffmpeg"],
+            )
+            offer_requirement(error, allow_cpu=False)
+            return 3
 
     target_codec = choose_target_codec(args.codec)
+    try:
+        available_encoders = ffmpeg_encoder_names(args.ffmpeg)
+        detected_vendors = gpu_vendors()
+        selection = select_encoder(
+            target_codec, args.hardware, available_encoders, detected_vendors
+        )
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        if isinstance(exc, HardwareRequirementError):
+            error = exc
+        else:
+            error = HardwareRequirementError(
+                "ffmpeg",
+                f"Could not inspect FFmpeg hardware support: {exc}",
+                DOWNLOAD_URLS["ffmpeg"],
+            )
+        cpu_available = SOFTWARE_ENCODERS[target_codec] in locals().get("available_encoders", set())
+        if offer_requirement(error, allow_cpu=cpu_available):
+            selection = EncoderSelection("cpu", SOFTWARE_ENCODERS[target_codec])
+        else:
+            return 3
+
     found = [target] if target.is_file() else list(media_files(root))
     print(f"MuxMender {'EXECUTE' if args.execute else 'DRY RUN'}")
     print(f"Found {len(found)} media file(s); target: {target_codec}/MKV, quality: {args.quality}")
+    print(f"Resolution policy: {args.resolution} (upscaling disabled)")
+    detected_text = ", ".join(VENDOR_LABELS[vendor] for vendor in detected_vendors) or "none"
+    print(f"Detected GPU vendor(s): {detected_text}")
+    print(f"Selected encoder: {selection.label}")
     report: dict[str, Any] = {
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "root": str(target),
         "mode": "execute" if args.execute else "dry-run",
         "target_codec": target_codec,
         "quality": args.quality,
+        "resolution": args.resolution,
+        "requested_hardware": args.hardware,
+        "detected_gpu_vendors": detected_vendors,
+        "selected_encoder": asdict(selection),
         "files": [],
         "errors": [],
     }
 
     for source in found:
         try:
-            info = recommend(probe(source, args.ffprobe), target_codec)
+            info = recommend(probe(source, args.ffprobe), target_codec, args.resolution)
             print_info(info)
             entry: dict[str, Any] = asdict(info)
-            destination = output_path(source, root, args.output_dir.resolve() if args.output_dir else None)
-            temporary = destination.with_name(f".{destination.stem}.partial.mkv")
-            command = build_ffmpeg_command(source, temporary, info, target_codec, args.quality, args.ffmpeg)
-            entry["output"] = str(destination)
-            entry["command"] = command
             entry["status"] = info.recommendation
-
             if info.recommendation not in {"transcode", "remux"}:
                 report["files"].append(entry)
                 continue
+
+            destination = output_path(source, root, args.output_dir.resolve() if args.output_dir else None)
+            temporary = destination.with_name(f".{destination.stem}.partial.mkv")
+            command = build_ffmpeg_command(
+                source, temporary, info, target_codec, args.quality, args.ffmpeg,
+                selection.encoder, args.resolution,
+            )
+            entry["output"] = str(destination)
+            entry["command"] = command
+            entry["encoder"] = asdict(selection)
             print(f"  OUTPUT: {destination}")
             if not args.execute:
                 print(f"  COMMAND: {command_text(command)}")
@@ -414,7 +795,44 @@ def main(argv: list[str] | None = None) -> int:
 
             destination.parent.mkdir(parents=True, exist_ok=True)
             temporary.unlink(missing_ok=True)
-            return_code = run_ffmpeg(command, info.duration_seconds)
+            return_code, stalled = run_ffmpeg(
+                command,
+                info.duration_seconds,
+                args.hardware_stall_timeout if selection.hardware else 0,
+            )
+            if return_code and selection.hardware:
+                temporary.unlink(missing_ok=True)
+                failure = (
+                    f"{selection.label} stalled"
+                    if stalled
+                    else f"{selection.label} exited with status {return_code}"
+                )
+                retry_cpu = args.hardware_fallback == "cpu"
+                if args.hardware_fallback == "ask":
+                    retry_cpu = offer_cpu_fallback(selection, failure)
+                else:
+                    emit_action("MUXMENDER_HARDWARE_FAILURE", {
+                        "vendor": selection.vendor,
+                        "encoder": selection.encoder,
+                        "message": failure,
+                        "download_url": DOWNLOAD_URLS[selection.vendor],
+                    })
+                if retry_cpu:
+                    software_encoder = SOFTWARE_ENCODERS[target_codec]
+                    if software_encoder not in available_encoders:
+                        raise RuntimeError(
+                            f"CPU fallback is unavailable because FFmpeg lacks {software_encoder}"
+                        )
+                    selection = EncoderSelection("cpu", software_encoder)
+                    print(f"  RETRYING WITH CPU: {selection.encoder}")
+                    command = build_ffmpeg_command(
+                        source, temporary, info, target_codec, args.quality,
+                        args.ffmpeg, selection.encoder, args.resolution,
+                    )
+                    entry["hardware_command"] = entry["command"]
+                    entry["command"] = command
+                    entry["encoder"] = asdict(selection)
+                    return_code, stalled = run_ffmpeg(command, info.duration_seconds)
             if return_code:
                 temporary.unlink(missing_ok=True)
                 raise RuntimeError(f"ffmpeg exited with status {return_code}")
@@ -426,6 +844,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.min_savings,
                 expected_codec,
                 enforce_min_savings=info.recommendation == "transcode",
+                expected_dimensions=output_dimensions(info, args.resolution),
             )
             if not valid:
                 temporary.unlink(missing_ok=True)

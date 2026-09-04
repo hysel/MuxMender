@@ -13,3 +13,14 @@ FFmpeg output streams to the `MuxMender` Output channel. The optimized file is
 written under the workspace's `test-output` directory. The source file is never
 deleted, renamed, moved, or overwritten, and the extension provides no option
 that can enable original-file deletion.
+
+Hardware mode defaults to `auto`, which prefers a detected AMD, NVIDIA, or
+Intel GPU. Change `MuxMender: Hardware` in Settings to force a vendor or CPU.
+If a required driver or FFmpeg encoder is missing, the extension offers an
+official **Download / Install** page. If hardware encoding fails or stalls, it
+offers **Use CPU** and never retries or installs software without a click.
+
+Resolution defaults to `keep`, which adds no scaling filter and verifies that
+the output dimensions exactly match the source. Optional 2160p, 1080p, 720p,
+and 480p ceilings must be selected explicitly; they preserve aspect ratio and
+never upscale smaller videos.

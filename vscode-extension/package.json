@@ -2,7 +2,7 @@
   "name": "muxmender-vscode",
   "displayName": "MuxMender",
   "description": "Run safe MuxMender dry-run scans in a dedicated VS Code Output channel.",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "publisher": "hysel",
   "license": "MIT",
   "repository": {
@@ -49,6 +49,32 @@
           "type": "string",
           "default": "",
           "description": "Optional absolute path to muxmender.py. The active workspace is searched when empty."
+        },
+        "muxmender.hardware": {
+          "type": "string",
+          "enum": ["auto", "amd", "nvidia", "intel", "cpu"],
+          "default": "auto",
+          "enumDescriptions": [
+            "Prefer a detected GPU and offer CPU if it fails.",
+            "Require AMD AMF hardware encoding.",
+            "Require NVIDIA NVENC hardware encoding.",
+            "Require Intel Quick Sync hardware encoding.",
+            "Use software encoding only."
+          ],
+          "description": "Video encoder hardware preference."
+        },
+        "muxmender.resolution": {
+          "type": "string",
+          "enum": ["keep", "2160p", "1080p", "720p", "480p"],
+          "default": "keep",
+          "enumDescriptions": [
+            "Preserve every source video's exact dimensions.",
+            "Downscale only videos larger than 3840x2160.",
+            "Downscale only videos larger than 1920x1080.",
+            "Downscale only videos larger than 1280x720.",
+            "Downscale only videos larger than 854x480."
+          ],
+          "description": "Resolution policy. Preserves aspect ratio and never upscales."
         }
       }
     }
