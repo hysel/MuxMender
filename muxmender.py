@@ -67,7 +67,16 @@ def media_files(folder: Path) -> Iterable[Path]:
 
 
 def run_json(command: list[str]) -> dict[str, Any]:
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    # FFprobe emits UTF-8 JSON. Explicit decoding avoids Windows' legacy
+    # code-page decoder crashing on international filenames or metadata.
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
     if result.returncode:
         message = result.stderr.strip() or result.stdout.strip() or "unknown error"
         raise RuntimeError(message)

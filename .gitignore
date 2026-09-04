@@ -8,3 +8,4 @@ analysis.json
 dist/
 build/
 *.egg-info/
+reports/

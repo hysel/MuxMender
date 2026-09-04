@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from muxmender import (
     MediaInfo,
@@ -9,6 +10,7 @@ from muxmender import (
     delete_original_allowed,
     output_path,
     recommend,
+    run_json,
 )
 
 
@@ -26,6 +28,12 @@ def sample(**overrides):
 
 
 class MuxMenderTests(unittest.TestCase):
+    @patch("muxmender.subprocess.run")
+    def test_ffprobe_json_is_decoded_as_utf8(self, mock_run):
+        mock_run.return_value = SimpleNamespace(returncode=0, stdout='{"title":"Amélie"}', stderr="")
+        self.assertEqual(run_json(["ffprobe"])["title"], "Amélie")
+        self.assertEqual(mock_run.call_args.kwargs["encoding"], "utf-8")
+
     def test_auto_prefers_compatible_hevc(self):
         self.assertEqual(choose_target_codec("auto"), "hevc")
 
