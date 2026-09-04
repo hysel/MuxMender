@@ -9,6 +9,7 @@ from muxmender import (
     choose_target_codec,
     delete_original_allowed,
     output_path,
+    progress_percent,
     recommend,
     run_json,
 )
@@ -28,6 +29,11 @@ def sample(**overrides):
 
 
 class MuxMenderTests(unittest.TestCase):
+    def test_progress_percent_from_ffmpeg_output(self):
+        self.assertEqual(progress_percent("out_time_us=30000000", 120), 25.0)
+        self.assertEqual(progress_percent("out_time_ms=120000000", 120), 100.0)
+        self.assertIsNone(progress_percent("progress=continue", 120))
+
     @patch("muxmender.subprocess.run")
     def test_ffprobe_json_is_decoded_as_utf8(self, mock_run):
         mock_run.return_value = SimpleNamespace(returncode=0, stdout='{"title":"Amélie"}', stderr="")

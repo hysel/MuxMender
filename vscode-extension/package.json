@@ -2,7 +2,7 @@
   "name": "muxmender-vscode",
   "displayName": "MuxMender",
   "description": "Run safe MuxMender dry-run scans in a dedicated VS Code Output channel.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "hysel",
   "license": "MIT",
   "repository": {
@@ -22,6 +22,7 @@
   ],
   "activationEvents": [
     "onCommand:muxmender.scanFolder",
+    "onCommand:muxmender.optimizeFile",
     "onUri"
   ],
   "main": "./extension.js",
@@ -30,6 +31,10 @@
       {
         "command": "muxmender.scanFolder",
         "title": "MuxMender: Scan Media Folder (Dry Run)"
+      },
+      {
+        "command": "muxmender.optimizeFile",
+        "title": "MuxMender: Optimize Selected Media File (Safe Copy)"
       }
     ],
     "configuration": {

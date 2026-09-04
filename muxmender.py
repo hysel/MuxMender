@@ -232,6 +232,41 @@ def command_text(command: list[str]) -> str:
     return subprocess.list2cmdline(command)
 
 
+def progress_percent(line: str, duration_seconds: float) -> float | None:
+    if duration_seconds <= 0 or "=" not in line:
+        return None
+    key, value = line.strip().split("=", 1)
+    if key not in {"out_time_us", "out_time_ms"}:
+        return None
+    try:
+        elapsed_seconds = int(value) / 1_000_000
+    except ValueError:
+        return None
+    return min(100.0, max(0.0, elapsed_seconds * 100.0 / duration_seconds))
+
+
+def run_ffmpeg(command: list[str], duration_seconds: float) -> int:
+    progress_command = [*command[:-1], "-progress", "pipe:1", "-nostats", command[-1]]
+    process = subprocess.Popen(
+        progress_command,
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    last_reported = -1
+    assert process.stdout is not None
+    for line in process.stdout:
+        percent = progress_percent(line, duration_seconds)
+        if percent is not None and int(percent) > last_reported:
+            last_reported = int(percent)
+            print(f"MUXMENDER_PROGRESS={percent:.1f}", flush=True)
+    return_code = process.wait()
+    if return_code == 0 and last_reported < 100:
+        print("MUXMENDER_PROGRESS=100.0", flush=True)
+    return return_code
+
+
 def verify_output(
     source_info: MediaInfo,
     output: Path,
@@ -293,7 +328,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Recursively analyze and safely optimize media for direct playback.",
         epilog="Dry-run is the default. Use --execute to create optimized sidecar files.",
     )
-    parser.add_argument("folder", type=Path, help="media library folder")
+    parser.add_argument("folder", type=Path, help="media file or library folder")
     parser.add_argument("--codec", choices=("auto", "hevc", "av1"), default="auto")
     parser.add_argument("--quality", choices=("transparent", "balanced", "compact"), default="balanced")
     parser.add_argument("--execute", action="store_true", help="run ffmpeg; otherwise only show the plan")
@@ -311,10 +346,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    root = args.folder.resolve()
-    if not root.is_dir():
-        print(f"error: not a directory: {root}", file=sys.stderr)
+    target = args.folder.resolve()
+    if not target.exists():
+        print(f"error: path does not exist: {target}", file=sys.stderr)
         return 2
+    if target.is_file() and target.suffix.lower() not in MEDIA_EXTENSIONS:
+        print(f"error: unsupported media file: {target}", file=sys.stderr)
+        return 2
+    root = target.parent if target.is_file() else target
     if args.execute and args.dry_run:
         print("error: --execute and --dry-run cannot be used together", file=sys.stderr)
         return 2
@@ -333,12 +372,12 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     target_codec = choose_target_codec(args.codec)
-    found = list(media_files(root))
+    found = [target] if target.is_file() else list(media_files(root))
     print(f"MuxMender {'EXECUTE' if args.execute else 'DRY RUN'}")
     print(f"Found {len(found)} media file(s); target: {target_codec}/MKV, quality: {args.quality}")
     report: dict[str, Any] = {
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "root": str(root),
+        "root": str(target),
         "mode": "execute" if args.execute else "dry-run",
         "target_codec": target_codec,
         "quality": args.quality,
@@ -375,10 +414,10 @@ def main(argv: list[str] | None = None) -> int:
 
             destination.parent.mkdir(parents=True, exist_ok=True)
             temporary.unlink(missing_ok=True)
-            result = subprocess.run(command, check=False)
-            if result.returncode:
+            return_code = run_ffmpeg(command, info.duration_seconds)
+            if return_code:
                 temporary.unlink(missing_ok=True)
-                raise RuntimeError(f"ffmpeg exited with status {result.returncode}")
+                raise RuntimeError(f"ffmpeg exited with status {return_code}")
             expected_codec = target_codec if info.recommendation == "transcode" else info.video_codec
             valid, message = verify_output(
                 info,
