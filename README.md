@@ -1,4 +1,4 @@
-# MuxMender
+do# MuxMender
 
 MuxMender recursively analyzes a media library and creates a safe optimization plan. It can transcode inefficient video streams to HEVC or AV1 while preserving the original resolution and copying audio, subtitles, attachments, metadata, and chapters.
 
@@ -39,13 +39,13 @@ python muxmender.py "D:\Media" --codec av1 --quality balanced --output-dir "E:\O
 ## Safety behavior
 
 - Dry-run is the default; `--execute` is required to run FFmpeg.
-- Existing outputs are skipped unless `--overwrite-output` is provided.
-- Each encode is written to a hidden partial file and probed before being accepted.
+- Existing outputs are always skipped. Deletion and overwrite flags are rejected.
+- Each encode uses a unique hidden partial file and is probed before acceptance. Failed/rejected attempts are retained; CPU retries use another new file.
 - Video codec, resolution, duration, audio codecs, subtitle streams, and HDR/color signaling are checked.
 - Outputs saving less than 5% are rejected by default; change this with `--min-savings`.
 - Dolby Vision files are skipped because ordinary transcoding may discard dynamic metadata.
-- Originals are never deleted during normal operation.
-- Deletion requires both `--delete-originals` and the deliberately awkward confirmation `--confirm-delete DELETE_ORIGINALS`. It occurs only after the new file passes verification.
+- Originals are never deleted. There is no supported original-deletion mode, including with the former confirmation flag.
+- Accepted general-conversion outputs are published using an atomic no-overwrite hard link. The recovery name is retained and shares the same disk data, not a second copy. Filesystems without hard-link support fail safely and retain the completed partial.
 
 ## Quality profiles
 
@@ -64,6 +64,6 @@ python muxmender.py --help
 ## Important limitations
 
 - No lossy transcode can guarantee identical quality. MuxMender uses conservative constant-quality settings.
-- HDR color tags are carried into the encode, but HDR10 static metadata preservation varies by FFmpeg build and input. Review HDR output before deleting a source.
+- HDR color tags are carried into the encode, but HDR10 static metadata preservation varies by FFmpeg build and input. Review HDR output and retain the source.
 - Dolby Vision requires a specialized workflow and is intentionally not automated.
 - Copied lossless audio preserves quality and formats such as TrueHD/Atmos, but it also limits potential space savings.

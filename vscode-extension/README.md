@@ -24,3 +24,14 @@ Resolution defaults to `keep`, which adds no scaling filter and verifies that
 the output dimensions exactly match the source. Optional 2160p, 1080p, 720p,
 and 480p ceilings must be selected explicitly; they preserve aspect ratio and
 never upscale smaller videos.
+# Native preview progress (0.6.0)
+
+After installing this update, reload the existing VS Code window to activate it.
+Run **MuxMender: Preview Dolby Vision Color (Safe Native Test)** and select one
+profile 5 file, then HDR PQ or SDR output. The three-second preview starts at
+five minutes, keeps source dimensions, and writes a new timestamped test-output
+folder. It is video-only, not a complete media optimization.
+
+The same native process writes to the MuxMender Output channel and updates the
+notification progress bar. Chunk-split progress markers are buffered correctly.
+Originals and existing outputs are never deleted or overwritten by this path.

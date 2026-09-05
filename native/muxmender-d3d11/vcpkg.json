@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "muxmender-d3d11",
+  "version-string": "0.1.0",
+  "builtin-baseline": "04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4",
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "features": [
+        "amf"
+      ]
+    },
+    "shaderc",
+    "spirv-cross"
+  ]
+}

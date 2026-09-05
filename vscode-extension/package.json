@@ -2,7 +2,7 @@
   "name": "muxmender-vscode",
   "displayName": "MuxMender",
   "description": "Run safe MuxMender dry-run scans in a dedicated VS Code Output channel.",
-  "version": "0.4.0",
+  "version": "0.7.0",
   "publisher": "hysel",
   "license": "MIT",
   "repository": {
@@ -11,6 +11,8 @@
   },
   "files": [
     "extension.js",
+    "progress.js",
+    "media-path.js",
     "README.md",
     "LICENSE"
   ],
@@ -29,6 +31,14 @@
   "contributes": {
     "commands": [
       {
+        "command": "muxmender.deliveryTest",
+        "title": "MuxMender: Test HDR Delivery (10 Seconds, Safe Copy)"
+      },
+      {
+        "command": "muxmender.previewFile",
+        "title": "MuxMender: Preview Dolby Vision Color (Safe Native Test)"
+      },
+      {
         "command": "muxmender.scanFolder",
         "title": "MuxMender: Scan Media Folder (Dry Run)"
       },
@@ -40,6 +50,11 @@
     "configuration": {
       "title": "MuxMender",
       "properties": {
+        "muxmender.nativeHelperPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional muxmender-dv-preview.exe in an extracted native runtime. Adjacent DLLs and color-test helper are required."
+        },
         "muxmender.pythonPath": {
           "type": "string",
           "default": "python",
@@ -49,6 +64,16 @@
           "type": "string",
           "default": "",
           "description": "Optional absolute path to muxmender.py. The active workspace is searched when empty."
+        },
+        "muxmender.ffmpegPath": {
+          "type": "string",
+          "default": "ffmpeg",
+          "description": "FFmpeg executable name or absolute path. Use a Full build for Dolby Vision previews."
+        },
+        "muxmender.ffprobePath": {
+          "type": "string",
+          "default": "ffprobe",
+          "description": "FFprobe executable name or absolute path."
         },
         "muxmender.hardware": {
           "type": "string",
@@ -75,6 +100,17 @@
             "Downscale only videos larger than 854x480."
           ],
           "description": "Resolution policy. Preserves aspect ratio and never upscales."
+        },
+        "muxmender.dolbyVisionPolicy": {
+          "type": "string",
+          "enum": ["skip", "copy", "sdr-preview"],
+          "default": "skip",
+          "enumDescriptions": [
+            "Block Dolby Vision processing and report why.",
+            "Permit only bit-for-bit video copying into MKV; Dolby Vision re-encoding remains blocked.",
+            "Create a 10-second full-resolution BT.709 sidecar only after a synthetic libplacebo runtime preflight succeeds."
+          ],
+          "description": "Dolby Vision safety policy."
         }
       }
     }

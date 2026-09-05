@@ -1,0 +1,10 @@
+prefix=${pcfiledir}/../vcpkg_installed/x64-windows-release
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include/spirv_cross
+
+Name: spirv-cross-c-shared
+Description: MuxMender compatibility alias for vcpkg's static SPIRV-Cross C API
+Version: 0.68.0
+Libs: "-L${libdir}" -lspirv-cross-c -lspirv-cross-glsl -lspirv-cross-hlsl -lspirv-cross-msl -lspirv-cross-cpp -lspirv-cross-reflect -lspirv-cross-core
+Cflags: "-I${includedir}"

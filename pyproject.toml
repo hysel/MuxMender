@@ -17,10 +17,11 @@ classifiers = [
 ]
 
 [project.scripts]
-muxmender = "muxmender:main"
+muxmender = "muxmender:cli"
+muxmender-dashboard = "dashboard:main"
 
 [tool.setuptools]
-py-modules = ["muxmender"]
+py-modules = ["muxmender", "native_pipeline", "runtime_support", "streaming_pipeline", "job_tracking", "dashboard", "run_logged", "dv_full_file", "dv_preservation_test"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

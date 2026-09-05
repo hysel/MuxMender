@@ -13,3 +13,5 @@ dist/
 vscode-extension/*.vsix
 vscode-extension/node_modules/
 test-output/
+tools/
+.vscode/
