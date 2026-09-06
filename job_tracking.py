@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import uuid
+import traceback
 
 _active = None
 
@@ -29,9 +30,28 @@ class Job:
 def phase(directory, label, percent):
     if _active:
         try:
-            _active.save(linked_run=str(Path(directory).resolve()), phase=label, percent=percent)
+            _active.save(linked_run=str(Path(directory).resolve()), phase=label, percent=percent,
+                         progress_kind='legacy')
         except OSError:
             pass  # Monitoring must not fail an encode.
+
+
+def progress(label, completed=0, total=None, stage_percent=None, stage_eta=None,
+             directory=None, detail=None, unit='steps', **changes):
+    """Explicit overall work count and independent current-stage progress."""
+    if not _active:
+        return
+    values = dict(progress_kind='structured', phase=label, completed=completed,
+                  total=total, unit=unit, stage_percent=stage_percent,
+                  stage_eta=stage_eta, detail=detail,
+                  percent=100 * completed / total if total else None)
+    if directory:
+        values['linked_run'] = str(Path(directory).resolve())
+    values.update(changes)
+    try:
+        _active.save(**values)
+    except OSError:
+        pass
 
 
 def tracked_call(function, title, folder=None):
@@ -39,6 +59,9 @@ def tracked_call(function, title, folder=None):
     global _active
     if _active:
         return function()
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8', errors='backslashreplace')
     from run_logged import Tee
     try:
         job = Job(folder or Path(__file__).resolve().parent / 'reports', title)
@@ -69,13 +92,19 @@ def tracked_call(function, title, folder=None):
     except KeyboardInterrupt:
         code = 130
         raise
+    except Exception:
+        traceback.print_exc()
+        raise
     finally:
         stop.set()
         worker.join(timeout=6)
         sys.stdout, sys.stderr = original
         log.close()
         try:
-            job.save(state='completed' if code == 0 else 'cancelled' if code == 130 else 'failed',
+            state = 'completed' if code == 0 else 'cancelled' if code == 130 else 'failed'
+            if code == 1 and job.data.get('completion_state') == 'completed-with-errors':
+                state = 'completed-with-errors'
+            job.save(state=state,
                      exit_code=code, finished=time.time())
         except OSError as exc:
             print(f'Dashboard final status unavailable: {exc}', file=sys.stderr)

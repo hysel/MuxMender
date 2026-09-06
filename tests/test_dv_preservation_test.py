@@ -4,9 +4,30 @@ from unittest.mock import patch
 from pathlib import Path
 from test_muxmender import sample
 from dv_preservation_test import require_candidate, validate_timeline, run, static_hdr, compare_static_hdr, canonical_rpu, experimental_encoder_options
+from dv_preservation_test import sample_encoder_options, require_nvidia_frames
 
 
 class DVExperimentTests(unittest.TestCase):
+    def test_nvidia_sample_is_explicit_and_keeps_ten_bit_color(self):
+        info = sample(dolby_vision=True, video_codec='hevc', dolby_vision_profile=8,
+                      dolby_vision_compatibility_id=1, dolby_vision_rpu_present=True)
+        self.assertEqual(sample_encoder_options(info), experimental_encoder_options(info))
+        opts = sample_encoder_options(info, True)
+        self.assertEqual(opts[opts.index('-c:v')+1], 'hevc_nvenc')
+        self.assertEqual(opts[opts.index('-pix_fmt')+1], 'p010le')
+        self.assertEqual(opts[opts.index('-color_trc')+1], 'smpte2084')
+        self.assertEqual(opts[opts.index('-bf')+1], '0')
+        self.assertNotIn('-vf', opts)
+        with self.assertRaises(ValueError):
+            sample_encoder_options(sample(dolby_vision=True, dolby_vision_profile=5), True)
+
+    def test_nvidia_sample_rejects_other_dynamic_hdr_and_interlacing(self):
+        require_nvidia_frames([dict(interlaced_frame=0, repeat_pict=0)])
+        for frame in (dict(interlaced_frame=1), dict(interlaced_frame=0, repeat_pict=1),
+                      dict(interlaced_frame=0, side_data_list=[dict(side_data_type='HDR Dynamic Metadata SMPTE2094-40 (HDR10+)')])):
+            with self.assertRaises(ValueError):
+                require_nvidia_frames([frame])
+
     def test_qp_changes_do_not_change_preset_or_color(self):
         base = experimental_encoder_options(sample())
         tuned = experimental_encoder_options(sample(), 21, 23)

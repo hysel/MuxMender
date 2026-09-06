@@ -9,6 +9,7 @@ import math
 import os
 import platform
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,8 @@ import time
 import webbrowser
 import uuid
 from runtime_support import TerminalProgress
+from mux_integrity import INTERLEAVE_MICROSECONDS, verify_startup_interleaving
+import nvidia_mux
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -560,12 +563,73 @@ def recommend(
     return info
 
 
+def clean_media_name(source: Path) -> str:
+    """Remove release suffixes without guessing titles from an online service."""
+    name = re.sub(r'[._]+', ' ', source.stem).strip()
+    # A release boundary requires a distinct token, not a substring of a title.
+    boundary = re.search(r'(?i)(?:^|[\s\[(-])(?:480[pi]|576[pi]|720p|1080[pi]|2160p|4320p|'
+                         r'WEB[ -]?DL|WEBRip|Blu[ -]?Ray|BDRip|HDTV|REMUX|'
+                         r'x26[45]|H[ .]?26[45]|HEVC|AV1|AMZN|DDP)(?=$|[\s\].)-])', name)
+    if boundary:
+        name = name[:boundary.start()].strip(' -([.')
+    episode = re.search(r'(?i)\bS\d{1,3}E\d{1,3}(?:E\d{1,3})*\b', name)
+    if episode:
+        title = name[:episode.start()].strip(' -')
+        suffix = name[episode.end():].strip(' -')
+        name = title + ' - ' + episode.group().upper() + (' - ' + suffix if suffix else '')
+    else:
+        year = re.search(r'\(((?:19|20)\d{2})\)$', name)
+        if not year:
+            year = re.search(r'(?<!\d)((?:19|20)\d{2})$', name)
+            if year and int(year.group(1)) > time.localtime().tm_year + 1:
+                year = None
+        if year and name[:year.start()].strip(' ('):
+            name = name[:year.start()].strip(' (') + ' (' + year.group(1) + ')'
+    name = re.sub(r'[<>:"/\\|?*]', ' ', name)
+    name = re.sub(r'\s+', ' ', name).strip(' .-')
+    if not name or name.upper() in {'CON', 'PRN', 'AUX', 'NUL', *('COM'+str(n) for n in range(1,10)), *('LPT'+str(n) for n in range(1,10))}:
+        raise RuntimeError('Cannot determine a safe media title; clean up the input name first')
+    return name + '.mkv'
+
+
 def output_path(source: Path, root: Path, output_dir: Path | None) -> Path:
     if output_dir:
         relative = source.relative_to(root)
         candidate = output_dir / relative
-        return candidate.with_name(f"{candidate.name}.muxmender.mkv")
-    return source.with_name(f"{source.name}.muxmender.mkv")
+        return candidate.with_name(clean_media_name(source))
+    return source.parent / 'MuxMender' / clean_media_name(source)
+
+
+def copy_matching_artwork(source: Path, destination: Path, video_only: bool = False) -> list[dict]:
+    """Copy basename-matched artwork alongside an accepted output, never overwrite."""
+    results = []
+    if video_only:
+        return results
+    try:
+        candidates = sorted(source.parent.iterdir())
+    except OSError as exc:
+        return [{'status': 'failed', 'error': str(exc)}]
+    for artwork in candidates:
+        if artwork.suffix.lower() not in {'.jpg', '.jpeg', '.png', '.webp'}:
+            continue
+        suffix = artwork.stem[len(source.stem):]
+        if not artwork.stem.lower().startswith(source.stem.lower()) or suffix.lower() not in {'', '-poster', '-fanart', '-banner', '-thumb'}:
+            continue
+        target = destination.with_name(destination.stem + suffix + artwork.suffix)
+        entry = {'source': str(artwork), 'output': str(target)}
+        try:
+            if artwork.is_symlink() or getattr(artwork.lstat(), 'st_file_attributes', 0) & 0x400 or not artwork.is_file():
+                entry['status'] = 'skipped'
+            elif target.exists():
+                entry['status'] = 'existing-preserved'
+            else:
+                with artwork.open('rb') as original, target.open('xb') as copied:
+                    shutil.copyfileobj(original, copied)
+                entry['status'] = 'copied'
+        except OSError as exc:
+            entry.update(status='failed', error=str(exc))
+        results.append(entry)
+    return results
 
 
 def encoder_options(
@@ -656,7 +720,8 @@ def build_ffmpeg_command(
         ffmpeg, "-hide_banner", "-nostdin", "-n", "-i", str(source),
         "-map", "0", "-map_metadata", "0", "-map_chapters", "0",
         *video_options,
-        "-max_muxing_queue_size", "4096", str(temporary),
+        "-max_muxing_queue_size", "4096",
+        "-max_interleave_delta", str(INTERLEAVE_MICROSECONDS), str(temporary),
     ]
 
 
@@ -847,6 +912,8 @@ def verify_output(
         if before != "unknown" and before != after:
             return False, f"{label} changed from {before} to {after}"
     saved = 100.0 * (source_info.size_bytes - result.size_bytes) / source_info.size_bytes
+    if enforce_min_savings and result.size_bytes >= source_info.size_bytes:
+        return False, "output is larger than or equal to the source; keep original"
     if enforce_min_savings and saved < min_savings:
         return False, f"only saved {saved:.1f}% (minimum is {min_savings:.1f}%)"
     if not enforce_min_savings:
@@ -985,6 +1052,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--execute", action="store_true", help="run ffmpeg; otherwise only show the plan")
     parser.add_argument("--dry-run", action="store_true", help="explicitly request the default dry-run behavior")
     parser.add_argument("--output-dir", type=Path, help="mirror optimized files under this directory")
+    parser.add_argument('--video-only-folder', action='store_true', help='Publish only video files; exclude artwork and external subtitles at every depth, retain embedded tracks and source files. Keep working files separately.')
     parser.add_argument("--report", type=Path, help="write the analysis report as JSON")
     parser.add_argument("--min-savings", type=float, default=5.0, metavar="PERCENT")
     parser.add_argument("--overwrite-output", action="store_true", help=argparse.SUPPRESS)
@@ -1178,6 +1246,9 @@ def main(argv: list[str] | None = None) -> int:
             print("No source media was opened and no output file was created.")
             return 4
 
+    import job_tracking
+    if not args.execute:
+        job_tracking.progress('Finding media files', unit='files', detail='Read-only enumeration; file count is not yet known.')
     found = [target] if target.is_file() else list(media_files(root))
     print(f"MuxMender {'EXECUTE' if args.execute else 'DRY RUN'}")
     print(f"Found {len(found)} media file(s); target: {target_codec}/MKV, quality: {args.quality}")
@@ -1201,7 +1272,11 @@ def main(argv: list[str] | None = None) -> int:
         "errors": [],
     }
 
-    for source in found:
+    scan_started = time.monotonic()
+    for file_index, source in enumerate(found):
+        if not args.execute:
+            job_tracking.progress('Inspecting media', file_index, len(found), unit='files',
+                                  detail=str(source))
         try:
             info = recommend(
                 probe(source, args.ffprobe),
@@ -1218,6 +1293,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 destination = dolby_sdr_preview_path(base_destination, args.preview_seconds)
                 temporary = fresh_partial(destination)
+                if args.video_only_folder:
+                    temporary = destination.parent.parent / '.MuxMender-work' / uuid.uuid4().hex / temporary.name
                 command = build_dolby_sdr_preview_command(
                     source, temporary, args.preview_start, args.preview_seconds, args.ffmpeg
                 )
@@ -1237,6 +1314,7 @@ def main(argv: list[str] | None = None) -> int:
                     report["files"].append(entry)
                     continue
                 destination.parent.mkdir(parents=True, exist_ok=True)
+                temporary.parent.mkdir(parents=True, exist_ok=True)
                 return_code, stalled = run_ffmpeg(
                     command, args.preview_seconds, args.hardware_stall_timeout
                 )
@@ -1266,17 +1344,28 @@ def main(argv: list[str] | None = None) -> int:
 
             destination = output_path(source, root, args.output_dir.resolve() if args.output_dir else None)
             temporary = fresh_partial(destination)
+            if args.video_only_folder:
+                temporary = destination.parent.parent / '.MuxMender-work' / uuid.uuid4().hex / temporary.name
+            video_stage = None
             command = build_ffmpeg_command(
                 source, temporary, info, target_codec, args.quality, args.ffmpeg,
                 selection.encoder, args.resolution,
             )
+            if info.recommendation == 'transcode' and selection.encoder in {'hevc_nvenc', 'av1_nvenc'}:
+                video_stage = fresh_partial(temporary.with_name(temporary.stem + '.video-stage.mkv'))
+                command[-1] = str(video_stage)
+                command = nvidia_mux.video_stage_command(command)
             entry["output"] = str(destination)
             entry["recovery_files"] = [str(temporary)]
+            if video_stage is not None:
+                entry['recovery_files'].append(str(video_stage))
             entry["command"] = command
             entry["encoder"] = asdict(selection)
             print(f"  OUTPUT: {destination}")
             if not args.execute:
                 print(f"  COMMAND: {command_text(command)}")
+                if video_stage is not None:
+                    print('  FINALIZE: stream-copy encoded video with original audio, subtitles, metadata and chapters; validate before publication')
                 entry["status"] = "planned"
                 report["files"].append(entry)
                 continue
@@ -1287,7 +1376,14 @@ def main(argv: list[str] | None = None) -> int:
                 continue
 
             destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary.parent.mkdir(parents=True, exist_ok=True)
+            if video_stage is not None:
+                required_free = 2 * info.size_bytes + 512 * 1024**2
+                available_free = shutil.disk_usage(destination.parent).free
+                if available_free < required_free:
+                    raise RuntimeError(f'Two-stage NVIDIA output requires at least {human_size(required_free)} free; only {human_size(available_free)} available. Original unchanged.')
             print(f"  Recovery/partial output: {temporary}")
+            job_tracking.progress('Encoding video' if video_stage is not None else 'Processing media', file_index, len(found), unit='files', detail=source.name)
             return_code, stalled = run_ffmpeg(
                 command,
                 info.duration_seconds,
@@ -1317,7 +1413,7 @@ def main(argv: list[str] | None = None) -> int:
                             f"CPU fallback is unavailable because FFmpeg lacks {software_encoder}"
                         )
                     selection = EncoderSelection("cpu", software_encoder)
-                    temporary = fresh_partial(destination)
+                    temporary = fresh_partial(temporary)
                     entry["recovery_files"].append(str(temporary))
                     print(f"  RETRYING WITH CPU: {selection.encoder}")
                     command = build_ffmpeg_command(
@@ -1330,6 +1426,15 @@ def main(argv: list[str] | None = None) -> int:
                     return_code, stalled = run_ffmpeg(command, info.duration_seconds)
             if return_code:
                 raise RuntimeError(f"ffmpeg exited with status {return_code}; partial retained: {temporary}")
+            if video_stage is not None and selection.encoder in {'hevc_nvenc', 'av1_nvenc'}:
+                source_probe = run_json([args.ffprobe, '-v', 'error', '-show_streams', '-of', 'json', str(source)])
+                mux_command = nvidia_mux.finalize_command(video_stage, source, temporary, source_probe, args.ffmpeg)
+                entry['finalize_command'] = mux_command
+                print('  Finalizing NVIDIA video with original audio, subtitles and metadata', flush=True)
+                job_tracking.progress('Finalizing NVIDIA output', file_index, len(found), unit='files', detail='Copying original tracks; no second video encode')
+                return_code, _ = run_ffmpeg(mux_command, info.duration_seconds, args.hardware_stall_timeout)
+                if return_code:
+                    raise RuntimeError(f'Final mux failed; video stage and partial retained: {temporary}')
             expected_codec = target_codec if info.recommendation == "transcode" else info.video_codec
             valid, message = verify_output(
                 info,
@@ -1340,6 +1445,11 @@ def main(argv: list[str] | None = None) -> int:
                 enforce_min_savings=info.recommendation == "transcode",
                 expected_dimensions=output_dimensions(info, args.resolution),
             )
+            if valid:
+                interleaved, detail = verify_startup_interleaving(temporary, args.ffprobe)
+                entry['startup_interleaving'] = {'passed': interleaved, 'detail': detail}
+                if not interleaved:
+                    valid, message = False, detail
             if not valid:
                 print(f"  REJECTED: {message}; original and partial retained: {temporary}")
                 entry["status"] = "rejected"
@@ -1349,17 +1459,40 @@ def main(argv: list[str] | None = None) -> int:
             publish_output(temporary, destination)
             print(f"  COMPLETE: {message}")
             entry["status"] = "complete"
+            entry["output_size_bytes"] = destination.stat().st_size
+            entry['artwork'] = copy_matching_artwork(source, destination, args.video_only_folder)
+            entry['video_only_folder'] = args.video_only_folder
             entry["result"] = message
             report["files"].append(entry)
         except (OSError, RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
             print(f"\n{source}\n  ERROR: {exc}", file=sys.stderr)
             report["errors"].append({"path": str(source), "error": str(exc)})
+        finally:
+            if not args.execute:
+                count = file_index + 1
+                job_tracking.progress('Inspecting media', count, len(found), unit='files',
+                                      detail=f'{count:,} inspected; {len(report["errors"])} errors. Original media unchanged.')
+                if count % 100 == 0 or count == len(found):
+                    print(f'Scan: {count:,}/{len(found):,} files | {len(report["errors"])} errors | elapsed {time.monotonic()-scan_started:.0f}s', flush=True)
+            else:
+                job_tracking.progress('Processed media', file_index + 1, len(found), unit='files',
+                                      detail=f'{file_index + 1:,} processed; originals retained.')
 
+    from optimization_acceptance import savings_summary, savings_summary_text
+    report['savings_summary'] = savings_summary(
+        (entry['size_bytes'], entry['output_size_bytes'])
+        for entry in report['files'] if entry.get('status') == 'complete' and 'output_size_bytes' in entry)
+    if args.execute:
+        print(savings_summary_text(report['savings_summary']))
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         with args.report.open("x", encoding="utf-8") as report_file:
             json.dump(report, report_file, indent=2)
         print(f"\nReport written to {args.report.resolve()}")
+    if not args.execute:
+        job_tracking.progress('Scan complete', len(found), len(found), unit='files',
+                              detail=f'{len(report["files"]):,} analyzed; {len(report["errors"])} errors. No conversions run.',
+                              completion_state='completed-with-errors' if report['errors'] else 'completed')
     return 1 if report["errors"] or any(entry.get("status") in {"preview-failed", "rejected"} for entry in report["files"]) else 0
 
 

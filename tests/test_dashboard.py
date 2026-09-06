@@ -96,3 +96,37 @@ class DashboardTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 tracked_call(fail, 'Failure fixture', Path(folder)/'reports')
             self.assertEqual(Catalog(folder).snapshot()[0]['state'],'failed')
+
+    def test_structured_progress_does_not_reuse_previous_stage_100(self):
+        with tempfile.TemporaryDirectory() as folder:
+            run = Path(folder)/'reports'/'job-progress'; run.mkdir(parents=True)
+            (run/'job.json').write_text(json.dumps(dict(state='running', pid=123,
+                updated=time.time(), progress_kind='structured', percent=50,
+                completed=1, total=2, stage_percent=None, stage_eta=None,
+                phase='Checking output')))
+            (run/'terminal.log').write_text('MUXMENDER_PROGRESS=100\n')
+            (run/'validation.json').write_text(json.dumps(dict(status='running')))
+            with patch('dashboard.alive', return_value=True):
+                job = Catalog(folder).snapshot()[0]
+            self.assertEqual(job['percent'], 50)
+            self.assertIsNone(job['stage_percent'])
+            self.assertEqual(job['completed'], 1)
+            self.assertEqual(job['phase'], 'Checking output')
+
+    def test_dashboard_has_no_animated_progress(self):
+        from dashboard_ui import HTML
+        self.assertNotIn('<progress', HTML)
+        self.assertNotIn('@keyframes', HTML)
+        self.assertNotIn('animation:', HTML)
+        self.assertNotIn('transition:width', HTML)
+
+    def test_completed_scan_with_errors_is_not_interrupted(self):
+        from job_tracking import progress as update
+        with tempfile.TemporaryDirectory() as folder:
+            def work():
+                update('Scan complete', 4, 4, unit='files', completion_state='completed-with-errors')
+                return 1
+            self.assertEqual(tracked_call(work, 'Scan', Path(folder)/'reports'), 1)
+            job = Catalog(folder).snapshot()[0]
+            self.assertEqual(job['state'], 'completed-with-errors')
+            self.assertEqual(job['percent'], 100)
