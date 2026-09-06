@@ -78,6 +78,50 @@ def contained(path, root):
         return False
 
 
+def latest_outcome(directory,root):
+    """Read append-only validation/review records; never rewrite execution history."""
+    candidates=[]
+    for path in [directory/'validation.json',*directory.glob('revalidation-*.json')]:
+        if not contained(path,root):continue
+        report=read_json(path)
+        if report:
+            stamp=report.get('finished',path.stat().st_mtime)
+            if isinstance(stamp,(int,float)):
+                candidates.append((stamp,path.name,report))
+    if not candidates:return {},False
+    _,name,report=max(candidates,key=lambda item:(item[0],item[1]))
+    review=read_json(directory/'playback-review.json') if contained(directory/'playback-review.json',root) else {}
+    approved=(review.get('approved') is True and review.get('validation_report')==name
+              and str(report.get('status','')).startswith('verified'))
+    return report,approved
+
+
+def apply_outcome(data,directory,root):
+    if data.get('state') in ('running','queued','cancelling'):return data
+    report,approved=latest_outcome(directory,root)
+    if not report:return data
+    data=dict(data)
+    initial=read_json(directory/'job.json')
+    data['execution_state']=initial.get('state')
+    data['execution_error']=initial.get('error')
+    data['result']=report
+    data['state']='playback-approved' if approved else ('verified' if str(report.get('status','')).startswith('verified') else report.get('status',data.get('state')))
+    data['phase']='Playback approved' if approved else report.get('status',data.get('phase'))
+    data['error']=report.get('error')
+    output=report.get('output')
+    if output:
+        target=Path(output)
+        if not target.is_absolute():target=root/target
+        missing=contained(target,root) and not target.is_file()
+        data['output_state']='Not present (historical result retained)' if missing else 'Available' if contained(target,root) else 'Outside project (not checked)'
+        if missing:data['phase']+=' · output removed/not present'
+    if data['execution_error'] and not data.get('error'):
+        data['error']='Earlier execution: '+str(data['execution_error'])+' (retained history; latest validation passed)'
+    if approved or data['state']=='verified':data['percent']=100
+    data['awaiting_playback']=not approved and 'awaiting' in str(report.get('status'))
+    return data
+
+
 class Catalog:
     def __init__(self, root):
         self.root = Path(root).resolve()
@@ -114,7 +158,7 @@ class Catalog:
                 if not contained(run, self.root):
                     run = directory
                 status = self.read(run/'status.json')
-                report = self.read(run/'validation.json')
+                report, _ = latest_outcome(run,self.root)
                 publication = self.read(run/'publication.json')
                 logpath = directory/'terminal.log'
                 if not logpath.is_file():
@@ -167,7 +211,7 @@ class Catalog:
                 if log and contained(logpath, self.root):
                     logs[identifier] = logpath
                 title = job.get('title') or ('Full Dolby Vision preservation' if directory.name.startswith('dv-full-') else report.get('scope')) or directory.name
-                jobs.append(dict(id=identifier, title=title,
+                jobs.append(apply_outcome(dict(id=identifier, title=title,
                     directory=str(directory.relative_to(self.root)), state=state, phase=phase, percent=percent,
                     stage_eta=(job.get('stage_eta') if structured else parsed.get('stage_eta')) if state == 'running' else None,
                     stage_percent=job.get('stage_percent') if structured else parsed.get('stage_percent'),
@@ -182,7 +226,7 @@ class Catalog:
                     source=report.get('source'), output=output, output_state=output_state,
                     savings=publication.get('video_savings_percent', report.get('video_savings_percent',report.get('video_payload_saving_percent'))),
                     error=report.get('error'), has_log=identifier in logs,
-                    awaiting_playback='awaiting' in str(phase), original_unchanged=report.get('original_stat_unchanged')))
+                    awaiting_playback='awaiting' in str(phase), original_unchanged=report.get('original_stat_unchanged',report.get('media_stat_unchanged'))),run,self.root))
             self.jobs = sorted(jobs, key=lambda j:(j['state']=='running', j['started'] or j['updated']), reverse=True)
             self.logs = logs
             self.cached_at = time.time()

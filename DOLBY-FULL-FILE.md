@@ -213,7 +213,7 @@ changes are rejected. This changes verification, not the audio or its timing.
 115 tests pass, including negative cases for missing/reordered/changed packets.
 
 The first full run and its failed strict comparison report are retained.
-`verify_dv_existing.py RUN_DIRECTORY` continues verification of that retained
+`python dv_full_file.py --verify-existing RUN_DIRECTORY` continues verification of that retained
 NVIDIA output without re-encoding: current source bitstream identity, original
 tracks/chapters, complete RPU content/order, every decoded frame/static HDR value,
 and full output audio/video decode. A new report directory preserves provenance.

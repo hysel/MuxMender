@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from optimization_acceptance import savings_decision, savings_summary
+from mux_integrity import savings_decision, savings_summary
 import dv_full_file as full
 from test_muxmender import sample
 

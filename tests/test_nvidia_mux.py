@@ -1,6 +1,6 @@
 import unittest
 
-from nvidia_mux import video_stage_command, finalize_command
+from mux_integrity import video_stage_command, finalize_command
 
 
 class NvidiaMuxTests(unittest.TestCase):

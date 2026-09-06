@@ -19,7 +19,7 @@ import webbrowser
 import uuid
 from runtime_support import TerminalProgress
 from mux_integrity import INTERLEAVE_MICROSECONDS, verify_startup_interleaving
-import nvidia_mux
+import mux_integrity as nvidia_mux
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -1287,6 +1287,16 @@ def main(argv: list[str] | None = None) -> int:
             print_info(info)
             entry: dict[str, Any] = asdict(info)
             entry["status"] = info.recommendation
+            if info.recommendation == "transcode":
+                from media_preflight import conversion_preflight
+                preflight = conversion_preflight(info, args.ffprobe, run_json)
+                entry["preflight"] = preflight
+                if preflight["status"] == "needs-review":
+                    entry["status"] = "needs-review"
+                    entry["reason"] = "; ".join(preflight["reasons"])
+                    print(f"  NEEDS REVIEW: {entry['reason']}; no encoding or media output created")
+                    report["files"].append(entry)
+                    continue
             if info.recommendation == "preview":
                 base_destination = output_path(
                     source, root, args.output_dir.resolve() if args.output_dir else None
@@ -1478,7 +1488,7 @@ def main(argv: list[str] | None = None) -> int:
                 job_tracking.progress('Processed media', file_index + 1, len(found), unit='files',
                                       detail=f'{file_index + 1:,} processed; originals retained.')
 
-    from optimization_acceptance import savings_summary, savings_summary_text
+    from mux_integrity import savings_summary, savings_summary_text
     report['savings_summary'] = savings_summary(
         (entry['size_bytes'], entry['output_size_bytes'])
         for entry in report['files'] if entry.get('status') == 'complete' and 'output_size_bytes' in entry)
@@ -1493,7 +1503,7 @@ def main(argv: list[str] | None = None) -> int:
         job_tracking.progress('Scan complete', len(found), len(found), unit='files',
                               detail=f'{len(report["files"]):,} analyzed; {len(report["errors"])} errors. No conversions run.',
                               completion_state='completed-with-errors' if report['errors'] else 'completed')
-    return 1 if report["errors"] or any(entry.get("status") in {"preview-failed", "rejected"} for entry in report["files"]) else 0
+    return 1 if report["errors"] or any(entry.get("status") in {"preview-failed", "rejected", "needs-review"} for entry in report["files"]) else 0
 
 
 def cli():

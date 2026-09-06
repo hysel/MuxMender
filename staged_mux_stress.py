@@ -10,7 +10,7 @@ import uuid
 from ctypes import wintypes
 import job_tracking as jobs
 import muxmender as mm
-import nvidia_mux
+import mux_integrity as nvidia_mux
 import validate_nvidia as v
 from mux_integrity import verify_startup_interleaving, verify_seek_interleaving
 from dv_full_file import ordered_dv_mux_command

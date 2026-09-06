@@ -8,11 +8,34 @@ import unittest
 from unittest.mock import patch
 from http.server import ThreadingHTTPServer
 
-from dashboard import Catalog, make_handler, progress, tail
+from dashboard import Catalog, make_handler, progress, tail, apply_outcome
 from job_tracking import tracked_call
 
 
 class DashboardTests(unittest.TestCase):
+    def test_revalidation_review_and_cleanup_preserve_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);run=root/'reports'/'run';run.mkdir(parents=True)
+            initial=dict(state='failed',error='old mismatch')
+            (run/'job.json').write_text(json.dumps(initial))
+            (run/'validation.json').write_text(json.dumps(dict(status='failed',finished=1,error='old mismatch')))
+            report=dict(status='verified-full-file-awaiting-playback',finished=2,output=str(run/'missing.mkv'))
+            (run/'revalidation-ok.json').write_text(json.dumps(report))
+            data=apply_outcome(initial,run,root)
+            self.assertEqual(data['state'],'verified')
+            self.assertEqual(data['execution_error'],'old mismatch')
+            (run/'playback-review.json').write_text(json.dumps(dict(approved=True,validation_report='wrong.json')))
+            self.assertEqual(apply_outcome(initial,run,root)['state'],'verified')
+            (run/'playback-review.json').write_text(json.dumps(dict(approved=True,validation_report='revalidation-ok.json')))
+            data=apply_outcome(initial,run,root)
+            self.assertEqual(data['state'],'playback-approved')
+            self.assertFalse(data['awaiting_playback'])
+            self.assertIn('output removed',data['phase'])
+            self.assertEqual(json.loads((run/'job.json').read_text()),initial)
+            self.assertEqual(apply_outcome(dict(state='running'),run,root)['state'],'running')
+            (run/'revalidation-new.json').write_text(json.dumps(dict(status='failed',finished=3,error='new failure')))
+            self.assertEqual(apply_outcome(initial,run,root)['state'],'failed')
+
     def test_weighted_progress_and_stage_eta(self):
         data = progress('Stage (10-65% overall) [=====               ] 25.0% | elapsed 100s | ETA 300s\nMUXMENDER_PROGRESS=23.8\n')
         self.assertEqual(data['percent'], 23.8)
