@@ -1,5 +1,20 @@
 # Local job dashboard
 
+The dashboard now has a focused current-run panel, capability checks, sample
+size/speed results, and searchable/filterable compact job history. Details and
+logs open on demand. It uses only local Python/HTML/CSS/JavaScript, with no CDN
+or added packages. Refresh an already-open page after updating the dashboard.
+
+**No animated progress bars:** overall work uses a stationary bar based on
+completed tests or inspected files. Stage changes do not reset it. Current-stage
+progress is text only; unknown progress displays a message without a bar. The
+overall test count is not a time estimate. Older logs without an overall count
+show text for running-stage progress rather than a misleading whole-job bar.
+
+New scans that reach the end with unreadable files show **Completed with errors**.
+Validation success remains distinct from playback approval. Historical records
+keep their original status. Unicode filenames are supported by shared CLI logging.
+
 From the MuxMender project directory:
 
 ```powershell
@@ -41,3 +56,8 @@ and exposes read-only job/log endpoints. It does not launch/stop jobs, scan
 source drives, stream video, install dependencies, or delete/modify media.
 Anyone using this PC can view the local logs, which may contain media paths.
 Do not expose or reverse-proxy this development server onto a network.
+
+
+NVIDIA execution reports separate encoding and finalization phases with the
+same overall file count. Finalization copies original non-video tracks; it
+does not re-encode the video. No animated or indeterminate bars were added.

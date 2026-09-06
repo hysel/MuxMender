@@ -2,10 +2,22 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from dv_full_file import rpu_digest, mux_command
+from dv_full_file import rpu_digest, mux_command, timestamped_video_command, ordered_dv_mux_command
 
 
 class FullDVTests(unittest.TestCase):
+    def test_nvidia_mux_separates_timestamp_generation_and_preserves_tracks(self):
+        first = timestamped_video_command('ffmpeg','raw.hevc','video.mkv','24000/1001')
+        self.assertEqual(first.count('-i'), 1)
+        self.assertEqual(first[first.index('-c')+1], 'copy')
+        streams = {'streams': [{'index': 0, 'codec_type': 'video'},
+                               {'index': 1, 'codec_type': 'audio'},
+                               {'index': 2, 'codec_type': 'subtitle'}]}
+        final = ordered_dv_mux_command('ffmpeg','video.mkv','original.mkv','final.mkv',streams)
+        self.assertEqual([final[i+1] for i,x in enumerate(final) if x == '-map'], ['0:v:0','1:1','1:2'])
+        self.assertEqual(final[final.index('-max_interleave_delta')+1], '0')
+        self.assertIn('-copyts', final)
+        self.assertNotIn('-y', final)
     def test_rpu_streamed_digest(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)/'rpu.json'

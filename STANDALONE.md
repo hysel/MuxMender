@@ -12,6 +12,45 @@ No VS Code or extra packages required. See [DASHBOARD.md](DASHBOARD.md).
 
 ## Check your installation
 
+### One-command NVIDIA validation
+
+```powershell
+python validate_nvidia.py
+# Add an optional SDR sample; the original file is only read:
+python validate_nvidia.py "Y:\path\movie.mkv"
+# Include a separate non-Dolby-Vision PQ sample:
+python validate_nvidia.py "Y:\path\sdr.mkv" --hdr-source "Y:\path\hdr.mkv"
+```
+
+No installation is required beyond existing Python and FFmpeg/FFprobe. Tools
+are resolved from PATH or a single installed WinGet FFmpeg directory; ambiguous
+locations require `--ffmpeg PATH --ffprobe PATH`. The installed-package command
+is `muxmender-validate-nvidia` (installation is not required for script usage).
+
+Generated HEVC/AV1 tests run first on `--gpu 0` (select another index explicitly).
+Real samples run only if those tests pass. Default samples seek near 300 seconds
+and request 30 seconds; `--start` and `--seconds` allow 1–60-second tests. A
+keyframe-aligned copied reference can be slightly longer (at most 15 seconds).
+The report gives its actual duration. No full-file conversion is available here.
+
+Each invocation creates a unique `reports/nvidia-validation-*` folder containing
+`REPORT.md`, `validation.json`, fixtures, copied references, encoded samples and
+stage logs. No media is overwritten or cleaned up. Put a `STOP` file in that run
+folder, or use Ctrl+C, to cancel. Free-space reserve and process timeouts apply.
+
+Checks include exact dimensions, progressive frame timing, bit depth/color tags,
+audio/subtitle packet hashes and timing, stream selection flags, attachments,
+reference chapters, static HDR metadata on decoded frames, and full sample
+decoding. The copied reference packets are checked against a bounded source
+interval. Original checks use size/mtime; reference files use SHA-256.
+Unknown color, interlaced video and dynamic HDR need separate validation.
+Dolby Vision remains blocked; no AMD preservation gate is bypassed.
+
+Results say Passed / Failed / Not tested for each capability. A passed sample
+still awaits user playback review, and applies only to the recorded GPU, driver
+and FFmpeg build. It does not certify full-file reliability, hardware decoding,
+identical visual quality, or savings on other media.
+
 ```powershell
 python muxmender.py --check-dependencies --hardware auto
 # Also check the optional native Dolby Vision runtime without starting a GPU job:
@@ -27,6 +66,45 @@ the user performs installation and then repeats the check. Native helper
 packaging/build instructions are in `native/muxmender-d3d11/README.md`.
 
 ## Analyze, then execute
+
+New generated outputs use clean media names, for example `Commando (1985).mkv`
+or `Show Name - S01E07 - Episode Title.mkv`. Release/encoding suffixes are
+removed when recognized. No online identity lookup is performed. Review planned
+names in a dry run; ambiguous input names may need manual correction. Without
+an output directory, files go in a separate `MuxMender` subfolder beside the
+source. Existing destinations are never overwritten. Existing media is not
+renamed automatically. Experimental diagnostic intermediate names remain distinct.
+
+Matching JPG/JPEG/PNG/WebP artwork is copied beside accepted full outputs using
+the clean video basename, including recognized `-poster`, `-fanart`, `-banner`,
+and `-thumb` suffixes. Source artwork remains unchanged; existing destination
+artwork is preserved. Copy results or failures appear in the JSON report.
+
+Use `--video-only-folder` to publish only video files, with no artwork or external
+subtitle sidecars from the source folder or any subdirectory. Embedded audio and
+subtitles remain preserved. No source files or existing destination extras are
+deleted; use a fresh output folder for a video-only result. Standard conversions
+retain intermediates separately under a sibling `.MuxMender-work` folder. The
+experimental full-file DV script places the output in its run's `media` subfolder,
+separate from diagnostic files. The option is disabled by default.
+
+Example: `python muxmender.py "PATH" --execute --output-dir "D:\Optimized" --video-only-folder`
+
+External subtitle timing depends on the cut and presentation timeline, not
+video bitrate. NVIDIA full-file output preserves presentation timing; validated
+Commando frames matched within 2 ms, with original embedded subtitle packets
+unchanged. External subtitles must be for the same cut. To auto-load after clean
+naming, use a matching basename (for example `Commando (1985).en.srt`); sidecar
+subtitle files are not automatically renamed or copied by the current pipeline.
+
+Optional missing-metadata enrichment for Plex and generated-file tags is planned
+in TODO.md. It is not implemented or enabled by the clean-name feature.
+
+Completed optimization runs print aggregate size reduction in decimal MB, GB,
+TB, and percent. JSON reports include `savings_summary` with exact byte totals.
+Only accepted outputs count; the percentage uses their combined original size,
+not an average of file percentages. Retained originals and intermediates still
+occupy storage, so this is not a measurement of disk space reclaimed.
 
 ### Opt-in Dolby Vision Profile 8.1 preservation
 
@@ -151,3 +229,39 @@ with the same arguments. It creates a new log under `reports/` and requires no
 VS Code. A long run is not successful until its final validation status says
 `verified-full-file`; a playable partial or 100% encoding indicator alone is
 not sufficient. Whole-episode validation and playback review are still required.
+
+
+## NVIDIA output finalization
+
+HEVC/AV1 NVENC execution now encodes one video-only MKV intermediate, then
+stream-copies that video together with the original audio, subtitles,
+attachments/data, metadata, dispositions and chapters into the final MKV.
+There is no second video encode. Original dimensions, sample aspect ratio,
+color and bit depth remain the defaults; video timestamps use passthrough.
+
+This separates video encoding from final track interleaving. The final mux
+uses FFmpeg's finite 10-second interleaving window, not unlimited buffering.
+A bounded startup probe checks the first 2048 packets before publication;
+unknown ordering or over 100ms of audio lead before the first video packet
+rejects the output and retains recovery files. This is a conservative
+compatibility check, not a substitute for decode and device playback tests.
+
+Allow disk space for both the compressed video intermediate and final output.
+The intermediate is retained for recovery; no original media is removed.
+The dashboard shows encoding and finalization as separate phases. This flow
+applies to detected HEVC/AV1 NVENC encoders, without a GPU-model lookup.
+Experimental Dolby Vision preservation remains AMD-only.
+
+The video encoder also uses the demuxer time base to avoid clock rounding
+drift on long/VFR timelines. Before normal NVIDIA execution, allow at least
+twice the source file size plus 512 MiB free on the output volume; this is a
+conservative preflight estimate, not a guarantee for every codec/quality.
+
+## Optimization acceptance
+
+Transcodes must shrink the complete file (default minimum 5%). Larger/equal
+outputs are rejected even at a zero threshold. Quality is not automatically
+lowered to force a saving. Experimental full NVIDIA DV runs first test a
+bounded 30s sample and skip the full encode if that sample does not shrink.
+The current full Acolyte result is rejected: larger and failed Sony TV playback.
+See DOLBY-FULL-FILE.md for the remaining validation limits.

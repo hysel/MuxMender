@@ -1,4 +1,5 @@
 import unittest
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,6 +14,7 @@ from muxmender import (
     dolby_sdr_preview_path,
     dolby_vision_gpu_preflight,
     output_path,
+    copy_matching_artwork,
     output_dimensions,
     progress_percent,
     probe,
@@ -253,7 +255,51 @@ class MuxMenderTests(unittest.TestCase):
 
     def test_output_is_sidecar_by_default(self):
         result = output_path(Path("C:/media/movie.mp4"), Path("C:/media"), None)
-        self.assertEqual(result.name, "movie.mp4.muxmender.mkv")
+        self.assertEqual(result.name, "movie.mkv")
+        self.assertEqual(result.parent.name, "MuxMender")
+
+    def test_artwork_matches_clean_name_and_preserves_sources_and_collisions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root/'Commando 1985 1080p.mkv'
+            artwork = source.with_suffix('.jpg')
+            artwork.write_bytes(b'original artwork')
+            (root/'unrelated.jpg').write_bytes(b'unrelated')
+            output = root/'output'/'Commando (1985).mkv'
+            output.parent.mkdir()
+            result = copy_matching_artwork(source, output)
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0]['status'], 'copied')
+            self.assertEqual(output.with_suffix('.jpg').read_bytes(), artwork.read_bytes())
+            output.with_suffix('.jpg').write_bytes(b'user artwork')
+            result = copy_matching_artwork(source, output)
+            self.assertEqual(result[0]['status'], 'existing-preserved')
+            self.assertEqual(output.with_suffix('.jpg').read_bytes(), b'user artwork')
+            self.assertEqual(artwork.read_bytes(), b'original artwork')
+
+    def test_video_only_mode_does_not_copy_sidecars_or_visit_subfolders(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root/'Movie.mkv'
+            source.with_suffix('.jpg').write_bytes(b'art')
+            source.with_suffix('.srt').write_text('subtitles')
+            (root/'Subs').mkdir()
+            (root/'Subs'/'English.srt').write_text('subtitles')
+            output = root/'output'/'Movie.mkv'
+            output.parent.mkdir()
+            self.assertEqual(copy_matching_artwork(source, output, True), [])
+            self.assertEqual(list(output.parent.iterdir()), [])
+            self.assertTrue((root/'Subs'/'English.srt').exists())
+            self.assertTrue(parse_args(['movie.mkv', '--video-only-folder']).video_only_folder)
+
+    def test_clean_movie_and_episode_output_names(self):
+        root = Path('media')
+        for original, expected in [
+            ('Commando 1985 1080p AMZN WEB-DL DDP 5 1 H 264-PiRaTeS.mkv', 'Commando (1985).mkv'),
+            ('Show.Name.S01E07.Episode.Title.2160p.WEB-DL.mkv', 'Show Name - S01E07 - Episode Title.mkv'),
+            ('65 (2023).mkv', '65 (2023).mkv'),
+        ]:
+            self.assertEqual(output_path(root/original,root,Path('output')).name,expected)
 
     def test_command_maps_every_stream_and_copies_audio(self):
         command = build_ffmpeg_command(

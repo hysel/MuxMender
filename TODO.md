@@ -1,6 +1,34 @@
 # MuxMender to-do
 
+Current handoff and evidence: [NVIDIA-HANDOFF.md](NVIDIA-HANDOFF.md). Historical
+checkboxes below describe earlier stages and do not override that summary.
+
+- [x] Updated DV pipeline end-to-end regression: 857 frames, six seek checks,
+  exact original tracks/RPUs/HDR, decode and savings passed (2026-09-06).
+- [x] Self-contained 60/300-second sparse/empty subtitle stress tests passed.
+- [x] Consolidate obsolete one-off diagnostics into archived evidence; retain
+  reusable standalone stress entry point and current runtime module interfaces.
+- [ ] Main agent: integrate reviewed changes without overwriting unrelated main
+  branch work. Ask before Git operations; no commits or pushes were made here.
+- [ ] Optional preview-first cleanup of sample videos and .nfo files: default
+  off, exact path plan and approval, never duration-only sample detection.
+
 ## Safety and product requirements
+
+- [x] New optimized output names contain media identity rather than release tags:
+  movie title/year or show/season/episode/title where present. Existing sources
+  are not renamed. Default output goes in a separate MuxMender subfolder;
+  collisions are skipped. Local parsing is conservative, not identity matching.
+- [ ] Optional metadata updater for BOTH Plex library metadata and tags in
+  generated files. Disabled by default; fill missing fields only (ratings,
+  dates, descriptions, genres, artwork where supported), retain provider and
+  retrieval date, and never infer a rating or overwrite user edits. Resolve
+  ambiguous movie/episode matches before applying metadata. Provider credentials
+  and Plex access must be configured explicitly; unsupported container fields
+  must be reported. Keep provider lookup shared and expose target selection
+  through the existing standalone CLI rather than adding one-off scripts.
+- [ ] Implement metadata enrichment after hardware testing, during consolidation;
+  no lookup, Plex metadata write, or media-tag change is currently performed.
 
 - Standalone script first; VS Code is only an optional development interface.
 - Never delete, overwrite, move, or rename original media. Cleanup requires
@@ -44,6 +72,13 @@
   overhead, encoding, and local storage before promising throughput gains.
 
 ## NVIDIA behavior — test later on real hardware
+
+- [x] Add standalone `validate_nvidia.py`: runtime-generated tests followed by
+  opt-in short SDR/PQ samples, retained evidence and capability results. No model
+  hardcoding, driver installation, CPU fallback or NVIDIA DV preservation.
+- [x] Replace animated dashboard bars with completed-work progress, textual stage
+  updates, capability results and compact searchable history. Full-file validation,
+  broader device coverage and user playback approval remain separate work.
 
 - [ ] Make NVIDIA detection and encoding capability-driven across GPU models
   and generations, not tied to RTX 5050 or any fixed model name. Detect each
@@ -138,3 +173,80 @@ Research references:
   copy/validation and must not be mistaken for video encoding percentage.
 - [ ] Give Plex test outputs clearer titles; distinguish video-only
   intermediates from final outputs that contain audio/subtitles.
+
+
+## NVIDIA browser interleaving validation (2026-09-05)
+
+- [x] Isolate Chrome sync failure to audio prefix before first HEVC video packet.
+- [x] Test H corrected stream-copy interleaving: Chrome picture and sync pass; Plex video copy confirmed.
+- [x] Add startup interleaving certification guard and regression against D/G/H; 104 tests pass.
+- [ ] Integrate a bounded-memory mux correction; evaluate sparse/empty subtitle tracks before full-file use. Do not blindly set max_interleave_delta=0 globally.
+- [ ] Verify corrected output on phone, TV, and additional SDR/HDR sources; preserve AMD-only Dolby Vision gate.
+
+
+## Integrated NVIDIA finalization follow-up
+
+- [x] Replace the buffer-size-only experiment with video-only NVENC encoding
+  followed by stream-copy final muxing with the original tracks (finite 10s buffer).
+- [x] Reject unsafe/unknown startup interleaving before normal CLI publication;
+  use the same 100ms guard in sample validation. Retain originals and intermediates.
+- [x] Verify actual standalone CLI execution on the saved 31s SDR reference.
+- [x] Regenerate six fixtures and four SDR/HDR HEVC/AV1 samples through the
+  integrated path; all ten tests pass. Corrected v2 samples published to local Plex.
+- [ ] Complete five-minute staged sparse-subtitle stress validation and playback
+  review of Corrected v2 files on Chrome/phone/TV before full-file certification.
+
+- [x] Five-minute final staged pipeline passes sparse/empty subtitles, packet
+  preservation, frame timing and full decode; final mux peak working set ~43 MiB.
+- [x] Final six-fixture/four-sample run passes; Corrected v3 files published.
+- [ ] Review Corrected v3 on Chrome/phone/TV and provide sufficient non-Y working
+  storage before full-movie validation (C: currently ~2.2 GiB free).
+
+## Full NVIDIA SDR file validation resumed (2026-09-05)
+
+- [x] Storage blocker cleared: C: had 44.1 GiB free before the run.
+- [x] Full Commando HEVC run and independent preservation/decode verification:
+  `reports/nvidia-full-commando-20260905-204727-7a3ce153`.
+  Uses normal standalone CLI, NVIDIA only, original resolution, no source changes.
+  Playback approval and broader HDR/AV1 coverage remain separate.
+- [x] All automated checks passed: 130,020 frames, exact audio/subtitle packets,
+  dimensions, bit depth/color, timing, chapters, interleaving and full decode.
+  Saved 26.95%; encode plus mux 575.16s (9.43x). Published full movie to local Plex.
+- [ ] Review `Commando (1985) - NVIDIA HEVC - Full Movie Verified` in Chrome,
+  on phone and TV. Git synchronization remains pending explicit authorization.
+
+- [x] User approved the full Commando output: picture looks good and audio/video
+  are synchronized. Recorded in the final report, Plex manifest and dashboard.
+  Device was not specified; Chrome/phone/TV matrix remains separate.
+
+- [x] Prepare explicit NVIDIA DV Profile 8.1 sample option; 111 tests pass,
+  generated Main10 encoder settings pass. Normal/full-file AMD gate unchanged.
+- [x] User approved portable dovi_tool 2.3.3; installed locally with release digest
+  verification. Acolyte 10s at start 0 passed NVIDIA Profile 8.1 structural checks.
+- [ ] Review the new NVIDIA DV sample on a Dolby Vision-capable device and confirm
+  DV mode, picture and sync. No full-file NVIDIA DV enablement yet.
+
+- [x] User confirmed NVIDIA Profile 8.1 sample playback passed and Dolby Vision
+  options were available. Dashboard/report updated.
+- [ ] Expand NVIDIA DV scene/source coverage and validate the full-file path
+  before changing the normal AMD-only preservation gate.
+
+- [x] Add explicit full-file NVIDIA DV research option, preserving the normal
+  AMD-only gate. 113 tests, 30s sample, and 880-frame full-path smoke pass.
+- [ ] Full Acolyte NVIDIA DV episode: reports/nvidia-dv-full-episode/
+  dv-full-20260905-220850-d5554477. Verify final report before Plex publication.
+
+- [x] Full Acolyte NVIDIA Profile 8.1 automated verification passed in
+  reports/nvidia-dv-full-episode/dv-full-20260905-220850-d5554477/
+  verification-223500-115b0a12/validation.json. Published full episode to Plex.
+  60,061 frames/RPUs verified; all tracks preserved; PCM identity proves AAC
+  duration-field rounding harmless. Output grew 179.38%; no savings claim.
+- [ ] Review full NVIDIA DV episode on TV: DV mode, picture and sync at several
+  points including near the end. Normal optimizer AMD gate remains unchanged.
+
+- [x] Record full NVIDIA DV Sony TV playback failure (black screen, clock stuck).
+  Withdraw oversized full output and completed oversized sample copies from Plex.
+- [x] Require sample savings before full NVIDIA DV execution; reject larger/equal
+  transcodes and enforce default 5% final savings. Original media always retained.
+- [ ] Establish full NVIDIA DV playback compatibility on a source that actually
+  benefits from compression; current Sony TV failure cause is unconfirmed.
