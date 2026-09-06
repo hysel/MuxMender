@@ -1,5 +1,11 @@
 # NVIDIA validation and main-repository handoff
 
+Integration update: the user authorized consolidation, pushing, and merging into main.
+The remote workflow UI changes from 32e46c3 were integrated with the tested NVIDIA
+code and preserved control-room design. Five additional scripts/modules were
+folded into existing entry points; see STANDALONE.md. The combined suite passes
+157 tests, and the control-room DOM checks and six live NVENC fixtures pass.
+
 This is the current summary; older experiment logs and chronological notes are
 historical evidence, not the current acceptance state.
 
@@ -88,9 +94,10 @@ starting offset; `-copyts` alone cannot fix undefined raw-HEVC timestamps.
 Four obsolete one-off browser/capture/interleave scripts were archived under
 `reports/handoff-nvidia/historical-diagnostics.zip` and removed from the project
 root. Their reusable sparse/empty-track checks are in the self-contained
-`staged_mux_stress.py`. Runtime modules remain separate where imports and tests
-depend on their interfaces. Further structural consolidation should be done in
-the main branch with its current changes available, not by overwriting that tree.
+`staged_mux_stress.py`. Shared mux/size logic is consolidated in mux_integrity.py. Generated fixtures
+and ordinary retained verification live in validate_nvidia.py; retained DV
+verification lives in dv_full_file.py. Hardware-specific and UI modules remain
+separate where they have distinct responsibilities.
 
 - Optional metadata enrichment for BOTH Plex and generated-file tags is planned,
   not implemented. Default off, fill missing fields, preserve user edits; resolve
@@ -113,7 +120,8 @@ the main branch with its current changes available, not by overwriting that tree
 - C:/MuxMender-Plex/65 (2023).mkv retains the approved local repaired copy.
 - Obsolete generated media was cleaned only with authorization; reports remain.
   Historical report paths may intentionally point to removed intermediates.
-- No Git command, commit, pull, push, or merge was run. Ask the user first.
+- Git consolidation/push/merge operations were explicitly authorized for this
+  integration. Future work must still respect user permission boundaries.
   Do not install/update software, open/reload VS Code, or delete other Y media.
 
 ## Evidence entry points
@@ -131,7 +139,8 @@ Workspace: `C:\Users\itama\Desktop\MuxMender-NVIDIA-365d793c`.
 Local HEAD file identifies `testing/nvidia-validation`; expected starting baseline
 was fc7fdda. This is not a clean/committed-state assertion.
 
-The handoff archive is a filesystem source snapshot, NOT a Git patch. The main
-agent must compare and merge relevant changes with its current branch, preserve
-unrelated work, and obtain permission before Git operations. Do not copy media,
-portable binaries, secrets, or all historical reports into the product repository.
+The earlier handoff archive predates consolidation. Use the integrated Git
+source for continued development. Preserve unrelated local work when updating
+another checkout. Reports/media/portable binaries stay outside version control.
+The user-approved control-room design is preserved in dashboard_ui.py, shared
+by dashboard.py and the Web UI history page; DASHBOARD.md records this requirement.

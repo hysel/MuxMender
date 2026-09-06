@@ -163,6 +163,22 @@ Research references:
 
 ## Follow-up usability/performance tasks
 
+## Approved standalone workflow / Web UI work package
+
+- [x] Reusable read-only library planner with durable per-file results and reasons.
+- [x] Localhost Web UI: paths, scans, recommendations, previews, explicit full-file approval, queue and logs (initial SDR H.264 route).
+- [x] Serialized jobs, free-space reserves, cooperative cancellation, interrupted-job detection; no silent CPU fallback.
+- [x] Windows prerequisite script: detect first, confirm each install; never install drivers automatically.
+- [x] Automated security/safety tests and end-user documentation.
+- [x] Handle bounded initial H.264 B-frame DTS omissions using matching decoded PTS and regression tests; retain blocks for unexplained gaps and missing PTS.
+- [x] Add recommendation/path filtering to large saved scans with stable row identity and filtered pagination.
+- [x] Show later validation, playback approval and removed outputs without rewriting earlier failures.
+- [x] Prepare generic NVIDIA validation handoff (NVIDIA-HANDOFF.md).
+- [ ] Browser visual QA when requested.
+- [ ] Continue hardware validation: generic NVIDIA, then Intel and TrueNAS.
+- Full episodes may be converted into separate outputs. NEVER delete, overwrite,
+  rename, or move original media. Git and driver/install actions still require approval.
+
 - [x] Local read-only dashboard: live progress, stage ETA, persistent job history,
   expandable logs, and automatic tracking of standalone CLI runs. See DASHBOARD.md.
 

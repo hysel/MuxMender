@@ -114,7 +114,7 @@ cleanliness check. The five requested project instruction documents were read.
   required approved execution outside the sandbox; nothing was installed.
 - HEVC, AV1 and H.264 NVENC are listed. HEVC/AV1 were actually tested; H.264 was
   not. AMF/QSV and software encoders are also listed, not hardware-validated here.
-- `nvidia_validation.py` is a standalone, standard-library test runner. It uses
+- `validate_nvidia.py` includes the standard-library generated test runner. It uses
   the existing MuxMender encoder selection and command builder, and registers
   its progress/log with `job_tracking`. Product encoding and DV gates are unchanged.
 - Each fixture is two seconds / 48 frames at 24 fps, with generated PCM audio,

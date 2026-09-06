@@ -1,10 +1,33 @@
 # Standalone usage and recovery
 
+## Consolidated entry points
+
+- `python muxmender.py`: analysis and optimization, including clean output names
+  and optional video-only folders.
+- `python validate_nvidia.py`: generated hardware tests and optional real samples.
+- `python validate_nvidia.py verify-full SOURCE RUN --job JOB`: retained ordinary
+  NVIDIA full-file verification; no encoding or source changes.
+- `python dv_full_file.py --verify-existing RUN`: retained experimental DV
+  verification. The same script owns experimental full-file DV execution.
+- `python staged_mux_stress.py --ordered-dv`: self-contained sparse/empty-track
+  mux regression. This generated SDR fixture tests mux behavior, not DV metadata.
+- `python dashboard.py`: the approved control room. `python webui.py` provides
+  the library workflow and uses the same control room at `/history`.
+
+Shared mux ordering and size acceptance now live in `mux_integrity.py`.
+The former `nvidia_mux.py`, `optimization_acceptance.py`, `nvidia_validation.py`,
+`verify_nvidia_full_file.py`, and `verify_dv_existing.py` entry points were folded
+into the modules above. Update external scripts to the documented commands.
+
 MuxMender is a Python command-line tool. VS Code and its extension are optional
 development interfaces, not end-user requirements. Python 3.10+ and FFmpeg /
 FFprobe are required. No installer or driver is run automatically.
 
 ## Live job dashboard
+
+For the interactive local workflow (scan, approve previews/full episodes, queue,
+cancel, and review results), run `python webui.py` and open http://127.0.0.1:8766.
+See [WEBUI.md](WEBUI.md) for safety boundaries and setup instructions.
 
 Run `python dashboard.py` and open http://127.0.0.1:8765 for progress, stage ETA,
 history, results, and logs. New command-line jobs are recorded automatically.
@@ -105,6 +128,15 @@ TB, and percent. JSON reports include `savings_summary` with exact byte totals.
 Only accepted outputs count; the percentage uses their combined original size,
 not an average of file percentages. Retained originals and intermediates still
 occupy storage, so this is not a measurement of disk space reclaimed.
+
+Ordinary transcodes now perform a read-only preflight, including dry runs.
+Unspecified color primaries/transfer/matrix/range produce `needs-review` before
+creating media output. Otherwise, up to 256 video packets at the start, middle,
+and near the end are checked for missing/nonfinite PTS/DTS and non-increasing
+DTS. Reordered PTS from B-frames are allowed. This is a conservative sampled
+check, not full-file timing or color validation. A review block returns exit
+code 1 and records the reason in `--report`; other files can still be processed.
+Remux/copy and specialized Dolby Vision workflows keep their separate rules.
 
 ### Opt-in Dolby Vision Profile 8.1 preservation
 

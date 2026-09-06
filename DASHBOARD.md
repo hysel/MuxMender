@@ -1,5 +1,15 @@
 # Local job dashboard
 
+## Preserved control-room design
+
+The user explicitly approved the control-room design in `dashboard_ui.py` and
+requested that it persist in the main repository. Keep its layout, visual
+hierarchy, stationary completed-work bars, and text-only stage updates when
+extending the product. The standalone monitor and Web UI history route share
+this same template. Do not substitute the older job-card page during merges.
+`tests/dashboard_ui_test.js` covers its DOM behavior; review visual changes
+explicitly rather than treating them as incidental refactoring.
+
 The dashboard now has a focused current-run panel, capability checks, sample
 size/speed results, and searchable/filterable compact job history. Details and
 logs open on demand. It uses only local Python/HTML/CSS/JavaScript, with no CDN

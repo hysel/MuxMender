@@ -20,9 +20,11 @@ classifiers = [
 muxmender = "muxmender:cli"
 muxmender-dashboard = "dashboard:main"
 muxmender-validate-nvidia = "validate_nvidia:cli"
+muxmender-webui = "webui:main"
+muxmender-plan = "library_planner:main"
 
 [tool.setuptools]
-py-modules = ["muxmender", "native_pipeline", "runtime_support", "streaming_pipeline", "job_tracking", "dashboard", "run_logged", "dv_full_file", "dv_preservation_test", "validate_nvidia", "nvidia_validation", "dashboard_ui", "mux_integrity", "nvidia_mux", "dv_nvidia_validation", "optimization_acceptance"]
+py-modules = ["muxmender", "native_pipeline", "runtime_support", "streaming_pipeline", "job_tracking", "dashboard", "run_logged", "dv_full_file", "dv_preservation_test", "validate_nvidia", "dashboard_ui", "mux_integrity", "dv_nvidia_validation", "media_preflight", "library_planner", "workflow_worker", "webui", "webui_page", "audio_validation", "revalidate_output"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
