@@ -56,7 +56,7 @@ foreach ($tool in @('ffmpeg','ffprobe')) {
 }
 Write-Host 'Native Dolby Vision helpers and dovi_tool are optional and are not installed here.'
 if ($pythonExe -and (Get-Command ffmpeg -ErrorAction SilentlyContinue) -and (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
-    & $pythonExe (Join-Path $PSScriptRoot 'muxmender.py') --check-dependencies --hardware auto
+    & $pythonExe (Join-Path $PSScriptRoot '../python/muxmender.py') --check-dependencies --hardware auto
     if ($LASTEXITCODE -ne 0) { Write-Warning 'Dependency/hardware inspection needs attention; do not start encoding yet.' }
 }
-Write-Host 'To open the local workflow: python webui.py'
+Write-Host 'To open the local workflow: python python/webui.py'

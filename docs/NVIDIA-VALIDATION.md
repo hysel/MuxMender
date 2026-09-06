@@ -62,7 +62,7 @@ Historical results below predate the interleaving guard and are superseded.
 
 ## Update: standalone validation and dashboard
 
-`python validate_nvidia.py "SDR-FILE" --hdr-source "PQ-FILE"` now runs generated
+`python python/validate_nvidia.py "SDR-FILE" --hdr-source "PQ-FILE"` now runs generated
 fixtures first, then separately saved samples, with automatic installed-tool
 discovery and per-capability results. See STANDALONE.md for bounds and controls.
 
@@ -160,7 +160,7 @@ packet/stream probes. Tracked terminal log:
 `reports/job-20260905-154859-89a05b7d/terminal.log`.
 
 The local read-only dashboard at http://127.0.0.1:8765 was started and its API
-verified to show this completed job and log. Restart with `python dashboard.py`
+verified to show this completed job and log. Restart with `python python/dashboard.py`
 if its server is no longer running.
 
 Two earlier runs are retained for diagnosis:

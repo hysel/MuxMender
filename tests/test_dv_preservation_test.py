@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 from pathlib import Path
-from test_muxmender import sample
+from tests.test_muxmender import sample
 from dv_preservation_test import require_candidate, validate_timeline, run, static_hdr, compare_static_hdr, canonical_rpu, experimental_encoder_options
 from dv_preservation_test import sample_encoder_options, require_nvidia_frames
 

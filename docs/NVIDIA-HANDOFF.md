@@ -2,8 +2,8 @@
 
 Integration update: the user authorized consolidation, pushing, and merging into main.
 The remote workflow UI changes from 32e46c3 were integrated with the tested NVIDIA
-code and preserved control-room design. Five additional scripts/modules were
-folded into existing entry points; see STANDALONE.md. The combined suite passes
+code and preserved control-room design. Ten root scripts/modules were folded into existing entry points or the dedicated
+ui package across two passes; see STANDALONE.md. The combined suite passes
 157 tests, and the control-room DOM checks and six live NVENC fixtures pass.
 
 This is the current summary; older experiment logs and chronological notes are
@@ -96,8 +96,11 @@ Four obsolete one-off browser/capture/interleave scripts were archived under
 root. Their reusable sparse/empty-track checks are in the self-contained
 `staged_mux_stress.py`. Shared mux/size logic is consolidated in mux_integrity.py. Generated fixtures
 and ordinary retained verification live in validate_nvidia.py; retained DV
-verification lives in dv_full_file.py. Hardware-specific and UI modules remain
-separate where they have distinct responsibilities.
+verification lives in dv_full_file.py. Audio rounding and media preflight checks also live in mux_integrity.py; DV
+packet/frame checks live in dv_full_file.py. All HTML/CSS/JavaScript design
+assets are grouped in python/ui/__init__.py, shared by the two standalone servers.
+Ten former root modules have been consolidated into existing logic or this
+dedicated UI package across the two integration passes.
 
 - Optional metadata enrichment for BOTH Plex and generated-file tags is planned,
   not implemented. Default off, fill missing fields, preserve user edits; resolve
@@ -142,5 +145,14 @@ was fc7fdda. This is not a clean/committed-state assertion.
 The earlier handoff archive predates consolidation. Use the integrated Git
 source for continued development. Preserve unrelated local work when updating
 another checkout. Reports/media/portable binaries stay outside version control.
-The user-approved control-room design is preserved in dashboard_ui.py, shared
+The user-approved control-room design is preserved in python/ui/__init__.py, shared
 by dashboard.py and the Web UI history page; DASHBOARD.md records this requirement.
+
+## Final repository organization
+
+Runtime Python lives in `python/`, shared design in `python/ui/`, Windows helpers
+in `powershell/`, and guides in `docs/`. README, license and project configuration
+remain at the root. Commands and optional editor discovery follow this layout.
+After relocation: 157 unit tests, exact page-template comparisons, CLI/import
+checks and all six live NVENC fixtures passed. Final fixture report:
+`reports/nvidia-validation-20260906-165344-d097f4e0/REPORT.md`.

@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
-from media_preflight import conversion_preflight, inspect_packets, verified_reorder_prefix
+from mux_integrity import conversion_preflight, inspect_packets, verified_reorder_prefix
 
 
 class PreflightTests(unittest.TestCase):

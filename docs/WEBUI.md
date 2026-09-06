@@ -4,11 +4,11 @@ Requires Python 3.10+ and FFmpeg/FFprobe. No Node, VS Code, Plex or web framewor
 is required at runtime. From the project folder:
 
 ```powershell
-python webui.py
+python python/webui.py
 ```
 
 Open http://127.0.0.1:8766. The original read-only dashboard remains available
-via `python dashboard.py` on port 8765. The Web UI includes a link to historical
+via `python python/dashboard.py` on port 8765. The Web UI includes a link to historical
 jobs and reads prior `reports/**/files.jsonl` inventories, including the TV scan.
 Use `--ffmpeg PATH --ffprobe PATH` when the executables are not on PATH.
 Use `--root PATH` for a separate project/report root and `--port NUMBER` to change
@@ -81,7 +81,7 @@ count accepted rounded durations. These extra full-track reads may take minutes.
 To revalidate an existing full-file Web UI output without encoding again:
 
 ```powershell
-python revalidate_output.py reports/webui-jobs/JOB_ID
+python python/revalidate_output.py reports/webui-jobs/JOB_ID
 ```
 
 This writes a fresh report and a dashboard history job, leaving the original
@@ -121,7 +121,7 @@ second machine. No Git transfer or NVIDIA execution is implied by that checklist
 ## Read-only CLI planner
 
 ```powershell
-python library_planner.py "Y:\TV"
+python python/library_planner.py "Y:\TV"
 ```
 
 Writes a unique local report directory with `files.jsonl` and `summary.json`.
@@ -134,9 +134,9 @@ Savings estimates remain null until actual matched-segment tests are performed.
 ## Setup
 
 ```powershell
-.\setup-windows.ps1                 # audit only
-.\setup-windows.ps1 -Install        # confirmation before each package
-.\setup-windows.ps1 -Install -IncludeGit
+.\powershell\setup-windows.ps1                 # audit only
+.\powershell\setup-windows.ps1 -Install        # confirmation before each package
+.\powershell\setup-windows.ps1 -Install -IncludeGit
 ```
 
 If PowerShell blocks script execution, inspect the file and follow your Windows

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from mux_integrity import savings_decision, savings_summary
 import dv_full_file as full
-from test_muxmender import sample
+from tests.test_muxmender import sample
 
 
 class AcceptanceTests(unittest.TestCase):

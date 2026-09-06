@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from native_pipeline import allow_cpu, encode_command, progress, remux_command, stage, validate_options, video_payload, comparison_window, matching_timeline
 from muxmender import parse_args
-from test_muxmender import sample
+from tests.test_muxmender import sample
 
 
 class NativePipelineTests(unittest.TestCase):

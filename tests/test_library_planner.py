@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from library_planner import classify,enumerate_media,scan,probe_with_frame_color
-from test_muxmender import sample
+from tests.test_muxmender import sample
 
 
 class PlannerTests(unittest.TestCase):

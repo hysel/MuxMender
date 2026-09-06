@@ -356,7 +356,7 @@ def main():
     parser.add_argument('--work-dir', type=Path, default=Path('reports'))
     parser.add_argument('--ffmpeg', default='ffmpeg')
     parser.add_argument('--ffprobe', default='ffprobe')
-    parser.add_argument('--dovi-tool', default=str(Path(__file__).parent / 'tools/dovi_tool-2.3.3/dovi_tool.exe'))
+    parser.add_argument('--dovi-tool', default=str(Path(__file__).parent.parent / 'tools/dovi_tool-2.3.3/dovi_tool.exe'))
     return run(parser.parse_args())
 
 

@@ -6,7 +6,7 @@ from pathlib import Path
 import muxmender as mm
 import native_pipeline as np
 from streaming_pipeline import pipe_encode, source_stream_packets, run, full_range, full_remux_command, RunGuard
-from test_muxmender import sample
+from tests.test_muxmender import sample
 from types import SimpleNamespace
 import tempfile
 

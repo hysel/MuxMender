@@ -1,4 +1,4 @@
-do# MuxMender
+# MuxMender
 
 MuxMender recursively analyzes a media library and creates a safe optimization plan. It can transcode inefficient video streams to HEVC or AV1 while preserving the original resolution and copying audio, subtitles, attachments, metadata, and chapters.
 
@@ -15,25 +15,25 @@ The default is a **dry run**. Originals are retained during normal execution and
 Analyze a library and show the proposed commands without changing anything:
 
 ```powershell
-python muxmender.py "D:\Media"
+python python/muxmender.py "D:\Media"
 ```
 
 Save a machine-readable report:
 
 ```powershell
-python muxmender.py "D:\Media" --report analysis.json
+python python/muxmender.py "D:\Media" --report analysis.json
 ```
 
 Create HEVC/MKV sidecar files using the balanced quality profile:
 
 ```powershell
-python muxmender.py "D:\Media" --execute
+python python/muxmender.py "D:\Media" --execute
 ```
 
 Use AV1 and mirror output into a separate directory:
 
 ```powershell
-python muxmender.py "D:\Media" --codec av1 --quality balanced --output-dir "E:\Optimized" --execute
+python python/muxmender.py "D:\Media" --codec av1 --quality balanced --output-dir "E:\Optimized" --execute
 ```
 
 ## Safety behavior
@@ -58,7 +58,7 @@ Efficient video that is already HEVC or AV1 is not needlessly re-encoded. If nec
 ## Full options
 
 ```powershell
-python muxmender.py --help
+python python/muxmender.py --help
 ```
 
 ## Important limitations
@@ -67,3 +67,15 @@ python muxmender.py --help
 - HDR color tags are carried into the encode, but HDR10 static metadata preservation varies by FFmpeg build and input. Review HDR output and retain the source.
 - Dolby Vision requires a specialized workflow and is intentionally not automated.
 - Copied lossless audio preserves quality and formats such as TrueHD/Atmos, but it also limits potential space savings.
+
+## Repository layout
+
+- `python/`: standalone Python commands and shared logic.
+- `python/ui/`: shared control-room and workflow design (HTML/CSS/JavaScript).
+- `powershell/`: Windows setup and optional integration helpers.
+- `docs/`: usage, hardware validation and handoff documentation.
+- `tests/`: regression tests; run `python -m unittest discover` from the repository root.
+- `native/` and `vscode-extension/`: optional integrations.
+
+Start with [standalone usage](docs/STANDALONE.md), [local workflow](docs/WEBUI.md),
+or the [NVIDIA handoff](docs/NVIDIA-HANDOFF.md). All commands run from the repository root.
