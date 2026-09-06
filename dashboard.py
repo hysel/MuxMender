@@ -78,6 +78,50 @@ def contained(path, root):
         return False
 
 
+def latest_outcome(directory,root):
+    """Read append-only validation/review records; never rewrite execution history."""
+    candidates=[]
+    for path in [directory/'validation.json',*directory.glob('revalidation-*.json')]:
+        if not contained(path,root):continue
+        report=read_json(path)
+        if report:
+            stamp=report.get('finished',path.stat().st_mtime)
+            if isinstance(stamp,(int,float)):
+                candidates.append((stamp,path.name,report))
+    if not candidates:return {},False
+    _,name,report=max(candidates,key=lambda item:(item[0],item[1]))
+    review=read_json(directory/'playback-review.json') if contained(directory/'playback-review.json',root) else {}
+    approved=(review.get('approved') is True and review.get('validation_report')==name
+              and str(report.get('status','')).startswith('verified'))
+    return report,approved
+
+
+def apply_outcome(data,directory,root):
+    if data.get('state') in ('running','queued','cancelling'):return data
+    report,approved=latest_outcome(directory,root)
+    if not report:return data
+    data=dict(data)
+    initial=read_json(directory/'job.json')
+    data['execution_state']=initial.get('state')
+    data['execution_error']=initial.get('error')
+    data['result']=report
+    data['state']='playback-approved' if approved else ('verified' if str(report.get('status','')).startswith('verified') else report.get('status',data.get('state')))
+    data['phase']='Playback approved' if approved else report.get('status',data.get('phase'))
+    data['error']=report.get('error')
+    output=report.get('output')
+    if output:
+        target=Path(output)
+        if not target.is_absolute():target=root/target
+        missing=contained(target,root) and not target.is_file()
+        data['output_state']='Not present (historical result retained)' if missing else 'Available' if contained(target,root) else 'Outside project (not checked)'
+        if missing:data['phase']+=' · output removed/not present'
+    if data['execution_error'] and not data.get('error'):
+        data['error']='Earlier execution: '+str(data['execution_error'])+' (retained history; latest validation passed)'
+    if approved or data['state']=='verified':data['percent']=100
+    data['awaiting_playback']=not approved and 'awaiting' in str(report.get('status'))
+    return data
+
+
 class Catalog:
     def __init__(self, root):
         self.root = Path(root).resolve()
@@ -114,7 +158,7 @@ class Catalog:
                 if not contained(run, self.root):
                     run = directory
                 status = self.read(run/'status.json')
-                report = self.read(run/'validation.json')
+                report, _ = latest_outcome(run,self.root)
                 publication = self.read(run/'publication.json')
                 logpath = directory/'terminal.log'
                 if not logpath.is_file():
@@ -160,7 +204,7 @@ class Catalog:
                 if log and contained(logpath, self.root):
                     logs[identifier] = logpath
                 title = job.get('title') or ('Full Dolby Vision preservation' if directory.name.startswith('dv-full-') else report.get('scope')) or directory.name
-                jobs.append(dict(id=identifier, title=title,
+                jobs.append(apply_outcome(dict(id=identifier, title=title,
                     directory=str(directory.relative_to(self.root)), state=state, phase=phase, percent=percent,
                     stage_eta=parsed.get('stage_eta') if state == 'running' else None,
                     progress_label=parsed.get('progress_label'), updated=updated, started=started,
@@ -168,7 +212,7 @@ class Catalog:
                     source=report.get('source'), output=output, output_state=output_state,
                     savings=publication.get('video_savings_percent', report.get('video_savings_percent',report.get('video_payload_saving_percent'))),
                     error=report.get('error'), has_log=identifier in logs,
-                    awaiting_playback='awaiting' in str(phase), original_unchanged=report.get('original_stat_unchanged')))
+                    awaiting_playback='awaiting' in str(phase), original_unchanged=report.get('original_stat_unchanged',report.get('media_stat_unchanged'))),run,self.root))
             self.jobs = sorted(jobs, key=lambda j:(j['state']=='running', j['started'] or j['updated']), reverse=True)
             self.logs = logs
             self.cached_at = time.time()
@@ -217,6 +261,8 @@ def make_handler(catalog):
 HTML = r'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MuxMender · Jobs</title><style>
 :root{color-scheme:dark;font-family:system-ui,sans-serif;background:#10151d;color:#edf3fa;font-size:16px}*{box-sizing:border-box}body{margin:0}header{border-bottom:1px solid #334151;padding:24px 5%;display:flex;align-items:center;gap:20px;flex-wrap:wrap}h1{font-size:24px;margin:0}header span{color:#acbacb}main{max-width:1400px;margin:auto;padding:28px 5%}.summary{display:flex;gap:32px;flex-wrap:wrap;margin-bottom:28px}.summary strong{font-size:30px;display:block}.summary span,.muted{color:#aebdce}.notice{border-left:3px solid #56d6ad;padding:8px 16px;margin-bottom:24px;color:#bdcbd9}article{border:1px solid #344353;border-radius:10px;background:#18212c;margin:0 0 18px;padding:22px}article.running{border-left:4px solid #56d6ad}.row{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}h2{font-size:18px;margin:0;overflow-wrap:anywhere}.badge{border:1px solid #597086;border-radius:30px;padding:4px 12px;font-size:14px}.running .badge{color:#77edc4}.failed .badge,.interrupted .badge{color:#ffb3a7}.phase{margin:18px 0 10px;color:#d3deeb}.meter{display:flex;align-items:center;gap:14px}progress{width:100%;height:15px;accent-color:#56d6ad}.metrics{display:flex;gap:24px;flex-wrap:wrap;font-size:14px;color:#b6c7d9;margin-top:12px}details{margin-top:18px;font-size:14px}summary,button{cursor:pointer}dl{display:grid;grid-template-columns:130px 1fr;gap:10px}dt{color:#aebdce}dd{margin:0;overflow-wrap:anywhere}button{border:1px solid #70859a;background:#263648;color:#eef5ff;padding:8px 14px;border-radius:5px;font:inherit}pre{background:#0c1118;border:1px solid #344353;padding:14px;max-height:320px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.5 monospace}#connection{margin-left:auto;font-size:14px}#error{color:#ffc0b3}footer{font-size:14px;color:#adbed0;padding:12px 0 24px}@media(max-width:600px){main{padding:20px 16px}article{padding:16px}dl{grid-template-columns:1fr}dd{margin-bottom:10px}.summary{gap:20px}}
+/* Text-only job status; shared by the queue and history views. */
+progress{display:none}
 </style><header><h1>MuxMender</h1><span>Job monitor</span><span id="connection" role="status">Connecting…</span></header>
 <main><div class="summary" id="summary"></div><div class="notice">Local, read-only monitoring. Original media is never changed by this dashboard.</div><p id="error" role="alert"></p><section id="jobs" aria-label="Jobs"><p>Loading job history…</p></section><footer>Refreshes every 3 seconds. ETA is for the current stage, not the entire workflow. Verification does not replace playback review.</footer></main>
 <script>

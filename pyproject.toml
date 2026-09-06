@@ -19,9 +19,11 @@ classifiers = [
 [project.scripts]
 muxmender = "muxmender:cli"
 muxmender-dashboard = "dashboard:main"
+muxmender-webui = "webui:main"
+muxmender-plan = "library_planner:main"
 
 [tool.setuptools]
-py-modules = ["muxmender", "native_pipeline", "runtime_support", "streaming_pipeline", "job_tracking", "dashboard", "run_logged", "dv_full_file", "dv_preservation_test"]
+py-modules = ["muxmender", "native_pipeline", "runtime_support", "streaming_pipeline", "job_tracking", "dashboard", "run_logged", "dv_full_file", "dv_preservation_test", "media_preflight", "library_planner", "workflow_worker", "webui", "webui_page", "audio_validation", "revalidate_output"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
