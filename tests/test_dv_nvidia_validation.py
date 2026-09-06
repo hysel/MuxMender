@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from dv_nvidia_validation import compare_frames, validate_source_frames, grouped_packets, compare_track_packets
+from dv_full_file import compare_frames, validate_source_frames, grouped_packets, compare_track_packets
 
 
 def record(pts, red='35400/50000', extra=''):

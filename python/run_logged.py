@@ -24,7 +24,7 @@ class Tee:
 
 
 if __name__ == '__main__':
-    folder = Path(__file__).resolve().parent / 'reports'
+    folder = Path(__file__).resolve().parent.parent / 'reports'
     folder.mkdir(exist_ok=True)
     path = folder / ('run-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8] + '.log')
     terminal_out, terminal_err = sys.stdout, sys.stderr

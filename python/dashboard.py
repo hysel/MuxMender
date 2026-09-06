@@ -1,4 +1,6 @@
 """Read-only localhost dashboard for MuxMender. Python standard library only."""
+
+from ui import HTML
 import argparse
 import ctypes
 import hashlib
@@ -272,12 +274,11 @@ def make_handler(catalog):
     return Handler
 
 
-from dashboard_ui import HTML
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parent)
+    parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument('--port', type=int, default=8765)
     args = parser.parse_args()
     server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(Catalog(args.root)))

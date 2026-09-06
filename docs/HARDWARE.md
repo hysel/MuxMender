@@ -5,11 +5,11 @@ NVENC, or Intel Quick Sync when both the matching display adapter and FFmpeg
 encoder are present. If no supported GPU is detected, it uses the CPU encoder.
 
 ```powershell
-python muxmender.py "D:\Media" --execute --hardware auto
-python muxmender.py "D:\Media" --execute --hardware amd
-python muxmender.py "D:\Media" --execute --hardware nvidia
-python muxmender.py "D:\Media" --execute --hardware intel
-python muxmender.py "D:\Media" --execute --hardware cpu
+python python/muxmender.py "D:\Media" --execute --hardware auto
+python python/muxmender.py "D:\Media" --execute --hardware amd
+python python/muxmender.py "D:\Media" --execute --hardware nvidia
+python python/muxmender.py "D:\Media" --execute --hardware intel
+python python/muxmender.py "D:\Media" --execute --hardware cpu
 ```
 
 ## Requirements

@@ -168,7 +168,7 @@ def compare_sample(before, after, before_frames, after_frames, codec):
 class Validation:
     def __init__(self, args):
         self.args = args
-        self.root = Path(__file__).resolve().parent
+        self.root = Path(__file__).resolve().parent.parent
         self.directory = self.root / 'reports' / ('nvidia-validation-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
         self.directory.mkdir(parents=True, exist_ok=False)
         self.completed = 0
@@ -452,7 +452,7 @@ def validate_generated_fixtures(argv=None, run_directory=None, progress_callback
     parser.add_argument('--ffprobe', required=True)
     parser.add_argument('--gpu', type=int, default=0)
     args = parser.parse_args(argv)
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parent.parent
     run = Path(run_directory) if run_directory else root / 'reports' / ('nvidia-fixtures-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
     run.mkdir(parents=True, exist_ok=False)
     report = dict(scope='Generated fixtures only; no Dolby Vision or static HDR metadata validation; no visual-quality equivalence claim.', results=[])

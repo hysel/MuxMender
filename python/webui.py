@@ -16,7 +16,7 @@ from urllib.parse import urlparse,parse_qs
 import uuid
 from dashboard import Catalog,HTML as HISTORY_HTML,alive,contained,read_json,tail,progress,apply_outcome
 from workflow_worker import save
-from webui_page import PAGE
+from ui import PAGE
 
 
 class ControllerLock:
@@ -276,7 +276,7 @@ def handler(manager):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--root',type=Path,default=Path(__file__).resolve().parent)
+    parser.add_argument('--root',type=Path,default=Path(__file__).resolve().parent.parent)
     parser.add_argument('--port',type=int,default=8766)
     parser.add_argument('--ffmpeg',default='ffmpeg');parser.add_argument('--ffprobe',default='ffprobe')
     args=parser.parse_args()

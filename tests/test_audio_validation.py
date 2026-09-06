@@ -1,6 +1,6 @@
 import copy
 import unittest
-from audio_validation import normalize_rounding
+from mux_integrity import normalize_rounding
 from workflow_worker import compare_packets
 
 

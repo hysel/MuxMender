@@ -64,7 +64,7 @@ def tracked_call(function, title, folder=None):
             stream.reconfigure(encoding='utf-8', errors='backslashreplace')
     from run_logged import Tee
     try:
-        job = Job(folder or Path(__file__).resolve().parent / 'reports', title)
+        job = Job(folder or Path(__file__).resolve().parent.parent / 'reports', title)
         log = (job.directory / 'terminal.log').open('x', encoding='utf-8')
     except OSError as exc:
         print(f'Dashboard logging unavailable: {exc}', file=sys.stderr)

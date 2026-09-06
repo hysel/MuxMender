@@ -159,7 +159,7 @@ probe did not advertise it. The smoke comparison preserved those values exactly.
 Standalone command, dry run by default:
 
 ```powershell
-python -u dv_full_file.py "Y:\TV\path\episode.mkv" --qp-i 21 --qp-p 23
+python -u python/dv_full_file.py "Y:\TV\path\episode.mkv" --qp-i 21 --qp-p 23
 ```
 
 Add `--execute` to run. Explicit `--ffmpeg`, `--ffprobe`, `--dovi-tool` and
@@ -213,7 +213,7 @@ changes are rejected. This changes verification, not the audio or its timing.
 115 tests pass, including negative cases for missing/reordered/changed packets.
 
 The first full run and its failed strict comparison report are retained.
-`python dv_full_file.py --verify-existing RUN_DIRECTORY` continues verification of that retained
+`python python/dv_full_file.py --verify-existing RUN_DIRECTORY` continues verification of that retained
 NVIDIA output without re-encoding: current source bitstream identity, original
 tracks/chapters, complete RPU content/order, every decoded frame/static HDR value,
 and full output audio/video decode. A new report directory preserves provenance.

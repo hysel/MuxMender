@@ -2,7 +2,7 @@
 
 ## Preserved control-room design
 
-The user explicitly approved the control-room design in `dashboard_ui.py` and
+The user explicitly approved the control-room design in `python/ui/__init__.py` and
 requested that it persist in the main repository. Keep its layout, visual
 hierarchy, stationary completed-work bars, and text-only stage updates when
 extending the product. The standalone monitor and Web UI history route share
@@ -28,7 +28,7 @@ keep their original status. Unicode filenames are supported by shared CLI loggin
 From the MuxMender project directory:
 
 ```powershell
-python dashboard.py
+python python/dashboard.py
 ```
 
 Open http://127.0.0.1:8765. Keep this process running while monitoring;

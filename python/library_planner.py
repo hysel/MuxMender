@@ -109,7 +109,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source',type=Path)
     parser.add_argument('--ffprobe',default='ffprobe')
-    parser.add_argument('--reports',type=Path,default=Path(__file__).resolve().parent/'reports')
+    parser.add_argument('--reports',type=Path,default=Path(__file__).resolve().parent.parent/'reports')
     args=parser.parse_args()
     from job_tracking import tracked_call,phase
     from runtime_support import TerminalProgress

@@ -8,7 +8,7 @@ import shutil
 import time
 import muxmender as mm
 import native_pipeline as np
-from media_preflight import conversion_preflight
+from mux_integrity import conversion_preflight
 from library_planner import scan, classify, probe_with_frame_color
 from streaming_pipeline import chapter_summary
 
@@ -118,7 +118,7 @@ def compare_media_packets(ffprobe,source,output,selector,guard=lambda:None):
                 '-of','json',str(path)],timeout=600)
         original_decode=decoded(source);guard()
         output_decode=decoded(output);guard()
-        from audio_validation import normalize_rounding
+        from mux_integrity import normalize_rounding
         left,right,rounded=normalize_rounding(left,right,original_decode,output_decode)
         inferred=compare_packets(left,right,infer_audio_duration=True)
     return dict(packets=len(left),streams=sorted(set(p['stream_index'] for p in left)),

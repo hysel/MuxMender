@@ -24,7 +24,10 @@ muxmender-webui = "webui:main"
 muxmender-plan = "library_planner:main"
 
 [tool.setuptools]
-py-modules = ["muxmender", "native_pipeline", "runtime_support", "streaming_pipeline", "job_tracking", "dashboard", "run_logged", "dv_full_file", "dv_preservation_test", "validate_nvidia", "dashboard_ui", "mux_integrity", "dv_nvidia_validation", "media_preflight", "library_planner", "workflow_worker", "webui", "webui_page", "audio_validation", "revalidate_output"]
+package-dir = {"" = "python"}
+packages = ["ui"]
+py-modules = ["muxmender", "native_pipeline", "runtime_support", "streaming_pipeline", "job_tracking", "dashboard", "run_logged", "dv_full_file", "dv_preservation_test", "validate_nvidia", "mux_integrity", "library_planner", "workflow_worker", "webui", "revalidate_output"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["python"]

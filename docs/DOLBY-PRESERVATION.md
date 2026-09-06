@@ -7,7 +7,7 @@ re-encoding. All original files remain read-only; no files are removed.
 Example (dry run; add `--execute` to encode):
 
 ```powershell
-python -u dv_preservation_test.py "Y:\TV\path\episode.mkv" --start 300 --seconds 30
+python -u python/dv_preservation_test.py "Y:\TV\path\episode.mkv" --start 300 --seconds 30
 ```
 
 Use `--ffmpeg`, `--ffprobe`, and `--dovi-tool` for explicit tool paths.

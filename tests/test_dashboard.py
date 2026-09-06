@@ -137,7 +137,7 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(job['phase'], 'Checking output')
 
     def test_dashboard_has_no_animated_progress(self):
-        from dashboard_ui import HTML
+        from dashboard import HTML
         self.assertNotIn('<progress', HTML)
         self.assertNotIn('@keyframes', HTML)
         self.assertNotIn('animation:', HTML)

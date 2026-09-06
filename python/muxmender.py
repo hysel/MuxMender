@@ -997,14 +997,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--streaming-delivery-test", action="store_true", help="experimental 1..60 second DV-to-PQ test piped directly to HEVC; no lossless disk intermediates")
     parser.add_argument("--full-file-streaming", action="store_true", help="explicit whole-file DV5-to-PQ conversion; requires hdr-preview and d3d11; originals always retained")
     parser.add_argument("--preserve-dolby-vision", action="store_true", help="opt-in experimental full-file Profile 8.1 preservation; single file, AMD HEVC only, no resizing")
-    parser.add_argument("--dovi-tool", default=str(Path(__file__).resolve().parent / "tools/dovi_tool-2.3.3/dovi_tool.exe"), help="path to dovi_tool for opt-in Dolby Vision preservation")
+    parser.add_argument("--dovi-tool", default=str(Path(__file__).resolve().parent.parent / "tools/dovi_tool-2.3.3/dovi_tool.exe"), help="path to dovi_tool for opt-in Dolby Vision preservation")
     parser.add_argument("--dv-qp-i", type=int, default=21)
     parser.add_argument("--dv-qp-p", type=int, default=23)
     parser.add_argument("--max-runtime-hours", type=float, default=12, help="streaming encoding time limit (default: 12 hours)")
     parser.add_argument("--dolby-preview-backend", choices=("vulkan", "d3d11"), default="vulkan",
                         help="explicit experimental D3D11 backend: single-file, video-only SDR diagnostic")
     parser.add_argument("--d3d11-helper", type=Path,
-                        default=Path(__file__).resolve().parent / "native/muxmender-d3d11/build/preview/muxmender-dv-preview.exe")
+                        default=Path(__file__).resolve().parent.parent / "native/muxmender-d3d11/build/preview/muxmender-dv-preview.exe")
     parser.add_argument("--codec", choices=("auto", "hevc", "av1"), default="auto")
     parser.add_argument(
         "--resolution",
@@ -1288,7 +1288,7 @@ def main(argv: list[str] | None = None) -> int:
             entry: dict[str, Any] = asdict(info)
             entry["status"] = info.recommendation
             if info.recommendation == "transcode":
-                from media_preflight import conversion_preflight
+                from mux_integrity import conversion_preflight
                 preflight = conversion_preflight(info, args.ffprobe, run_json)
                 entry["preflight"] = preflight
                 if preflight["status"] == "needs-review":

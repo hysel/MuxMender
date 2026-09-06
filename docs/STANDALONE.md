@@ -2,16 +2,16 @@
 
 ## Consolidated entry points
 
-- `python muxmender.py`: analysis and optimization, including clean output names
+- `python python/muxmender.py`: analysis and optimization, including clean output names
   and optional video-only folders.
-- `python validate_nvidia.py`: generated hardware tests and optional real samples.
-- `python validate_nvidia.py verify-full SOURCE RUN --job JOB`: retained ordinary
+- `python python/validate_nvidia.py`: generated hardware tests and optional real samples.
+- `python python/validate_nvidia.py verify-full SOURCE RUN --job JOB`: retained ordinary
   NVIDIA full-file verification; no encoding or source changes.
-- `python dv_full_file.py --verify-existing RUN`: retained experimental DV
+- `python python/dv_full_file.py --verify-existing RUN`: retained experimental DV
   verification. The same script owns experimental full-file DV execution.
-- `python staged_mux_stress.py --ordered-dv`: self-contained sparse/empty-track
+- `python python/staged_mux_stress.py --ordered-dv`: self-contained sparse/empty-track
   mux regression. This generated SDR fixture tests mux behavior, not DV metadata.
-- `python dashboard.py`: the approved control room. `python webui.py` provides
+- `python python/dashboard.py`: the approved control room. `python python/webui.py` provides
   the library workflow and uses the same control room at `/history`.
 
 Shared mux ordering and size acceptance now live in `mux_integrity.py`.
@@ -26,10 +26,10 @@ FFprobe are required. No installer or driver is run automatically.
 ## Live job dashboard
 
 For the interactive local workflow (scan, approve previews/full episodes, queue,
-cancel, and review results), run `python webui.py` and open http://127.0.0.1:8766.
+cancel, and review results), run `python python/webui.py` and open http://127.0.0.1:8766.
 See [WEBUI.md](WEBUI.md) for safety boundaries and setup instructions.
 
-Run `python dashboard.py` and open http://127.0.0.1:8765 for progress, stage ETA,
+Run `python python/dashboard.py` and open http://127.0.0.1:8765 for progress, stage ETA,
 history, results, and logs. New command-line jobs are recorded automatically.
 No VS Code or extra packages required. See [DASHBOARD.md](DASHBOARD.md).
 
@@ -38,11 +38,11 @@ No VS Code or extra packages required. See [DASHBOARD.md](DASHBOARD.md).
 ### One-command NVIDIA validation
 
 ```powershell
-python validate_nvidia.py
+python python/validate_nvidia.py
 # Add an optional SDR sample; the original file is only read:
-python validate_nvidia.py "Y:\path\movie.mkv"
+python python/validate_nvidia.py "Y:\path\movie.mkv"
 # Include a separate non-Dolby-Vision PQ sample:
-python validate_nvidia.py "Y:\path\sdr.mkv" --hdr-source "Y:\path\hdr.mkv"
+python python/validate_nvidia.py "Y:\path\sdr.mkv" --hdr-source "Y:\path\hdr.mkv"
 ```
 
 No installation is required beyond existing Python and FFmpeg/FFprobe. Tools
@@ -75,9 +75,9 @@ and FFmpeg build. It does not certify full-file reliability, hardware decoding,
 identical visual quality, or savings on other media.
 
 ```powershell
-python muxmender.py --check-dependencies --hardware auto
+python python/muxmender.py --check-dependencies --hardware auto
 # Also check the optional native Dolby Vision runtime without starting a GPU job:
-python muxmender.py --check-dependencies --hardware amd --dolby-preview-backend d3d11
+python python/muxmender.py --check-dependencies --hardware amd --dolby-preview-backend d3d11
 ```
 
 Use `--ffmpeg` and `--ffprobe` with executable paths if they are not on PATH.
@@ -111,7 +111,7 @@ retain intermediates separately under a sibling `.MuxMender-work` folder. The
 experimental full-file DV script places the output in its run's `media` subfolder,
 separate from diagnostic files. The option is disabled by default.
 
-Example: `python muxmender.py "PATH" --execute --output-dir "D:\Optimized" --video-only-folder`
+Example: `python python/muxmender.py "PATH" --execute --output-dir "D:\Optimized" --video-only-folder`
 
 External subtitle timing depends on the cut and presentation timeline, not
 video bitrate. NVIDIA full-file output preserves presentation timing; validated
@@ -146,8 +146,8 @@ audio/subtitles/chapters, validates RPU content/order, and decodes the entire
 result before acceptance. It does not guarantee identical visual quality.
 
 ```powershell
-python muxmender.py "PATH\episode.mkv" --preserve-dolby-vision --dry-run
-python muxmender.py "PATH\episode.mkv" --preserve-dolby-vision --execute --output-dir "E:\MuxMender-output"
+python python/muxmender.py "PATH\episode.mkv" --preserve-dolby-vision --dry-run
+python python/muxmender.py "PATH\episode.mkv" --preserve-dolby-vision --execute --output-dir "E:\MuxMender-output"
 ```
 
 Use `--dovi-tool PATH`, `--ffmpeg PATH`, and `--ffprobe PATH` when needed.
@@ -167,8 +167,8 @@ pipeline's four-hour timeout, not the generic hardware stall timeout. Progress
 is recorded in the local dashboard. Playback review is still required.
 
 ```powershell
-python -u muxmender.py 'Y:\TV Movies' --dry-run --report 'new-analysis.json'
-python -u muxmender.py 'Y:\TV Movies' --execute --hardware auto --output-dir 'D:\Optimized' --report 'new-run.json'
+python -u python/muxmender.py 'Y:\TV Movies' --dry-run --report 'new-analysis.json'
+python -u python/muxmender.py 'Y:\TV Movies' --execute --hardware auto --output-dir 'D:\Optimized' --report 'new-run.json'
 ```
 
 File paths work instead of folders. Dry run remains the default. Reports must
@@ -207,7 +207,7 @@ the HEVC encoder. The OS pipe provides backpressure; no lossless intermediate
 is written to disk. Logs use a separate channel from binary video.
 
 ```powershell
-python -u muxmender.py 'SOURCE.mkv' --streaming-delivery-test --dolby-preview-backend d3d11 --dolby-vision-policy hdr-preview --hardware amd --hardware-fallback never --preview-start 300 --preview-seconds 60 --output-dir test-output
+python -u python/muxmender.py 'SOURCE.mkv' --streaming-delivery-test --dolby-preview-backend d3d11 --dolby-vision-policy hdr-preview --hardware amd --hardware-fallback never --preview-start 300 --preview-seconds 60 --output-dir test-output
 # Dry run by default. Add --execute to generate a new test directory.
 ```
 
@@ -232,7 +232,7 @@ validated. Full-file streaming is not enabled by this experimental option.
 ## Explicit full-file streaming
 
 ```powershell
-python -u muxmender.py 'SOURCE.mkv' --full-file-streaming --dolby-preview-backend d3d11 --dolby-vision-policy hdr-preview --hardware amd --hardware-fallback never --output-dir 'D:\Optimized'
+python -u python/muxmender.py 'SOURCE.mkv' --full-file-streaming --dolby-preview-backend d3d11 --dolby-vision-policy hdr-preview --hardware amd --hardware-fallback never --output-dir 'D:\Optimized'
 # Review the dry-run plan, then add --execute. No preview range options allowed.
 ```
 
@@ -256,7 +256,7 @@ Packet-probe verification checks the stop request between probes, so a stop
 may wait for the current probe. Ctrl+C also stops owned encoding processes.
 No source or partial is deleted, and failed retries start in a new directory.
 
-For a persistent log as well as terminal output, use `python -u run_logged.py`
+For a persistent log as well as terminal output, use `python -u python/run_logged.py`
 with the same arguments. It creates a new log under `reports/` and requires no
 VS Code. A long run is not successful until its final validation status says
 `verified-full-file`; a playable partial or 100% encoding indicator alone is
@@ -297,3 +297,20 @@ lowered to force a saving. Experimental full NVIDIA DV runs first test a
 bounded 30s sample and skip the full encode if that sample does not shrink.
 The current full Acolyte result is rejected: larger and failed Sony TV playback.
 See DOLBY-FULL-FILE.md for the remaining validation limits.
+
+## Consolidated source layout
+
+- `python/ui/`: all dashboard and workflow HTML, CSS and JavaScript, shared in one module.
+- `python/dashboard.py` and `python/webui.py`: standalone HTTP servers and their backend logic.
+- `mux_integrity.py`: shared mux, savings, audio rounding and media preflight checks.
+- `validate_nvidia.py`: generated fixtures and retained ordinary-output verification.
+- `dv_full_file.py`: full-file DV processing, retained verification and packet/frame checks.
+- `tests/`: regression tests, including the dashboard DOM checks.
+
+Keep design changes inside `python/ui/`; preserve the approved control-room layout and
+stationary progress behavior. Avoid adding one-off scripts for shared logic.
+
+Python commands now live under `python/`, Windows helpers under `powershell/`,
+and project guides under `docs/`. Run commands from the repository root;
+reports, portable tools and native runtime paths still resolve there.
+Run the regression suite with `python -m unittest discover -q`.

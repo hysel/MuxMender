@@ -1,5 +1,5 @@
 import unittest
-from test_muxmender import sample
+from tests.test_muxmender import sample
 from muxmender import assess_dolby_preservation, recommend
 
 

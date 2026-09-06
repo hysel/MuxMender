@@ -22,7 +22,7 @@ function findScript() {
   }
 
   for (const folder of vscode.workspace.workspaceFolders || []) {
-    const candidate = path.join(folder.uri.fsPath, "muxmender.py");
+    const candidate = path.join(folder.uri.fsPath, "python", "muxmender.py");
     if (fs.existsSync(candidate)) {
       return candidate;
     }
@@ -30,8 +30,14 @@ function findScript() {
   return undefined;
 }
 
+function projectRoot(script) {
+  const directory = path.dirname(script);
+  return path.basename(directory) === "python" && fs.existsSync(path.join(directory, "..", "pyproject.toml"))
+    ? path.dirname(directory) : directory;
+}
+
 function reportPath(scriptPath) {
-  const reportDirectory = path.join(path.dirname(scriptPath), "reports");
+  const reportDirectory = path.join(projectRoot(scriptPath), "reports");
   fs.mkdirSync(reportDirectory, { recursive: true });
   return path.join(reportDirectory, "vscode-scan.json");
 }
@@ -144,7 +150,7 @@ function runDryScan(folder, channel) {
       "--report", report,
     ],
     {
-      cwd: path.dirname(script),
+      cwd: projectRoot(script),
       windowsHide: true,
       shell: false,
       env: { ...process.env, PYTHONIOENCODING: "utf-8" },
@@ -190,8 +196,8 @@ function runSafeCopy(file, channel, hardwareOverride) {
   const python = vscode.workspace
     .getConfiguration("muxmender")
     .get("pythonPath", "python");
-  const outputDirectory = path.join(path.dirname(script), "test-output");
-  const reportDirectory = path.join(path.dirname(script), "reports");
+  const outputDirectory = path.join(projectRoot(script), "test-output");
+  const reportDirectory = path.join(projectRoot(script), "reports");
   fs.mkdirSync(outputDirectory, { recursive: true });
   fs.mkdirSync(reportDirectory, { recursive: true });
   const report = path.join(reportDirectory, "vscode-optimize.json");
@@ -241,7 +247,7 @@ function runSafeCopy(file, channel, hardwareOverride) {
             report,
           ],
           {
-            cwd: path.dirname(script),
+            cwd: projectRoot(script),
             windowsHide: true,
             shell: false,
             env: { ...process.env, PYTHONIOENCODING: "utf-8" },
@@ -397,9 +403,9 @@ async function runNativePreview(file, channel, mode) {
   const script = findScript();
   if (!script || !fs.existsSync(script) || !fs.existsSync(file))
     return vscode.window.showErrorMessage("MuxMender script or source file is missing.");
-  const helper = path.join(path.dirname(script), "native", "muxmender-d3d11", "build", "preview", "muxmender-dv-preview.exe");
+  const helper = path.join(projectRoot(script), "native", "muxmender-d3d11", "build", "preview", "muxmender-dv-preview.exe");
   if (!fs.existsSync(helper)) return vscode.window.showErrorMessage("The native helper has not been built. See native/muxmender-d3d11/README.md. No media was changed.");
-  const output = path.join(path.dirname(script), "test-output", `native-${Date.now()}`);
+  const output = path.join(projectRoot(script), "test-output", `native-${Date.now()}`);
   const python = vscode.workspace.getConfiguration("muxmender").get("pythonPath", "python");
   channel.clear(); channel.show(true);
   channel.appendLine(`Native ${mode}: 3-second diagnostic at 00:05:00. Original dimensions, video only.`);
@@ -407,7 +413,7 @@ async function runNativePreview(file, channel, mode) {
   return vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "MuxMender: native color preview", cancellable: false }, progress => new Promise(resolve => {
     const parseProgress = createProgressParser(update => progress.report(update));
     const child = spawn(python, [script, file, "--execute", "--dolby-vision-policy", mode, "--dolby-preview-backend", "d3d11", "--preview-seconds", "3", "--output-dir", output, "--ffprobe", configuredFfprobe()], {
-      cwd: path.dirname(script), windowsHide: true, shell: false, env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUNBUFFERED: "1" },
+      cwd: projectRoot(script), windowsHide: true, shell: false, env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUNBUFFERED: "1" },
     });
     activeProcess = child;
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
@@ -431,7 +437,7 @@ async function runDeliveryTest(file, channel, hardware = "auto") {
   const args = [script, file, "--execute", "--native-delivery-test", "--dolby-vision-policy", "hdr-preview",
     "--dolby-preview-backend", "d3d11", "--preview-seconds", "10", "--hardware", hardware,
     "--hardware-fallback", "never", "--resolution", "keep", "--ffmpeg", configuredFfmpeg(), "--ffprobe", configuredFfprobe(),
-    "--output-dir", path.join(path.dirname(script), "test-output")];
+    "--output-dir", path.join(projectRoot(script), "test-output")];
   const runtime = config.get("nativeHelperPath", "").trim();
   if (runtime) args.push("--d3d11-helper", runtime);
   channel.clear(); channel.show(true);
@@ -439,7 +445,7 @@ async function runDeliveryTest(file, channel, hardware = "auto") {
   let processOutput = "";
   const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "MuxMender: HDR delivery test", cancellable: false }, progress => new Promise(resolve => {
     const parseProgress = createProgressParser(update => progress.report(update));
-    const child = spawn(config.get("pythonPath", "python"), args, { cwd: path.dirname(script), windowsHide: true, shell: false,
+    const child = spawn(config.get("pythonPath", "python"), args, { cwd: projectRoot(script), windowsHide: true, shell: false,
       env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUNBUFFERED: "1" } });
     activeProcess = child;
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
