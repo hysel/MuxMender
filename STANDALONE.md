@@ -6,6 +6,10 @@ FFprobe are required. No installer or driver is run automatically.
 
 ## Live job dashboard
 
+For the interactive local workflow (scan, approve previews/full episodes, queue,
+cancel, and review results), run `python webui.py` and open http://127.0.0.1:8766.
+See [WEBUI.md](WEBUI.md) for safety boundaries and setup instructions.
+
 Run `python dashboard.py` and open http://127.0.0.1:8765 for progress, stage ETA,
 history, results, and logs. New command-line jobs are recorded automatically.
 No VS Code or extra packages required. See [DASHBOARD.md](DASHBOARD.md).
@@ -27,6 +31,15 @@ the user performs installation and then repeats the check. Native helper
 packaging/build instructions are in `native/muxmender-d3d11/README.md`.
 
 ## Analyze, then execute
+
+Ordinary transcodes now perform a read-only preflight, including dry runs.
+Unspecified color primaries/transfer/matrix/range produce `needs-review` before
+creating media output. Otherwise, up to 256 video packets at the start, middle,
+and near the end are checked for missing/nonfinite PTS/DTS and non-increasing
+DTS. Reordered PTS from B-frames are allowed. This is a conservative sampled
+check, not full-file timing or color validation. A review block returns exit
+code 1 and records the reason in `--report`; other files can still be processed.
+Remux/copy and specialized Dolby Vision workflows keep their separate rules.
 
 ### Opt-in Dolby Vision Profile 8.1 preservation
 

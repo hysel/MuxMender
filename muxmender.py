@@ -1212,6 +1212,16 @@ def main(argv: list[str] | None = None) -> int:
             print_info(info)
             entry: dict[str, Any] = asdict(info)
             entry["status"] = info.recommendation
+            if info.recommendation == "transcode":
+                from media_preflight import conversion_preflight
+                preflight = conversion_preflight(info, args.ffprobe, run_json)
+                entry["preflight"] = preflight
+                if preflight["status"] == "needs-review":
+                    entry["status"] = "needs-review"
+                    entry["reason"] = "; ".join(preflight["reasons"])
+                    print(f"  NEEDS REVIEW: {entry['reason']}; no encoding or media output created")
+                    report["files"].append(entry)
+                    continue
             if info.recommendation == "preview":
                 base_destination = output_path(
                     source, root, args.output_dir.resolve() if args.output_dir else None
@@ -1360,7 +1370,7 @@ def main(argv: list[str] | None = None) -> int:
         with args.report.open("x", encoding="utf-8") as report_file:
             json.dump(report, report_file, indent=2)
         print(f"\nReport written to {args.report.resolve()}")
-    return 1 if report["errors"] or any(entry.get("status") in {"preview-failed", "rejected"} for entry in report["files"]) else 0
+    return 1 if report["errors"] or any(entry.get("status") in {"preview-failed", "rejected", "needs-review"} for entry in report["files"]) else 0
 
 
 def cli():
