@@ -1,8 +1,91 @@
 import unittest
 import tempfile
+import json
+import muxmender as mm
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+
+class ExistingRenameTests(unittest.TestCase):
+    def test_release_tail_preserved_and_second_preview_unchanged(self):
+        for original, title, tail in [
+            ('X2.2003.BluRay.720p.x264.DTS-WiKi.mkv', 'X2 (2003)', 'BluRay.720p.x264.DTS-WiKi'),
+            ('X-Men Apocalypse 2016 UHD BluRay HDR10 2160p Dts-HDMa7.1 HEVC-d3g.mkv', 'X-Men Apocalypse (2016)', 'UHD BluRay HDR10 2160p Dts-HDMa7.1 HEVC-d3g'),
+            ('Film.2001.CustomRelease-GROUP.mp4', 'Film (2001)', 'CustomRelease-GROUP'),
+            ('Show.S01E02.1080p.WEB-DL-GROUP.mkv', 'Show - S01E02', '1080p.WEB-DL-GROUP'),
+        ]:
+            with self.subTest(original=original), tempfile.TemporaryDirectory() as tmp:
+                source = Path(tmp)/original; source.write_bytes(b'dummy')
+                entry = mm.create_rename_plan(source, title)['entries'][0]
+                expected = title + ' - ' + tail + source.suffix
+                self.assertEqual(Path(entry['destination']).name, expected)
+                self.assertEqual(entry['release_suffix'], tail)
+                source.rename(Path(tmp)/expected)
+                self.assertEqual(mm.create_rename_plan(Path(tmp)/expected, title)['entries'][0]['status'], 'unchanged')
+
+    def test_folder_identity_preview_and_explicit_apply_preserve_contents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)/'War Horse (2011)'; folder.mkdir()
+            video = folder/'s7-war.horse.1080.mkv'; video.write_bytes(b'local dummy video')
+            subtitle = folder/'s7-war.horse.1080.en.srt'; subtitle.write_text('caption', encoding='utf-8')
+            original = mm.rename_identity(video)
+            plan_path = Path(tmp)/'plan.json'
+            self.assertEqual(mm.main([str(video), '--rename-plan', str(plan_path), '--rename-sidecars']), 0)
+            self.assertTrue(video.exists()); self.assertTrue(subtitle.exists())
+            plan = json.loads(plan_path.read_text(encoding='utf-8'))
+            self.assertEqual(Path(plan['entries'][0]['destination']).name, 'War Horse (2011) - s7-war.horse.1080.mkv')
+            self.assertEqual(mm.main(['--apply-rename-plan', str(plan_path), '--execute']), 2)
+            self.assertTrue(video.exists())
+            self.assertEqual(mm.main(['--apply-rename-plan', str(plan_path), '--execute', '--confirm-rename', 'RENAME']), 0)
+            output = folder/'War Horse (2011) - s7-war.horse.1080.mkv'
+            self.assertEqual(output.read_bytes(), b'local dummy video')
+            self.assertEqual(mm.rename_identity(output), original)
+            self.assertEqual((folder/'War Horse (2011) - s7-war.horse.1080.en.srt').read_text(encoding='utf-8'), 'caption')
+            self.assertFalse(video.exists())
+
+    def test_stale_source_blocks_entire_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)/'Contact 1997'; folder.mkdir()
+            source = folder/'hdc-contact-1080.mp4'; source.write_bytes(b'dummy')
+            plan = mm.create_rename_plan(source)
+            self.assertTrue(plan['entries'][0]['destination'].endswith('.mp4'))
+            path = Path(tmp)/'plan.json'; path.write_text(json.dumps(plan), encoding='utf-8')
+            source.write_bytes(b'changed dummy')
+            with self.assertRaisesRegex(ValueError, 'changed'):
+                mm.apply_rename_plan(path)
+            self.assertTrue(source.exists())
+
+    def test_unknown_identity_and_conflicting_year_need_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)/'Unsorted'; folder.mkdir()
+            source = folder/'melite-myrp-1080p.mkv'; source.write_bytes(b'dummy')
+            self.assertEqual(mm.create_rename_plan(source)['entries'][0]['status'], 'needs-review')
+            self.assertEqual(Path(mm.create_rename_plan(source, 'Minority Report (2002)')['entries'][0]['destination']).name, 'Minority Report (2002) - melite-myrp-1080p.mkv')
+            folder2 = Path(tmp)/'Movie (2011)'; folder2.mkdir()
+            conflict = folder2/'Movie.2002.1080p.mkv'; conflict.write_bytes(b'dummy')
+            self.assertEqual(mm.create_rename_plan(conflict)['entries'][0]['status'], 'needs-review')
+
+    def test_collision_blocks_video_and_companion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            source = folder/'old.mkv'; source.write_bytes(b'original')
+            (folder/'old.jpg').write_bytes(b'art')
+            existing = folder/'New (2001).mkv'; existing.write_bytes(b'existing')
+            plan = mm.create_rename_plan(source, 'New (2001)', True)
+            self.assertTrue(all(e['status']=='blocked' for e in plan['entries']))
+            self.assertEqual(existing.read_bytes(), b'existing')
+
+    def test_edited_plan_cannot_move_file_outside_its_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)/'Movie (2001)'; folder.mkdir()
+            source = folder/'old.mkv'; source.write_bytes(b'original')
+            plan = mm.create_rename_plan(source)
+            plan['entries'][0]['destination'] = str(Path(tmp)/'outside.mkv')
+            p = Path(tmp)/'plan.json'; p.write_text(json.dumps(plan), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'same directory'):
+                mm.apply_rename_plan(p)
+            self.assertTrue(source.exists())
 
 from muxmender import (
     HardwareRequirementError,
@@ -120,6 +203,12 @@ class MuxMenderTests(unittest.TestCase):
     def test_h264_is_recommended_for_transcode(self):
         result = recommend(sample(), "hevc")
         self.assertEqual(result.recommendation, "transcode")
+
+    def test_explicit_efficient_reencode_keeps_dolby_gate(self):
+        self.assertEqual(recommend(sample(video_codec='hevc'), 'hevc').recommendation, 'keep')
+        self.assertEqual(recommend(sample(video_codec='hevc'), 'hevc', reencode_efficient=True).recommendation, 'transcode')
+        self.assertEqual(recommend(sample(video_codec='hevc', dolby_vision=True), 'hevc', reencode_efficient=True).recommendation, 'skip')
+        self.assertEqual(recommend(sample(video_codec='hevc', dolby_vision=True), 'hevc', dolby_vision_policy='copy', reencode_efficient=True).recommendation, 'keep')
 
     def test_keep_resolution_returns_exact_source_dimensions(self):
         self.assertEqual(output_dimensions(sample(), "keep"), (3840, 2160))
@@ -292,14 +381,15 @@ class MuxMenderTests(unittest.TestCase):
             self.assertTrue((root/'Subs'/'English.srt').exists())
             self.assertTrue(parse_args(['movie.mkv', '--video-only-folder']).video_only_folder)
 
-    def test_clean_movie_and_episode_output_names(self):
+    def test_preserve_release_movie_and_episode_output_names(self):
         root = Path('media')
         for original, expected in [
-            ('Commando 1985 1080p AMZN WEB-DL DDP 5 1 H 264-PiRaTeS.mkv', 'Commando (1985).mkv'),
-            ('Show.Name.S01E07.Episode.Title.2160p.WEB-DL.mkv', 'Show Name - S01E07 - Episode Title.mkv'),
+            ('Commando 1985 1080p AMZN WEB-DL DDP 5 1 H 264-PiRaTeS.mkv', 'Commando 1985 1080p AMZN WEB-DL DDP 5 1 H 264-PiRaTeS.mkv'),
+            ('Show.Name.S01E07.Episode.Title.2160p.WEB-DL.mp4', 'Show.Name.S01E07.Episode.Title.2160p.WEB-DL.mkv'),
             ('65 (2023).mkv', '65 (2023).mkv'),
         ]:
             self.assertEqual(output_path(root/original,root,Path('output')).name,expected)
+            self.assertEqual(output_path(root/original,root,None).name,expected)
 
     def test_command_maps_every_stream_and_copies_audio(self):
         command = build_ffmpeg_command(
@@ -338,6 +428,24 @@ class MuxMenderTests(unittest.TestCase):
         )
         self.assertEqual(nvidia[nvidia.index("-cq") + 1], "21")
         self.assertEqual(intel[intel.index("-global_quality") + 1], "21")
+        self.assertEqual(intel[intel.index("-bf") + 1], "0")
+        self.assertNotIn("-bf", nvidia)
+
+    def test_intel_av1_rejects_unverified_mastering_display_preservation(self):
+        info = sample()
+        info.mastering_display_metadata = True
+        with self.assertRaisesRegex(ValueError, 'mastering-display'):
+            build_ffmpeg_command(Path('s.mkv'), Path('o.mkv'), info, 'av1', 'balanced', encoder='av1_qsv')
+        self.assertIn('hevc_qsv', build_ffmpeg_command(Path('s.mkv'), Path('o.mkv'), info, 'hevc', 'balanced', encoder='hevc_qsv'))
+        info.hdr = True
+        self.assertIn('av1_qsv', mm.encoder_options('av1','transparent',info,'av1_qsv',experimental_av1_hdr=True))
+        info.mastering_display_metadata = False  # ffprobe may expose it only on frames.
+        with self.assertRaisesRegex(ValueError,'mastering-display'):
+            build_ffmpeg_command(Path('s.mkv'),Path('o.mkv'),info,'av1','balanced',encoder='av1_qsv')
+        self.assertIn('av1_qsv',build_ffmpeg_command(Path('s.mkv'),Path('o.mkv'),info,'av1','balanced',encoder='av1_qsv',experimental_av1_hdr=True))
+        info.dolby_vision = True
+        with self.assertRaisesRegex(ValueError,'without Dolby Vision'):
+            mm.encoder_options('av1','transparent',info,'av1_qsv',experimental_av1_hdr=True)
 
     def test_original_deletion_needs_exact_confirmation(self):
         args = SimpleNamespace(delete_originals=True, confirm_delete="no")

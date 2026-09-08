@@ -41,6 +41,8 @@ def progress(line, seconds):
 def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None):
     """Stream logs/progress to caller; cap both stalls and total elapsed time."""
     from muxmender import stop_process_tree
+    from job_tracking import stage_progress
+    from runtime_support import guard_ordered_mux_memory
     child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, encoding="utf-8", errors="replace")
     lines = queue.Queue()
@@ -58,6 +60,7 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None)
     try:
         eof = False
         while not eof or child.poll() is None:
+            guard_ordered_mux_memory(child, command)
             if guard:
                 guard()
             now = time.monotonic()
@@ -80,6 +83,7 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None)
                     last = value
                 if span:
                     display.update(min(value, 99))
+                    stage_progress(min(value, 99), display.eta_seconds)
                     print(f"MUXMENDER_PROGRESS={offset + span * value / 100:.1f}", flush=True)
             elif not re.match(r"^(frame|fps|stream_\d+_\d+_q|bitrate|total_size|out_time|dup_frames|drop_frames|speed|progress)=", line):
                 print(line.rstrip(), flush=True)
@@ -87,6 +91,7 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None)
             raise RuntimeError(f"Stage failed ({child.returncode}): {''.join(log)[-1600:]}")
         if span:
             display.update(100)
+            stage_progress(100, 0)
             print(f"MUXMENDER_PROGRESS={offset + span:.1f}", flush=True)
         return "".join(log)
     finally:

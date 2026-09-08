@@ -8,6 +8,19 @@ from dv_preservation_test import sample_encoder_options, require_nvidia_frames
 
 
 class DVExperimentTests(unittest.TestCase):
+    def test_intel_sample_is_explicit_bounded_profile81_route(self):
+        info = sample(dolby_vision=True, video_codec='hevc', dolby_vision_profile=8,
+                      dolby_vision_compatibility_id=1, dolby_vision_rpu_present=True)
+        opts = sample_encoder_options(info, experimental_intel=True)
+        self.assertEqual(opts[opts.index('-c:v')+1], 'hevc_qsv')
+        self.assertEqual(opts[opts.index('-bf')+1], '0')
+        self.assertEqual(opts[opts.index('-pix_fmt')+1], 'p010le')
+        self.assertNotIn('-vf', opts)
+        with self.assertRaises(ValueError):
+            sample_encoder_options(info, True, True)
+        with self.assertRaises(ValueError):
+            sample_encoder_options(sample(dolby_vision=True, dolby_vision_profile=5), experimental_intel=True)
+
     def test_nvidia_sample_is_explicit_and_keeps_ten_bit_color(self):
         info = sample(dolby_vision=True, video_codec='hevc', dolby_vision_profile=8,
                       dolby_vision_compatibility_id=1, dolby_vision_rpu_present=True)

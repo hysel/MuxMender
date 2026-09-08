@@ -1,5 +1,77 @@
 # Experimental full-file Profile 8.1 workflow
 
+September 8 integration: the normal standalone AV1/Intel HDR route now runs the
+shared HDR10 audit, bounded MDCV repair, ordered mux and independent full-file
+verification before publication. Direct unchecked AV1 HDR encoding stays blocked.
+`--preserve-dolby-vision --hardware intel` now dispatches to the tested full QSV
+Profile 8.1 workflow; auto prefers AMD, then Intel. Unsupported DV profiles,
+additional dynamic HDR, destructive options and CPU fallback stay blocked.
+Default DV behavior remains skip. No new scripts or Git operations were added.
+
+Validation: 193 unit tests pass. Actual normal-CLI AV1 HDR checks pass all 829
+frames at transparent and balanced quality, including HDR/track/timing/seek/decode
+checks. Balanced video-only output contains just the video, with recovery outside
+the folder. Integrated DV passes 960 frames, full RPU/HDR/track/timing comparison,
+six seeks and full decode after its savings preflight. Transparent full-file
+outputs were already playback-approved on Chrome and Sony TV.
+
+The two approved full videos were copied to their original Y paths with original
+release filenames and SHA-256 verification. The user then confirmed both new Y
+files passed playback and separately authorized deletion of the two originals.
+Both `.mkv.original-backup` files were removed after fresh replacement SHA-256
+checks. No other Y content changed. Net library reduction for these conversions:
+13,899.08 MB / 13.899 GB / 0.013899 TB (50.82%). The deletion itself removed
+27.349 GB of backups; the new videos occupy 13.450 GB.
+Publication journal: reports/intel-approved-y-publication-20260908.json.
+
+Earlier test history follows; the integration status above supersedes old gate
+and pending-integration statements below.
+
+Overnight September 7-8 results: both full Intel research outputs passed automated
+validation and are indexed in local Plex under Other Videos. No Time to Die AV1
+HDR10: 235,056 frames, exact 3832x1596 resolution, 10-bit PQ/BT.2020, original
+tracks/timing/chapters, static metadata at AV1 precision, four seeks and full
+audio/video decode passed; 18.516 GB -> 7.753 GB (58.13% smaller). Research CLI
+through encode/mux took 4,147 seconds (2.36x); the later independent verifier is
+not included in that speed. House of the Dragon S03E02 HEVC Dolby Vision 8.1:
+92,034 frames, exact 3840x1920, original tracks/timing/chapters, static HDR and RPU
+content/order, six seeks and full decode passed; 8.833 GB -> 5.697 GB (35.50%
+smaller). HEVC encoding took 1,908 seconds (2.01x, encode only).
+
+New full files and two short research clips are ready in C:/MuxMender-Plex.
+On September 8 the user confirmed Chrome playback for both full outputs, resolved
+the forced-only AV1 subtitle selection, and then reported the Sony TV test passed
+in response to the HDR/DV, subtitles, sync and seeking checklist. These two full
+outputs are playback-approved on the tested clients. This does not establish
+identical visual quality or broad hardware/client certification. Intel AV1 HDR uses mandatory repair/full verification; DV preservation is
+opt-in for AMD/Intel. About 79.1 GB of obsolete local generated media was removed;
+all reports and final tests remain, with about 132 GB free. Drive Y was read-only.
+189 unit tests and eight actual Intel generated hardware fixtures pass. No Git
+operations, software installations/updates or editor reloads occurred.
+
+Current inventory, publication reports, hashes, cleanup journals and playback
+checklist: reports/overnight-readiness-20260907.json.
+
+The full Intel route is explicit: `dv_full_file.py --experimental-intel`.
+It uses checked CFR/no-B-frame timestamp reconstruction and requires source
+frame auditing, sample and final savings, original-track preservation, bounded
+mux memory, complete RPU/HDR comparison, seeking and full decode. Normal
+integrated optimization remains AMD-gated. A later scene that grows rejects a
+candidate even when its opening logo sequence compresses well. Unsupported
+additional dynamic HDR metadata is blocked before encoding.
+
+Intel update (2026-09-07): `python/dv_preservation_test.py --experimental-intel`
+is an explicit 1..30-second Profile 8.1 research route, mutually exclusive with
+`--experimental-nvidia`. The general integrated AMD gate stays unchanged;
+the separate full-file Intel research addition is described above.
+A 240-frame 65 sample passes complete RPU content/order, exact resolution/color,
+frame timing, original tracks, decode and seek checks. Chrome and Sony TV
+playback, sync, subtitles, seeking and Sony DV mode were approved by the user.
+The checked CFR/no-B-frame Intel route materializes raw HEVC PTS before muxing;
+per-frame source/output timing comparison remains mandatory. No new script added.
+Evidence: reports/intel-dv-research/dv81-20260907-202655-b97dde17/.
+
+
 Final regression and handoff status is in [NVIDIA-HANDOFF.md](NVIDIA-HANDOFF.md).
 The updated pipeline subsequently passed a complete bounded DV regression and
 60/300-second sparse/empty-track stress tests. Earlier failures below remain

@@ -6,6 +6,26 @@ from dv_full_file import rpu_digest, mux_command, timestamped_video_command, ord
 
 
 class FullDVTests(unittest.TestCase):
+    def test_full_research_progress_does_not_reset_after_preflight(self):
+        from unittest.mock import patch
+        from dv_preservation_test import NvidiaSampleGuard
+        with tempfile.TemporaryDirectory() as tmp, patch('dv_preservation_test.jobs.progress') as progress:
+            guard=NvidiaSampleGuard(Path(tmp));guard.overall_span=10
+            guard.status(100)
+            self.assertEqual(progress.call_args.args[1],10)
+            guard.overall_offset,guard.overall_span=10,90
+            guard.status(0)
+            self.assertEqual(progress.call_args.args[1],10)
+            guard.status(50)
+            self.assertEqual(progress.call_args.args[1],55)
+
+    def test_intel_timestamp_reconstruction_uses_mux_timebase(self):
+        command = timestamped_video_command('ffmpeg','raw.hevc','video.mkv','24000/1001',intel=True)
+        bsf = command[command.index('-bsf:v')+1]
+        self.assertIn('setts=pts=N*1001/(24000*TB):dts=N*1001/(24000*TB)',bsf)
+        self.assertNotIn('time_base=',bsf)
+        self.assertNotIn('-y',command)
+
     def test_nvidia_mux_separates_timestamp_generation_and_preserves_tracks(self):
         first = timestamped_video_command('ffmpeg','raw.hevc','video.mkv','24000/1001')
         self.assertEqual(first.count('-i'), 1)

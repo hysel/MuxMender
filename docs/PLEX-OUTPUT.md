@@ -27,3 +27,11 @@ Plex library configuration and its automatic/periodic scan settings have not
 been changed by this task. Add this directory to the intended Plex test library.
 The validator still saves new runs in reports; publication to this playback
 folder is a separate step after automated verification. Playback review is pending.
+
+## Intel playback tests
+
+Local server: `haven42WinIntel`, library `Other Videos`, folder `C:/MuxMender-Plex`.
+Use `Playback Test` in local test filenames, not the word `sample`: Plex excludes
+small files with that keyword. Verify actual indexed items after requesting a scan.
+Current tests: Borderlands (2024) Intel HEVC/AV1 SDR and No Time to Die (2021)
+Intel HEVC HDR10. Source media on Y is unchanged.

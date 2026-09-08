@@ -3,6 +3,136 @@ import json
 import math
 from fractions import Fraction
 import subprocess
+import hashlib
+from pathlib import Path
+
+
+def playback_plan(data, audio_track=None, subtitle_track=None):
+    """Explicit additive EAC3 policy; track selectors are zero-based by type."""
+    streams = data['streams']
+    audio = [s for s in streams if s.get('codec_type') == 'audio']
+    subtitles = [s for s in streams if s.get('codec_type') == 'subtitle']
+    if audio_track is None:
+        defaults = [i for i, s in enumerate(audio) if s.get('disposition', {}).get('default')]
+        if len(defaults) == 1:
+            audio_track = defaults[0]
+        elif len(audio) == 1:
+            audio_track = 0
+        else:
+            raise ValueError('Choose --compatibility-audio-track: audio selection is ambiguous or absent')
+    if not 0 <= audio_track < len(audio):
+        raise ValueError('Compatibility audio track is out of range')
+    selected = audio[audio_track]
+    if selected.get('channels') not in (1, 2, 6) or selected.get('channel_layout') not in ('mono', 'stereo', '5.1', '5.1(side)'):
+        raise ValueError('Compatibility audio supports known mono, stereo or 5.1 layouts; no automatic downmix')
+    if subtitle_track is not None and not 0 <= subtitle_track < len(subtitles):
+        raise ValueError('Default subtitle track is out of range')
+    # Reuse the selected EAC3 track instead of growing repeated outputs.
+    added = selected.get('codec_name') != 'eac3'
+    dispositions = []
+    for s in streams:
+        flags = {k for k, v in s.get('disposition', {}).items() if v}
+        if s.get('codec_type') == 'audio':
+            flags.discard('default')
+            if not added and s['index'] == selected['index']:
+                flags.add('default')
+        if s.get('codec_type') == 'subtitle' and subtitle_track is not None:
+            flags.discard('default')
+            if s['index'] == subtitles[subtitle_track]['index']:
+                flags.add('default')
+        dispositions.append(sorted(flags))
+    if added:
+        dispositions.append(['default'])
+    # Some clients choose the first matching-language audio despite default flags.
+    # Keep an explicit identity map so reordering never weakens preservation checks.
+    compatible = None if added else selected['index']
+    order = []
+    inserted = False
+    flags_by_index = {s['index']: dispositions[i] for i, s in enumerate(streams)}
+    flags_by_index[None] = ['default']
+    for s in streams:
+        if s.get('codec_type') == 'audio' and not inserted:
+            order.append(compatible)
+            inserted = True
+        if added or s['index'] != compatible:
+            order.append(s['index'])
+    dispositions = [flags_by_index[i] for i in order]
+    return dict(audio_index=selected['index'], audio_ordinal=audio_track,
+                added_audio=added, new_audio_ordinal=0, output_order=order,
+                language=selected.get('tags', {}).get('language', 'und'),
+                channels=selected['channels'], dispositions=dispositions,
+                subtitle_track=subtitle_track)
+
+
+def playback_command(source, output, data, plan, ffmpeg):
+    command = [ffmpeg, '-hide_banner', '-nostdin', '-n', '-copyts', '-i', str(source)]
+    for index in plan['output_order']:
+        command += ['-map', f"0:{plan['audio_index'] if index is None else index}"]
+    command += ['-map_metadata', '0', '-map_chapters', '0', '-c', 'copy']
+    if plan['added_audio']:
+        n = plan['new_audio_ordinal']
+        command += [f'-c:a:{n}', 'eac3', f'-b:a:{n}', '640k', f'-ar:a:{n}', '48000',
+                    f'-metadata:s:a:{n}', f"language={plan['language']}",
+                    f'-metadata:s:a:{n}', 'title=EAC3 compatibility']
+    for i, flags in enumerate(plan['dispositions']):
+        command += [f'-disposition:{i}', '+'.join(flags) or '0']
+    return command + ['-avoid_negative_ts', 'disabled', '-max_interleave_delta',
+                      '0', str(output)]
+
+
+def packet_fingerprints(path, ffprobe):
+    """Bounded-memory per-stream fingerprints include packet bytes and timing."""
+    command = [ffprobe, '-v', 'error', '-show_packets', '-show_data_hash', 'sha256',
+               '-show_entries', 'packet=stream_index,pts_time,dts_time,duration_time,size,data_hash',
+               '-of', 'compact=p=0:nk=0', str(path)]
+    hashes, counts = {}, {}
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                          text=True, encoding='utf-8') as process:
+        try:
+            for line in process.stdout:
+                fields = dict(p.split('=', 1) for p in line.strip().split('|') if '=' in p)
+                if 'stream_index' not in fields:
+                    continue
+                index = int(fields.pop('stream_index'))
+                hashes.setdefault(index, hashlib.sha256()).update(json.dumps(fields, sort_keys=True).encode('utf-8'))
+                counts[index] = counts.get(index, 0) + 1
+            if process.wait():
+                raise RuntimeError('Playback packet verification failed')
+        finally:
+            if process.poll() is None:
+                process.kill()
+    return {i: (counts[i], h.hexdigest()) for i, h in hashes.items()}
+
+
+def verify_playback_copy(source, output, before, after, plan, ffprobe):
+    expected = len(before['streams']) + int(plan['added_audio'])
+    if len(after['streams']) != expected:
+        raise RuntimeError('Playback preparation changed the stream count')
+    for i, original in enumerate(before['streams']):
+        result = after['streams'][plan['output_order'].index(original['index'])]
+        for key in ('codec_type', 'codec_name', 'width', 'height', 'pix_fmt', 'color_space',
+                    'color_transfer', 'color_primaries', 'color_range', 'sample_rate', 'channels', 'channel_layout', 'side_data_list'):
+            if original.get(key) != result.get(key):
+                raise RuntimeError(f'Playback preparation changed original stream {i}: {key}')
+        for key in ('language', 'title'):
+            if original.get('tags', {}).get(key) != result.get('tags', {}).get(key):
+                raise RuntimeError(f'Playback preparation changed stream {i} {key}')
+    for i, stream in enumerate(after['streams']):
+        actual = sorted(k for k, v in stream.get('disposition', {}).items() if v)
+        if actual != plan['dispositions'][i]:
+            raise RuntimeError('Playback default/forced flags do not match the plan')
+    if before.get('chapters', []) != after.get('chapters', []):
+        raise RuntimeError('Playback preparation changed chapters')
+    if plan['added_audio']:
+        added = after['streams'][plan['output_order'].index(None)]
+        if added.get('codec_name') != 'eac3' or added.get('channels') != plan['channels'] or added.get('sample_rate') != '48000':
+            raise RuntimeError('Unexpected compatibility audio format')
+    original = packet_fingerprints(source, ffprobe)
+    result = packet_fingerprints(output, ffprobe)
+    if any(result.get(plan['output_order'].index(i)) != value for i, value in original.items()):
+        raise RuntimeError('Original packet payloads or timestamps changed during playback preparation')
+    return {'original_packets_and_timing': True, 'stream_metadata': True,
+            'chapters': True, 'defaults_and_forced_flags': True}
 
 # Finite instead of unlimited buffering for sparse subtitle streams.
 INTERLEAVE_MICROSECONDS = 10_000_000
@@ -107,10 +237,13 @@ def video_stage_command(command):
 
 
 def finalize_command(video, source, output, source_probe, ffmpeg):
-    """Keep original stream order, metadata, chapters and explicit dispositions."""
+    """Keep tracks and chronological interleaving despite sparse subtitles.
+
+    Callers must monitor memory while running this ordered mux command.
+    """
     streams = source_probe['streams']
     if sum(s.get('codec_type') == 'video' for s in streams) != 1:
-        raise ValueError('NVIDIA finalization requires exactly one video stream')
+        raise ValueError('Hardware finalization requires exactly one video stream')
     mapping = []
     disposition = []
     for index, stream in enumerate(streams):
@@ -121,7 +254,7 @@ def finalize_command(video, source, output, source_probe, ffmpeg):
             '-i', str(video), '-i', str(source), *mapping,
             '-map_metadata', '1', '-map_chapters', '1', '-c', 'copy',
             *disposition, '-avoid_negative_ts', 'disabled',
-            '-max_interleave_delta', str(INTERLEAVE_MICROSECONDS), str(output)]
+            '-max_interleave_delta', '0', str(output)]
 
 
 def savings_summary(size_pairs):
@@ -230,7 +363,7 @@ def verified_reorder_prefix(data, frames, seek_preroll=False):
     This does not generate timestamps or accept best-effort timestamp guesses.
     """
     streams = data.get('streams', [])
-    if len(streams) != 1 or streams[0].get('codec_name') != 'h264':
+    if len(streams) != 1 or streams[0].get('codec_name') not in ('h264', 'hevc'):
         return 0
     delay = streams[0].get('has_b_frames', 0)
     if not isinstance(delay, int) or not 1 <= delay <= 16:
@@ -296,3 +429,124 @@ def conversion_preflight(info, ffprobe, read_json):
     result['reasons'] = sorted(set(reasons))
     result['status'] = 'needs-review' if reasons else 'passed-sampled-checks'
     return result
+
+
+def repair_av1_hdr_stream(source, destination, mastering, progress=None):
+    """Two-pass, bounded-memory IVF repair; no writes until full input validation.
+
+    Keeps all IVF timing/header and coded picture bytes. Only known-clamped MDCV
+    coordinates may change. Full source/frame metadata validation is still required.
+    """
+    import struct
+    source, destination = Path(source), Path(destination)
+    initial = source.stat()
+    if destination.exists() or source.resolve() == destination.resolve():
+        raise FileExistsError('HDR repair requires a new destination')
+    def walk(output=None):
+        summary = dict(frames=0, mastering_obus=0, edit_count=0, edit_examples=[])
+        with source.open('rb') as stream:
+            header = stream.read(32)
+            if len(header) != 32 or header[:4] != b'DKIF':
+                raise ValueError('Invalid IVF header')
+            if output:
+                output.write(header)
+            while record := stream.read(12):
+                if len(record) != 12:
+                    raise ValueError('Truncated IVF frame header')
+                size = struct.unpack_from('<I', record)[0]
+                if not 0 < size <= 32*1024**2 or summary['frames'] >= 2_000_000:
+                    raise ValueError('IVF frame size/count exceeds guarded limit')
+                body = stream.read(size)
+                if len(body) != size:
+                    raise ValueError('Truncated IVF frame')
+                patched, details = _repair_av1_hdr_bytes(header+record+body, mastering, True)
+                if output:
+                    output.write(patched[32:])
+                summary['mastering_obus'] += details['mastering_obus']
+                summary['edit_count'] += len(details['edits'])
+                for edit in details['edits']:
+                    if len(summary['edit_examples']) < 16:
+                        summary['edit_examples'].append(dict(edit, frame=summary['frames']))
+                summary['frames'] += 1
+                if progress and summary['frames'] % 256 == 0:
+                    progress((50 if output else 0) + 50*stream.tell()/initial.st_size)
+        if not summary['frames'] or not summary['mastering_obus']:
+            raise ValueError('Missing AV1 mastering metadata')
+        return summary
+    expected = walk()
+    if (source.stat().st_size, source.stat().st_mtime_ns) != (initial.st_size, initial.st_mtime_ns):
+        raise ValueError('IVF source changed during validation')
+    with destination.open('xb') as output:
+        actual = walk(output)
+    if expected != actual or (source.stat().st_size, source.stat().st_mtime_ns) != (initial.st_size, initial.st_mtime_ns):
+        raise ValueError('IVF source changed during repair; output not accepted')
+    return dict(actual, scope='Known MDCV clamp repair; all other bytes and IVF timestamps retained',
+                max_frame_bytes=32*1024**2, source_bytes=initial.st_size)
+
+
+def _repair_av1_hdr_bytes(raw, mastering, allow_no_metadata=False):
+    """Bounded diagnostic only: repair the reproduced QSV 50000 chroma clamp.
+
+    Caller must establish constant source metadata and independently check decode
+    hashes/timing after repair. Never used by the normal optimizer or its gate.
+    Every byte except verified MDCV coordinate fields stays unchanged.
+    """
+    import struct
+    data = bytearray(raw)
+    if len(data) < 32 or data[:4] != b'DKIF' or data[8:12] != b'AV01' or struct.unpack_from('<HH', data, 4) != (0, 32):
+        raise ValueError('Expected version-zero AV1 IVF with 32-byte header')
+    coordinates = ('red_x','red_y','green_x','green_y','blue_x','blue_y','white_point_x','white_point_y')
+    def quantize(field, scale):
+        value = Fraction(str(mastering[field])) * scale
+        return (value + Fraction(1, 2)).numerator // (value + Fraction(1, 2)).denominator
+    expected = [quantize(k, 65536) for k in coordinates]
+    if any(not 0 <= value < 65536 for value in expected):
+        raise ValueError('Mastering coordinates outside representable range')
+    lum = [quantize('max_luminance', 256), quantize('min_luminance', 16384)]
+    def leb(pos, end):
+        value = 0
+        for i in range(8):
+            if pos >= end:
+                raise ValueError('Truncated OBU size/type')
+            byte = data[pos]; pos += 1; value |= (byte & 127) << (7*i)
+            if not byte & 128:
+                return value, pos
+        raise ValueError('Oversized OBU LEB128')
+    pos, frames, metadata_count, edits = 32, 0, 0, []
+    while pos < len(data):
+        if pos + 12 > len(data):
+            raise ValueError('Truncated IVF frame')
+        size = struct.unpack_from('<I', data, pos)[0]
+        pos += 12; end = pos + size; frames += 1
+        if end > len(data) or frames > 3600:
+            raise ValueError('Truncated or over-bound research IVF')
+        while pos < end:
+            header = data[pos]; pos += 1
+            if header & 129 or not header & 2:
+                raise ValueError('Unsupported OBU header')
+            if header & 4:
+                pos += 1
+            size, payload = leb(pos, end); next_pos = payload + size
+            if next_pos > end:
+                raise ValueError('OBU exceeds frame')
+            if (header >> 3) & 15 == 5:
+                kind, body = leb(payload, next_pos)
+                if kind == 2:
+                    if next_pos-body != 25 or data[next_pos-1] != 128:
+                        raise ValueError('Unexpected MDCV payload layout')
+                    values = struct.unpack_from('>8H2I', data, body)
+                    if list(values[8:]) != lum:
+                        raise ValueError('Unexpected luminance change; clamp repair refused')
+                    for i, wanted in enumerate(expected):
+                        if values[i] == wanted:
+                            continue
+                        if values[i] != 50000 or wanted <= 50000:
+                            raise ValueError('Metadata differs beyond reproduced 50000 clamp')
+                        struct.pack_into('>H', data, body+2*i, wanted)
+                        edits.append(dict(frame=frames-1, field=coordinates[i], before=values[i], after=wanted))
+                    metadata_count += 1
+            pos = next_pos
+    if not frames or (not metadata_count and not allow_no_metadata):
+        raise ValueError('No frames/mastering metadata to verify')
+    return bytes(data), dict(frames=frames, mastering_obus=metadata_count, edits=edits,
+                scope='Bounded metadata-only research; normal AV1 HDR gate unchanged')

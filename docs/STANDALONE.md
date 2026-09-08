@@ -6,7 +6,8 @@
   and optional video-only folders.
 - `python python/validate_nvidia.py`: generated hardware tests and optional real samples.
 - `python python/validate_nvidia.py verify-full SOURCE RUN --job JOB`: retained ordinary
-  NVIDIA full-file verification; no encoding or source changes.
+  SDR HEVC/AV1 full-file verification; no encoding or source changes.
+  Reads the normal CLI report and verifies additive playback track mapping when used.
 - `python python/dv_full_file.py --verify-existing RUN`: retained experimental DV
   verification. The same script owns experimental full-file DV execution.
 - `python python/staged_mux_stress.py --ordered-dv`: self-contained sparse/empty-track
@@ -90,9 +91,19 @@ packaging/build instructions are in `native/muxmender-d3d11/README.md`.
 
 ## Analyze, then execute
 
-New generated outputs use clean media names, for example `Commando (1985).mkv`
-or `Show Name - S01E07 - Episode Title.mkv`. Release/encoding suffixes are
-removed when recognized. No online identity lookup is performed. Review planned
+HEVC/AV1 sources normally remain unchanged when another encode is unlikely to
+help. Explicit `--reencode-efficient` requests another encode with the selected
+codec and quality, subject to the normal minimum savings and preservation checks.
+It does not override Dolby Vision or AV1 HDR safety gates. Review a short sample
+before a full run; no quality equivalence is promised. Full verification has an
+explicit `verify-full --hdr` mode for HEVC HDR10 only, using exact per-frame static
+HDR metadata checks; AV1 HDR and Dolby Vision full-file validation stay separate.
+
+New generated outputs preserve the complete source release basename for external
+subtitle matching; only the container extension becomes `.mkv`. Encoding labels
+in that name describe the source release, not necessarily the output codec.
+The optional existing-file rename preview remains a separate explicit action.
+No online identity lookup is performed. Review planned
 names in a dry run; ambiguous input names may need manual correction. Without
 an output directory, files go in a separate `MuxMender` subfolder beside the
 source. Existing destinations are never overwritten. Existing media is not
@@ -265,24 +276,29 @@ not sufficient. Whole-episode validation and playback review are still required.
 
 ## NVIDIA output finalization
 
-HEVC/AV1 NVENC execution now encodes one video-only MKV intermediate, then
+HEVC/AV1 NVENC and Intel QSV execution encode one video-only MKV intermediate, then
 stream-copies that video together with the original audio, subtitles,
 attachments/data, metadata, dispositions and chapters into the final MKV.
 There is no second video encode. Original dimensions, sample aspect ratio,
 color and bit depth remain the defaults; video timestamps use passthrough.
 
 This separates video encoding from final track interleaving. The final mux
-uses FFmpeg's finite 10-second interleaving window, not unlimited buffering.
+uses ordered packet interleaving (`-max_interleave_delta 0`) so long subtitle gaps
+do not flush video ahead of audio. A polling memory guard stops the owned mux
+process above 1 GiB measured resident/committed high-water usage on Windows
+(resident high-water on Linux). If measurement is unavailable, it fails closed.
+This is a monitored stop threshold, not an OS-enforced allocation ceiling.
 A bounded startup probe checks the first 2048 packets before publication;
 unknown ordering or over 100ms of audio lead before the first video packet
-rejects the output and retains recovery files. This is a conservative
+rejects the output and retains recovery files. Normal staged/playback outputs
+also require aligned audio/video at sampled seeks before publication. This is a conservative
 compatibility check, not a substitute for decode and device playback tests.
 
 Allow disk space for both the compressed video intermediate and final output.
 The intermediate is retained for recovery; no original media is removed.
 The dashboard shows encoding and finalization as separate phases. This flow
 applies to detected HEVC/AV1 NVENC encoders, without a GPU-model lookup.
-Experimental Dolby Vision preservation remains AMD-only.
+Opt-in Dolby Vision preservation supports AMD/Intel Profile 8.1; unsupported profiles remain blocked.
 
 The video encoder also uses the demuxer time base to avoid clock rounding
 drift on long/VFR timelines. Before normal NVIDIA execution, allow at least
@@ -314,3 +330,199 @@ Python commands now live under `python/`, Windows helpers under `powershell/`,
 and project guides under `docs/`. Run commands from the repository root;
 reports, portable tools and native runtime paths still resolve there.
 Run the regression suite with `python -m unittest discover -q`.
+
+
+## Optional playback defaults
+
+Use `--compatibility-audio eac3` with the ordinary standalone command to retain
+all original tracks and put default EAC3 first among audio tracks (new audio: 48 kHz, 640 kbps, lossy). A selected
+existing EAC3 track is reused. Choose the source audio with
+`--compatibility-audio-track N` (zero-based); absent a choice, use the unique
+default audio or sole audio track. Ambiguous choices and unsupported channel
+layouts stop for review; no automatic downmix. Known mono, stereo and 5.1 layouts
+are accepted. This is an explicit playback preference, not GPU/model detection.
+
+`--default-subtitle-track N` selects a zero-based embedded subtitle default while
+retaining every subtitle and its forced flag. Omit it to retain subtitle defaults.
+Both track options require `--compatibility-audio eac3`. Plex saved language/track
+preferences can override file defaults; this does not repair Plex transcoder bugs
+or guarantee every client can play EAC3/AV1. FFmpeg disposition semantics:
+https://ffmpeg.org/ffmpeg.html#Stream-selection
+
+Example (dry-run until `--execute` is added):
+
+```powershell
+python python/muxmender.py "D:\Media\Movie.mkv" --hardware intel --codec av1 --compatibility-audio eac3 --default-subtitle-track 0 --output-dir "D:\Prepared"
+```
+
+Video is not encoded a second time to prepare playback. The final copy verifies
+original packet bytes/timestamps, stream metadata, chapters and requested flags,
+then decodes all video/audio and checks startup interleaving. Added audio counts
+against the savings threshold for video conversions. Explicit compatibility-only
+remux of an already efficient video can grow the file; it is playback preparation,
+not space savings. All sources/intermediates remain separate and retained.
+Experimental Dolby delivery modes reject this option; DV gates are unchanged.
+Jobs and verification stages appear in the terminal and control room dashboard.
+
+
+## Optional existing-file rename mode
+
+Rename is separate from conversion and requires an explicitly reviewed plan.
+Preview never renames media and needs no FFmpeg, GPU or online service:
+
+```powershell
+python python/muxmender.py "C:\Media" --rename-plan "C:\Plans\rename.json"
+```
+
+The plan file must be new and its parent directory must exist. Entries show exact
+source/destination paths, identity evidence and ready/unchanged/needs-review/blocked
+status. A single-video folder containing a title and year can resolve abbreviated
+filenames, e.g. `War Horse (2011)/s7-war.horse.1080.mkv` becomes
+`War Horse (2011) - s7-war.horse.1080.mkv`. Uncertain abbreviated release names
+are retained whole so release identifiers are not guessed away.
+This is a folder-based proposal, not verified online movie
+identification. Missing/conflicting years or ambiguous names require review.
+Episode identifiers are retained. File extensions are preserved, so renaming an
+MP4 never falsely labels it MKV. No video conversion occurs.
+
+Rename proposals clean the title while preserving the original release tail,
+including its punctuation and release group. For example,
+`X2.2003.BluRay.720p.x264.DTS-WiKi.mkv` becomes
+`X2 (2003) - BluRay.720p.x264.DTS-WiKi.mkv`.
+Plans expose `release_suffix` for review. Conversion itself preserves the entire
+source basename. These names retain source-release labels even if conversion
+changes the actual codec. Rebuild older rename plans before applying them;
+previously saved plans still contain their original proposed destinations.
+
+For an ambiguous single file, provide its confirmed identity when creating a
+new preview:
+
+```powershell
+python python/muxmender.py "C:\Media\s7-war.horse.1080.mkv" --rename-title "War Horse (2011)" --rename-plan "C:\Plans\war-horse.json"
+```
+
+Add `--rename-sidecars` to include same-basename subtitle and artwork companions,
+including language suffixes such as `.en.srt`. Other names and subtitle
+subdirectories remain untouched; inspect these associations before approval.
+Folder names never change. Without that option, only videos are proposed.
+
+After reviewing every ready entry, explicit apply is:
+
+```powershell
+python python/muxmender.py --apply-rename-plan "C:\Plans\rename.json" --execute --confirm-rename RENAME
+```
+
+Only ready entries are applied. Validation of the whole ready set happens before
+renaming: source size/mtime/file identity must match the preview, destinations
+must be unoccupied in the same directory, and no symlinks/junctions are followed.
+Nothing is overwritten. A per-action JSONL journal is saved beside the plan;
+if a filesystem error occurs mid-run, earlier renames remain and the journal
+identifies completed/pending actions. Rebuild a preview before retrying; this is
+not a transactional batch rollback. On systems without exclusive rename semantics,
+exclusive hard-link creation followed by unlinking the old name is used; unsupported
+filesystems fail instead of falling back to an overwrite. Media contents and
+last-modified timestamps are preserved. No renames on Drive Y were performed during
+development; all apply tests used disposable local fixtures.
+
+
+Run the reusable hardware/mux regression without source media:
+
+```powershell
+python python/staged_mux_stress.py --hardware intel --codec hevc --playback-defaults
+python python/staged_mux_stress.py --hardware intel --codec av1 --playback-defaults
+```
+
+Both run generated 60/300-second fixtures with explicit BT.709 color, sparse and
+empty subtitles, retained original audio plus compatibility audio, timestamp/
+packet checks, full decode, seeks and measured stage memory. No extra scripts
+or software installation are required. Native NVIDIA remains the default vendor
+for backward compatibility; `--ordered-dv` is a mux-only diagnostic, not DV approval.
+
+### Integrated Intel HDR and Dolby Vision
+
+After the full AV1 HDR10 and HEVC Profile 8.1 outputs passed automated checks and
+Chrome/Sony TV playback, the normal standalone command now dispatches to those
+same audited pipelines. No extra scripts are needed:
+
+```powershell
+python python/muxmender.py "C:\Media\movie.mkv" --codec av1 --hardware intel --quality transparent --reencode-efficient --output-dir "C:\Converted" --execute
+python python/muxmender.py "C:\Media\episode.mkv" --preserve-dolby-vision --hardware intel --output-dir "C:\Converted" --execute
+```
+
+Omit `--execute` for a dry run. AV1 HDR requires unchanged resolution and original
+tracks; compatibility-audio preparation, overwrite and CPU fallback are blocked
+for this route. Quality and minimum savings follow the requested CLI settings;
+transparent was used for the approved full-file test. All HDR frames are audited,
+the known Intel MDCV clamp is repaired, and full independent frame/track/HDR/seek/
+decode verification must pass before the final file is published. Recovery files
+remain under `.MuxMender-work` and are excluded from subsequent media scans.
+
+Dolby Vision remains opt-in and Profile 8.1 only. `--hardware auto` prefers an
+available AMD GPU, then Intel; explicit Intel uses the tested QSV settings and
+savings preflight. NVIDIA remains available through the separate research command.
+No default DV conversion, resizing, source deletion or automatic installation was
+enabled. Actual encoder operation and per-file preservation still must pass.
+
+### Explicit Intel HDR/DV research
+
+
+The separate research entry points remain available for diagnostics; integrated use is described above. The following
+standalone commands write only to new, separate research directories:
+
+```powershell
+python python/validate_nvidia.py av1-hdr-research "C:\Media\movie.mkv" --run "C:\Tests\av1-hdr" --execute
+python python/validate_nvidia.py verify-full "C:\Media\movie.mkv" "C:\Tests\av1-hdr" --job "reports\job-ID\job.json" --hdr --experimental-av1-hdr
+python python/dv_full_file.py "C:\Media\dv-movie.mkv" --experimental-intel --work-dir "C:\Tests\dv" --execute
+```
+
+Omit `--execute` for a read-only plan. Use the actual dashboard encoding job
+record in `--job`. The AV1 command is research, not ordinary CLI publication:
+full verification must pass before adding its output to Plex. It requires
+constant HDR10 mastering metadata on every source frame, retains exact dimensions
+and original tracks, uses the transparent QSV setting and two-second GOPs,
+and rejects outputs saving less than 5%. It validates the complete IVF in a
+bounded-memory first pass before writing a repaired copy. Only the reproduced
+50000-coordinate clamp is corrected; all picture bytes and IVF timing remain
+unchanged. Verification compares every output frame against the source at AV1's
+representable MDCV precision, checks copied packets/chapters, decodes the full
+output and checks seeking. HDR10+ and Dolby Vision are excluded from this route.
+
+Intel DV full-file research first runs a 30-second preservation/savings test
+near five minutes (or near the midpoint for shorter inputs), avoiding reliance
+on opening logos. This is a screening sample, not a whole-file savings guarantee.
+It requires Profile 8.1, continuous CFR starting at zero, original resolution,
+no extra dynamic HDR, and full RPU/frame/track/decode/seek validation. Larger
+outputs are rejected. Neither route replaces, renames or removes source media,
+installs software, or establishes identical visual quality. Client playback
+approval remains separate from automated verification.
+
+### Optional existing-folder cleanup
+
+Cleanup is off by default and uses the existing standalone CLI. Supply the main
+video to protect while previewing its containing folder (including subfolders):
+
+```powershell
+python python/muxmender.py "C:\Media\Movie (2020)\Movie.mkv" --cleanup-plan "C:\Plans\cleanup.json" --cleanup-samples
+```
+
+Without `--cleanup-samples`, only `.nfo` files are nominated. With it, videos
+inside directories named `Sample`/`Samples`, or with names ending in a separated
+`sample` token, are also nominated. Duration is never used to infer a sample.
+The chosen main video, its hard links, ordinary video names, subtitle files at
+every depth, artwork and directories are excluded. Links/junctions are not followed.
+
+Inspect every `ready` entry in the JSON preview. Remove unwanted entries or set
+their status to `keep`; a sample name alone does not prove the file is expendable.
+Explicit apply permanently deletes only the reviewed ready files:
+
+```powershell
+python python/muxmender.py --apply-cleanup-plan "C:\Plans\cleanup.json" --execute --confirm-cleanup CLEANUP
+```
+
+Apply checks the entire plan's scope and file identities before deletion, then
+rechecks each action and the protected video. A durable JSONL journal records
+actions. This is not a transactional rollback: earlier deletions remain if a
+later action fails. Rebuild the preview before retrying. This option is separate
+from `--video-only-folder`, which controls new output folders and never cleans
+source folders. Development tests used disposable local fixtures only; this
+feature was not applied to Drive Y.

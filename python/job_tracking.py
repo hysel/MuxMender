@@ -54,6 +54,16 @@ def progress(label, completed=0, total=None, stage_percent=None, stage_eta=None,
         pass
 
 
+def stage_progress(percent, eta):
+    """Update current-stage telemetry without resetting completed-work progress."""
+    if _active:
+        try:
+            _active.save(stage_percent=percent, stage_eta=eta, stage_updated=time.time(),
+                         eta_scope='Current stage only; later muxing/verification time is not included')
+        except OSError:
+            pass
+
+
 def tracked_call(function, title, folder=None):
     """Wrap a CLI invocation, preserving stdout and stderr and its exit status."""
     global _active

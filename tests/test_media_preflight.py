@@ -7,6 +7,15 @@ from mux_integrity import conversion_preflight, inspect_packets, verified_reorde
 
 
 class PreflightTests(unittest.TestCase):
+    def test_hevc_reorder_requires_complete_decoded_timing_evidence(self):
+        data = dict(streams=[dict(codec_name='hevc', has_b_frames=2)], packets=[
+            dict(pts_time=0), dict(pts_time=2), dict(pts_time=1,dts_time=0), dict(pts_time=3,dts_time=1)])
+        frames = [dict(pts_time=x) for x in range(4)]
+        self.assertEqual(verified_reorder_prefix(data, frames), 2)
+        self.assertEqual(verified_reorder_prefix(data, frames[:-1]), 0)
+        data['packets'][3].pop('dts_time')
+        self.assertEqual(verified_reorder_prefix(data, frames), 0)
+
     def test_reorder_prefix_requires_matching_decoded_pts(self):
         data = dict(streams=[dict(codec_name='h264',has_b_frames=2)], packets=[
             dict(pts_time=0),dict(pts_time=2),dict(pts_time=1,dts_time=0),dict(pts_time=3,dts_time=1)])

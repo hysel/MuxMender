@@ -69,6 +69,19 @@ def progress(log):
     if bars:
         label, percent, elapsed, eta = bars[-1]
         result.update(progress_label=label.strip(), stage_percent=float(percent), stage_eta=int(eta))
+        # Read recent throughput from old running processes without restarting them.
+        end, value = float(elapsed), float(percent)
+        recent = []
+        for name, p, t, _ in reversed(bars):
+            if name != label or float(t) > end or float(p) > value:
+                break
+            if end - float(t) > 120:
+                break
+            recent.append((float(t), float(p)))
+        if len(recent) > 1:
+            start, initial = recent[-1]
+            if end - start >= 10 and value > initial:
+                result['stage_eta'] = round((100-value)*(end-start)/(value-initial))
     return result
 
 
@@ -104,9 +117,13 @@ def apply_outcome(data,directory,root):
     if not report:return data
     data=dict(data)
     initial=read_json(directory/'job.json')
-    data['execution_state']=initial.get('state')
+    data['execution_state']=initial.get('state',data.get('state'))
     data['execution_error']=initial.get('error')
     data['result']=report
+    if report.get('status') in ('running','queued','cancelling'):
+        data['validation_pending']=True
+        data['detail']='Process ended without a final validation report; no validation pass inferred.'
+        return data
     data['state']='playback-approved' if approved else ('verified' if str(report.get('status','')).startswith('verified') else report.get('status',data.get('state')))
     data['phase']='Playback approved' if approved else report.get('status',data.get('phase'))
     data['error']=report.get('error')
@@ -189,6 +206,15 @@ class Catalog:
                 percent = parsed.get('percent', status.get('percent', job.get('percent')))
                 if structured:
                     percent = job.get('percent')
+                stage_percent = job.get('stage_percent') if structured else parsed.get('stage_percent')
+                stage_eta = job.get('stage_eta') if structured else parsed.get('stage_eta')
+                current_encode_log = ((phase == 'Encoding video' and parsed.get('progress_label') == 'Encoding') or
+                    (phase == 'Encoding Intel AV1 HDR10' and parsed.get('progress_label') == 'Stage (10-65% overall)'))
+                if (structured and stage_percent is None and current_encode_log and logpath.is_file()
+                        and time.time() - logpath.stat().st_mtime < 90):
+                    stage_percent, stage_eta = parsed.get('stage_percent'), parsed.get('stage_eta')
+                if job.get('stage_updated') and time.time() - job['stage_updated'] > 30:
+                    stage_eta = None
                 if state in ('verified', 'completed', 'skipped'):
                     percent = 100
                 if phase == 'Starting':
@@ -215,8 +241,8 @@ class Catalog:
                 title = job.get('title') or ('Full Dolby Vision preservation' if directory.name.startswith('dv-full-') else report.get('scope')) or directory.name
                 jobs.append(apply_outcome(dict(id=identifier, title=title,
                     directory=str(directory.relative_to(self.root)), state=state, phase=phase, percent=percent,
-                    stage_eta=(job.get('stage_eta') if structured else parsed.get('stage_eta')) if state == 'running' else None,
-                    stage_percent=job.get('stage_percent') if structured else parsed.get('stage_percent'),
+                    stage_eta=stage_eta if state == 'running' else None,
+                    stage_percent=stage_percent,
                     progress_kind=job.get('progress_kind', 'legacy'),
                     completed=job.get('completed'), total=job.get('total'), unit=job.get('unit', 'steps'),
                     detail=job.get('detail'), results=report.get('capabilities', []),

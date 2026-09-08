@@ -119,6 +119,7 @@ def media_files(folder: Path) -> Iterable[Path]:
             and path.suffix.lower() in MEDIA_EXTENSIONS
             and ".muxmender" not in path.stem.lower()
             and ".partial" not in path.name.lower()
+            and '.muxmender-work' not in (part.lower() for part in path.parts)
         ):
             yield path
 
@@ -488,7 +489,7 @@ def assess_dolby_preservation(info: MediaInfo) -> dict[str, Any] | None:
         and info.color_primaries == "bt2020"
     ):
         route = "profile8.1-research-candidate"
-        reason = "Candidate for an HDR-compatible HEVC base-layer encode with frame-aligned RPU preservation; not yet implemented or validated."
+        reason = "Candidate for opt-in --preserve-dolby-vision with AMD/Intel HEVC; full RPU, frame, track, decode and savings checks are required."
     return {
         "route": route,
         "reason": reason,
@@ -505,6 +506,7 @@ def recommend(
     target_codec: str,
     resolution: str = "keep",
     dolby_vision_policy: str = "skip",
+    reencode_efficient: bool = False,
 ) -> MediaInfo:
     info.dolby_preservation = assess_dolby_preservation(info)
     target_width, target_height = output_dimensions(info, resolution)
@@ -543,6 +545,9 @@ def recommend(
             f"user requested {resolution}: downscale {info.width}x{info.height} to "
             f"{target_width}x{target_height}; encode video as {target_codec}; copy all audio streams"
         )
+    elif reencode_efficient and info.video_codec in {'hevc', 'av1'}:
+        info.recommendation = 'transcode'
+        info.reason = 'Explicit efficient-codec re-encode; normal savings and preservation checks apply'
     elif info.video_codec == target_codec:
         info.recommendation = "keep" if "matroska" in info.container else "remux"
         info.reason = (
@@ -596,8 +601,166 @@ def output_path(source: Path, root: Path, output_dir: Path | None) -> Path:
     if output_dir:
         relative = source.relative_to(root)
         candidate = output_dir / relative
-        return candidate.with_name(clean_media_name(source))
-    return source.parent / 'MuxMender' / clean_media_name(source)
+        return candidate.with_suffix('.mkv')
+    return source.parent / 'MuxMender' / source.with_suffix('.mkv').name
+
+
+def rename_identity(path):
+    value = path.stat()
+    return dict(size=value.st_size, mtime_ns=value.st_mtime_ns,
+                device=value.st_dev, inode=value.st_ino)
+
+
+def check_rename_path(path):
+    """Do not follow links/junctions while planning or applying renames."""
+    for part in (path, *path.parents):
+        if part.is_symlink() or (part.exists() and getattr(part.lstat(), 'st_file_attributes', 0) & 0x400):
+            raise ValueError(f'Rename does not follow links or junctions: {part}')
+
+
+def rename_release_suffix(source, title):
+    """Keep the original release tail verbatim; retain uncertain abbreviations whole."""
+    stem = source.stem
+    if stem.startswith(title + ' - '):
+        return stem[len(title) + 3:]
+    prefix = re.match(r'(?i)^([a-z0-9]{2,9})-', stem)
+    if prefix and not re.match(re.escape(prefix.group(1)) + r'(?:\b|_)', title, re.I):
+        return stem
+    match = re.search(r'(?i)(?<![a-z0-9])(?:480[pi]?|576[pi]?|720p?|1080[pi]?|2160p?|4320p?|'
+                      r'REPACK|PROPER|WEB[ .-]?DL|WEBRip|Blu[ .-]?Ray|BDRip|HDTV|REMUX|'
+                      r'x26[45]|H[ .]?26[45]|HEVC|AV1|AMZN|DDP)(?![a-z0-9])', stem)
+    year = re.search(r'(?<!\d)(?:19|20)\d{2}(?!\d)\)?', stem)
+    if year and (not match or year.end() <= match.start()) and re.search(r'\((?:19|20)\d{2}\)$', title):
+        return stem[year.end():].lstrip(' ._-')
+    if match:
+        return stem[match.start():]
+    # Keep an unclassified suffix after an explicit year instead of discarding it.
+    return stem[year.end():].lstrip(' ._-') if year else ''
+
+
+def create_rename_plan(target, title=None, sidecars=False):
+    target = Path(os.path.abspath(target))
+    check_rename_path(target)
+    if not target.exists():
+        raise ValueError('Rename target does not exist')
+    if title and not target.is_file():
+        raise ValueError('--rename-title requires a single video file')
+    root = target.parent if target.is_file() else target
+    files = []
+    if target.is_file():
+        files = [target]
+    else:
+        for directory, folders, names in os.walk(root, followlinks=False):
+            folders[:] = [n for n in folders if not (Path(directory)/n).is_symlink()
+                          and not getattr((Path(directory)/n).lstat(), 'st_file_attributes', 0) & 0x400]
+            files.extend(Path(directory)/n for n in names if Path(n).suffix.lower() in MEDIA_EXTENSIONS)
+    entries = []
+    for source in sorted(files):
+        if source.suffix.lower() not in MEDIA_EXTENSIONS:
+            raise ValueError('Rename target must be a supported video file')
+        check_rename_path(source)
+        siblings = [p for p in source.parent.iterdir() if p.is_file() and p.suffix.lower() in MEDIA_EXTENSIONS]
+        filename = Path(clean_media_name(source)).stem
+        folder = Path(clean_media_name(Path(source.parent.name + '.mkv'))).stem
+        dated = lambda value: bool(re.search(r'\((?:19|20)\d{2}\)$', value))
+        episode = bool(re.search(r'(?i)\bS\d{1,3}E\d{1,3}', filename))
+        reason, name = 'Identity is ambiguous; supply --rename-title for this single file', None
+        if title:
+            name, reason = Path(clean_media_name(Path(title + '.mkv'))).stem, 'Explicit user-provided title'
+        elif episode:
+            name, reason = filename, 'Episode identity from filename'
+        elif len(siblings) == 1 and dated(folder):
+            if dated(filename) and filename[-6:] != folder[-6:]:
+                reason = 'Folder and filename years disagree; review required'
+            else:
+                name, reason = folder, 'Single-video folder title/year; verify identity in preview'
+        elif dated(filename) and not re.match(r'(?i)^[a-z0-9]{2,9}-', source.stem):
+            name, reason = filename, 'Title/year from filename'
+        release = rename_release_suffix(source, name) if name else ''
+        destination = source.with_name(name + (' - ' + release if release else '') + source.suffix) if name else None
+        entry = dict(source=str(source), destination=str(destination) if destination else None,
+                     identity=rename_identity(source), reason=reason, release_suffix=release,
+                     status='ready' if destination and destination != source else 'unchanged' if destination else 'needs-review')
+        entries.append(entry)
+        if sidecars and destination and destination != source:
+            for companion in sorted(source.parent.iterdir()):
+                if (companion.is_file() and companion.suffix.lower() in {'.srt','.ass','.ssa','.vtt','.sub','.idx','.jpg','.jpeg','.png','.webp'}
+                        and companion.name.startswith(source.stem + '.')):
+                    check_rename_path(companion)
+                    entries.append(dict(source=str(companion), destination=str(companion.with_name(destination.stem + companion.name[len(source.stem):])),
+                        identity=rename_identity(companion), parent_source=str(source), reason='Same-basename subtitle/artwork companion', status='ready'))
+    destinations = {}
+    for entry in entries:
+        if entry['status'] != 'ready':
+            continue
+        destination = Path(entry['destination'])
+        key = str(destination).casefold()
+        destinations.setdefault(key, []).append(entry)
+        if destination.exists():
+            entry.update(status='blocked', reason='Destination already exists; no overwrite')
+    for group in destinations.values():
+        if len(group) > 1:
+            for entry in group:
+                entry.update(status='blocked', reason='Multiple files would use the same destination')
+    states = {e['source']: e['status'] for e in entries}
+    for entry in entries:
+        if entry.get('parent_source') and states[entry['parent_source']] != 'ready':
+            entry.update(status='blocked', reason='Companion video rename is blocked')
+    return dict(schema='muxmender-rename-v1', root=str(root), entries=entries,
+                note='Preview only. No online identity lookup. Review every ready entry before explicit apply. No folder renames.')
+
+
+def apply_rename_plan(plan_path):
+    plan_path = plan_path.resolve()
+    plan = json.loads(plan_path.read_text(encoding='utf-8'))
+    if plan.get('schema') != 'muxmender-rename-v1':
+        raise ValueError('Unsupported rename plan')
+    root = Path(plan['root'])
+    check_rename_path(root)
+    if not root.is_absolute() or not root.is_dir():
+        raise ValueError('Rename root must be an existing absolute directory')
+    ready = [e for e in plan['entries'] if e['status'] == 'ready']
+    ready_sources = {e['source'] for e in ready}
+    seen_sources, seen_targets = set(), set()
+    for entry in ready:
+        source, destination = Path(entry['source']), Path(entry['destination'])
+        if entry.get('parent_source') and entry['parent_source'] not in ready_sources:
+            raise ValueError('Companion rename requires its video rename in the same plan')
+        check_rename_path(source)
+        if not source.is_absolute() or not destination.is_absolute() or source.parent != destination.parent:
+            raise ValueError('Rename must stay in the same directory')
+        source.resolve().relative_to(root.resolve())
+        if not source.is_file() or rename_identity(source) != entry['identity']:
+            raise ValueError(f'Source changed since preview: {source}')
+        if source.suffix != destination.suffix or destination.name.rstrip(' .') != destination.name or re.search(r'[<>:"|?*]', destination.name):
+            raise ValueError('Invalid destination or changed file extension')
+        if destination.name.split('.')[0].upper() in {'CON','PRN','AUX','NUL', *('COM'+str(n) for n in range(1,10)), *('LPT'+str(n) for n in range(1,10))}:
+            raise ValueError('Reserved destination filename')
+        if str(source).casefold() in seen_sources or str(destination).casefold() in seen_targets or destination.exists():
+            raise ValueError('Duplicate action or destination collision; nothing renamed')
+        seen_sources.add(str(source).casefold()); seen_targets.add(str(destination).casefold())
+    # Create the durable result journal before any mutation; partial failures are explicit.
+    journal = plan_path.with_name(plan_path.stem + '.applied-' + uuid.uuid4().hex[:8] + '.jsonl')
+    with journal.open('x', encoding='utf-8') as log:
+        for entry in ready:
+            source, destination = Path(entry['source']), Path(entry['destination'])
+            log.write(json.dumps({'status':'starting','source':str(source),'destination':str(destination)})+'\n')
+            log.flush(); os.fsync(log.fileno())
+            try:
+                check_rename_path(source)
+                if rename_identity(source) != entry['identity']:
+                    raise ValueError('Source changed after preflight')
+                if os.name == 'nt':
+                    os.rename(source, destination)  # Windows rejects existing destinations.
+                else:
+                    os.link(source, destination)  # Exclusive creation; never replaces a target.
+                    source.unlink()
+                log.write(json.dumps({'status':'renamed','source':str(source),'destination':str(destination)})+'\n')
+                log.flush(); os.fsync(log.fileno())
+            except Exception as exc:
+                log.write(json.dumps({'status':'failed','source':str(source),'destination':str(destination),'error':str(exc)})+'\n')
+                raise RuntimeError(f'Rename stopped; review journal {journal}: {exc}') from exc
+    return len(ready), journal
 
 
 def copy_matching_artwork(source: Path, destination: Path, video_only: bool = False) -> list[dict]:
@@ -637,9 +800,14 @@ def encoder_options(
     quality: str,
     info: MediaInfo,
     encoder: str | None = None,
+    *, experimental_av1_hdr: bool = False,
 ) -> list[str]:
     encoder = encoder or SOFTWARE_ENCODERS[codec]
     ten_bit = info.bit_depth > 8 or info.hdr
+    if experimental_av1_hdr and (encoder != 'av1_qsv' or not info.hdr or info.dolby_vision):
+        raise ValueError('AV1 HDR research requires Intel AV1 HDR10 without Dolby Vision')
+    if encoder == "av1_qsv" and (info.hdr or info.mastering_display_metadata) and not experimental_av1_hdr:
+        raise ValueError("Intel AV1 mastering-display preservation requires the integrated repair and full-verification route; direct unchecked encoding is blocked.")
 
     if encoder == "libx265":
         crf = {"transparent": "18", "balanced": "21", "compact": "24"}[quality]
@@ -674,6 +842,9 @@ def encoder_options(
         quality_value = {"transparent": "18", "balanced": "21", "compact": "25"}[quality]
         preset = {"transparent": "veryslow", "balanced": "slower", "compact": "medium"}[quality]
         options = ["-c:v", encoder, "-preset", preset, "-global_quality", quality_value]
+        if encoder == "hevc_qsv":
+            # QSV reordering duplicates PTS on irregular tails; preserve the input timeline.
+            options += ["-bf", "0"]
         if ten_bit:
             options += ["-pix_fmt", "p010le"]
     else:
@@ -700,6 +871,7 @@ def build_ffmpeg_command(
     ffmpeg: str = "ffmpeg",
     encoder: str | None = None,
     resolution: str = "keep",
+    *, experimental_av1_hdr: bool = False,
 ) -> list[str]:
     target_width, target_height = output_dimensions(info, resolution)
     scale_options = (
@@ -712,7 +884,7 @@ def build_ffmpeg_command(
         if info.recommendation == "remux"
         else [
             *scale_options,
-            *encoder_options(codec, quality, info, encoder),
+            *encoder_options(codec, quality, info, encoder, experimental_av1_hdr=experimental_av1_hdr),
             "-c:a", "copy", "-c:s", "copy", "-c:d", "copy", "-c:t", "copy",
         ]
     )
@@ -820,6 +992,8 @@ def run_ffmpeg(
     try:
         eof = False
         while not eof or process.poll() is None:
+            from runtime_support import guard_ordered_mux_memory
+            guard_ordered_mux_memory(process, progress_command)
             if stall_timeout > 0 and process.poll() is None and time.monotonic() - last_progress_at >= stall_timeout:
                 stalled = True
                 print(f"Encoder stalled for {stall_timeout:.0f}s; stopping owned process. Partial output retained.", flush=True)
@@ -837,6 +1011,8 @@ def run_ffmpeg(
                     last_progress_at = time.monotonic()
                     last_advanced = percent
                 display.update(min(percent, 99))
+                import job_tracking
+                job_tracking.stage_progress(min(percent, 99), display.eta_seconds)
     finally:
         if process.poll() is None:
             stop_process_tree(process)
@@ -856,6 +1032,8 @@ def verify_output(
     expected_video_codec: str,
     enforce_min_savings: bool = True,
     expected_dimensions: tuple[int, int] | None = None,
+    additional_audio: bool = False,
+    playback_audio_codecs: list[str] | None = None,
 ) -> tuple[bool, str]:
     result = probe(output, ffprobe)
     if result.video_codec != expected_video_codec:
@@ -868,9 +1046,12 @@ def verify_output(
         )
     if source_info.duration_seconds and abs(result.duration_seconds - source_info.duration_seconds) > 2.0:
         return False, "duration differs by more than two seconds"
-    if len(result.audio_codecs) != len(source_info.audio_codecs):
+    expected_audio = source_info.audio_codecs + (['eac3'] if additional_audio else [])
+    if playback_audio_codecs is not None:
+        expected_audio = playback_audio_codecs
+    if len(result.audio_codecs) != len(expected_audio):
         return False, "audio stream count changed"
-    if result.audio_codecs != source_info.audio_codecs:
+    if result.audio_codecs != expected_audio:
         return False, "one or more audio codecs changed"
     if result.subtitle_codecs != source_info.subtitle_codecs:
         return False, "subtitle streams changed"
@@ -917,7 +1098,8 @@ def verify_output(
     if enforce_min_savings and saved < min_savings:
         return False, f"only saved {saved:.1f}% (minimum is {min_savings:.1f}%)"
     if not enforce_min_savings:
-        return True, f"verified lossless remux (size change: {saved:+.1f}%)"
+        label = 'verified remux with added lossy compatibility audio' if additional_audio else 'verified lossless remux'
+        return True, f"{label} (size change: {saved:+.1f}%)"
     return True, f"saved {saved:.1f}% ({human_size(source_info.size_bytes - result.size_bytes)})"
 
 
@@ -991,12 +1173,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         epilog="Dry-run is the default. Use --execute to create optimized sidecar files.",
     )
     parser.add_argument("folder", type=Path, nargs="?", help="media file or library folder")
+    parser.add_argument('--rename-plan', type=Path, help='Write a new JSON preview for existing-file renames; never apply')
+    parser.add_argument('--rename-title', help='Explicit title/year override for a single-file rename preview')
+    parser.add_argument('--rename-sidecars', action='store_true', help='Include same-basename subtitle/artwork files in rename preview')
+    parser.add_argument('--apply-rename-plan', type=Path, help='Apply ready entries from a reviewed plan; requires --execute --confirm-rename RENAME')
+    parser.add_argument('--confirm-rename', default='', help='Explicit existing-file rename confirmation: RENAME')
+    parser.add_argument('--cleanup-plan', type=Path, help='Preview NFO cleanup beside the supplied main video; never delete during preview')
+    parser.add_argument('--cleanup-samples', action='store_true', help='Also nominate explicitly named sample videos; requires --cleanup-plan and review')
+    parser.add_argument('--apply-cleanup-plan', type=Path, help='Permanently delete ready files from a reviewed cleanup plan; requires --execute --confirm-cleanup CLEANUP')
+    parser.add_argument('--confirm-cleanup', default='', help='Explicit reviewed cleanup confirmation: CLEANUP')
     parser.add_argument("--check-dependencies", action="store_true", help="check tools and encoder availability without opening media or initializing GPU encoding")
     parser.add_argument("--native-delivery-test", action="store_true",
                         help="bounded DV-to-PQ HDR workflow with encoding, copied audio/subtitles, and original-segment comparison")
     parser.add_argument("--streaming-delivery-test", action="store_true", help="experimental 1..60 second DV-to-PQ test piped directly to HEVC; no lossless disk intermediates")
     parser.add_argument("--full-file-streaming", action="store_true", help="explicit whole-file DV5-to-PQ conversion; requires hdr-preview and d3d11; originals always retained")
-    parser.add_argument("--preserve-dolby-vision", action="store_true", help="opt-in experimental full-file Profile 8.1 preservation; single file, AMD HEVC only, no resizing")
+    parser.add_argument("--preserve-dolby-vision", action="store_true", help="opt-in full-file Profile 8.1 preservation; single file, AMD/Intel HEVC, no resizing")
     parser.add_argument("--dovi-tool", default=str(Path(__file__).resolve().parent.parent / "tools/dovi_tool-2.3.3/dovi_tool.exe"), help="path to dovi_tool for opt-in Dolby Vision preservation")
     parser.add_argument("--dv-qp-i", type=int, default=21)
     parser.add_argument("--dv-qp-p", type=int, default=23)
@@ -1006,6 +1197,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--d3d11-helper", type=Path,
                         default=Path(__file__).resolve().parent.parent / "native/muxmender-d3d11/build/preview/muxmender-dv-preview.exe")
     parser.add_argument("--codec", choices=("auto", "hevc", "av1"), default="auto")
+    parser.add_argument('--reencode-efficient', action='store_true', help='Explicitly re-encode HEVC/AV1 inputs; retains normal color/DV safety and minimum savings checks')
     parser.add_argument(
         "--resolution",
         choices=("keep", "2160p", "1080p", "720p", "480p"),
@@ -1049,6 +1241,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="length of a Dolby Vision SDR preview (default: 10)",
     )
     parser.add_argument("--quality", choices=("transparent", "balanced", "compact"), default="balanced")
+    parser.add_argument('--compatibility-audio', choices=('preserve', 'eac3'), default='preserve',
+                        help='Opt-in: retain original tracks and make EAC3 compatibility audio default')
+    parser.add_argument('--compatibility-audio-track', type=int,
+                        help='Zero-based source audio track; otherwise use a unique default or only audio track')
+    parser.add_argument('--default-subtitle-track', type=int,
+                        help='Zero-based embedded subtitle to mark default; preserve all subtitles and forced flags')
     parser.add_argument("--execute", action="store_true", help="run ffmpeg; otherwise only show the plan")
     parser.add_argument("--dry-run", action="store_true", help="explicitly request the default dry-run behavior")
     parser.add_argument("--output-dir", type=Path, help="mirror optimized files under this directory")
@@ -1136,6 +1334,66 @@ def run_native_dolby_preview(args: argparse.Namespace, source: Path) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.cleanup_plan or args.apply_cleanup_plan or args.cleanup_samples or args.confirm_cleanup:
+        try:
+            from library_planner import create_cleanup_plan, apply_cleanup_plan
+            if (args.rename_plan or args.apply_rename_plan or args.rename_title or args.rename_sidecars or args.confirm_rename
+                    or args.delete_originals or args.overwrite_output or args.output_dir or args.report or args.check_dependencies
+                    or args.preserve_dolby_vision or args.native_delivery_test or args.streaming_delivery_test or args.full_file_streaming):
+                raise ValueError('Cleanup cannot be combined with rename, conversion, reporting or original-deletion modes')
+            if args.cleanup_plan:
+                if args.apply_cleanup_plan or args.execute or args.confirm_cleanup or args.folder is None:
+                    raise ValueError('Preview requires the main video and --cleanup-plan; no execute or confirmation')
+                if args.cleanup_plan.suffix.lower() != '.json':
+                    raise ValueError('Cleanup preview must be a new .json file')
+                plan = create_cleanup_plan(args.folder, args.cleanup_samples)
+                with args.cleanup_plan.open('x',encoding='utf-8') as output:
+                    json.dump(plan,output,indent=2)
+                for entry in plan['entries']:
+                    print(f"REVIEW: {entry['source']} | {entry['reason']}")
+                print(f'Cleanup preview: {args.cleanup_plan}; {len(plan["entries"])} candidates. No files changed.')
+                return 0
+            if not args.apply_cleanup_plan or not args.execute or args.dry_run or args.confirm_cleanup != 'CLEANUP' or args.folder or args.cleanup_samples:
+                raise ValueError('Apply requires --apply-cleanup-plan PLAN --execute --confirm-cleanup CLEANUP; review plan first')
+            count,journal = apply_cleanup_plan(args.apply_cleanup_plan)
+            print(f'Deleted {count} reviewed cleanup files. Main video/subtitles retained. Journal: {journal}')
+            return 0
+        except (OSError,ValueError,RuntimeError,KeyError,TypeError) as exc:
+            print(f'Cleanup error: {exc}',file=sys.stderr)
+            return 2
+    if args.rename_plan or args.apply_rename_plan:
+        try:
+            if args.delete_originals or args.overwrite_output or args.output_dir or args.report or args.check_dependencies or args.preserve_dolby_vision or args.native_delivery_test or args.streaming_delivery_test or args.full_file_streaming:
+                raise ValueError('Rename mode cannot be combined with conversion, reporting or deletion modes')
+            if args.rename_plan:
+                if args.apply_rename_plan or args.execute or args.confirm_rename or args.folder is None:
+                    raise ValueError('Preview requires a file/folder and --rename-plan only; no execute or confirmation')
+                plan = create_rename_plan(args.folder, args.rename_title, args.rename_sidecars)
+                if args.rename_plan.suffix.lower() != '.json':
+                    raise ValueError('Rename preview must be a new .json file')
+                with args.rename_plan.open('x', encoding='utf-8') as stream:
+                    json.dump(plan, stream, indent=2)
+                for entry in plan['entries']:
+                    print(f"{entry['status'].upper()}: {entry['source']} -> {entry['destination'] or '(review needed)'} | {entry['reason']}")
+                print(f'Rename preview saved: {args.rename_plan}. No media changed.')
+                return 0
+            if not args.execute or args.dry_run or args.confirm_rename != 'RENAME' or args.folder or args.rename_title or args.rename_sidecars:
+                raise ValueError('Apply requires --apply-rename-plan PLAN --execute --confirm-rename RENAME; review plan first')
+            count, journal = apply_rename_plan(args.apply_rename_plan)
+            print(f'Renamed {count} files. Journal: {journal}. Non-ready entries were not applied.')
+            return 0
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+            print(f'Rename error: {exc}', file=sys.stderr)
+            return 2
+    if args.rename_title or args.rename_sidecars or args.confirm_rename:
+        print('error: rename options require --rename-plan or --apply-rename-plan', file=sys.stderr)
+        return 2
+    if args.compatibility_audio == 'preserve' and (args.compatibility_audio_track is not None or args.default_subtitle_track is not None):
+        print('error: playback track choices require --compatibility-audio eac3', file=sys.stderr)
+        return 2
+    if args.compatibility_audio != 'preserve' and (args.preserve_dolby_vision or args.streaming_delivery_test or args.full_file_streaming or args.native_delivery_test or args.dolby_preview_backend == 'd3d11'):
+        print('error: compatibility audio is not validated for experimental Dolby delivery modes', file=sys.stderr)
+        return 2
     if args.delete_originals or args.overwrite_output:
         print("error: deletion and overwrite are disabled; choose a fresh output directory", file=sys.stderr)
         return 2
@@ -1283,10 +1541,24 @@ def main(argv: list[str] | None = None) -> int:
                 target_codec,
                 args.resolution,
                 args.dolby_vision_policy,
+                args.reencode_efficient,
             )
             print_info(info)
             entry: dict[str, Any] = asdict(info)
             entry["status"] = info.recommendation
+            playback = None
+            if args.compatibility_audio == 'eac3':
+                if info.dolby_vision or info.recommendation == 'preview':
+                    raise ValueError('Compatibility preparation is not validated for Dolby Vision; preservation gate unchanged')
+                playback_probe = run_json([args.ffprobe, '-v', 'error', '-show_streams', '-show_chapters', '-of', 'json', str(source)])
+                playback = nvidia_mux.playback_plan(playback_probe, args.compatibility_audio_track, args.default_subtitle_track)
+                entry['playback_plan'] = playback
+                if info.recommendation == 'keep':
+                    info.recommendation = 'remux'
+                    entry['recommendation'] = 'remux'
+                    entry['reason'] = 'Explicit playback preparation; copied video, original tracks retained'
+                print('  PLAYBACK: retain original tracks; default EAC3 audio; subtitle defaults ' +
+                      ('unchanged' if args.default_subtitle_track is None else f'track {args.default_subtitle_track}'))
             if info.recommendation == "transcode":
                 from mux_integrity import conversion_preflight
                 preflight = conversion_preflight(info, args.ffprobe, run_json)
@@ -1353,6 +1625,15 @@ def main(argv: list[str] | None = None) -> int:
                 continue
 
             destination = output_path(source, root, args.output_dir.resolve() if args.output_dir else None)
+            if info.recommendation == 'transcode' and selection.encoder == 'av1_qsv' and (info.hdr or info.mastering_display_metadata):
+                from validate_nvidia import run_av1_hdr_integrated
+                entry['encoder'] = asdict(selection)
+                entry.update(run_av1_hdr_integrated(args, source, destination))
+                if args.execute:
+                    entry['artwork'] = copy_matching_artwork(source, destination, args.video_only_folder)
+                    entry['video_only_folder'] = args.video_only_folder
+                report['files'].append(entry)
+                continue
             temporary = fresh_partial(destination)
             if args.video_only_folder:
                 temporary = destination.parent.parent / '.MuxMender-work' / uuid.uuid4().hex / temporary.name
@@ -1361,7 +1642,14 @@ def main(argv: list[str] | None = None) -> int:
                 source, temporary, info, target_codec, args.quality, args.ffmpeg,
                 selection.encoder, args.resolution,
             )
-            if info.recommendation == 'transcode' and selection.encoder in {'hevc_nvenc', 'av1_nvenc'}:
+            if playback is not None and info.recommendation == 'remux':
+                command[command.index('-i'):command.index('-i')] = ['-copyts']
+                flags = []
+                for i, stream in enumerate(playback_probe['streams']):
+                    disposition = '+'.join(k for k, v in stream.get('disposition', {}).items() if v) or '0'
+                    flags += [f'-disposition:{i}', disposition]
+                command[-1:-1] = ['-avoid_negative_ts', 'disabled', *flags]
+            if info.recommendation == 'transcode' and selection.encoder in {'hevc_nvenc', 'av1_nvenc', 'hevc_qsv', 'av1_qsv'}:
                 video_stage = fresh_partial(temporary.with_name(temporary.stem + '.video-stage.mkv'))
                 command[-1] = str(video_stage)
                 command = nvidia_mux.video_stage_command(command)
@@ -1374,6 +1662,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  OUTPUT: {destination}")
             if not args.execute:
                 print(f"  COMMAND: {command_text(command)}")
+                if playback is not None:
+                    print('  PLAYBACK FINALIZE: copy video/original tracks, prepare EAC3 default, verify packets and timing; include added audio in savings')
                 if video_stage is not None:
                     print('  FINALIZE: stream-copy encoded video with original audio, subtitles, metadata and chapters; validate before publication')
                 entry["status"] = "planned"
@@ -1391,7 +1681,7 @@ def main(argv: list[str] | None = None) -> int:
                 required_free = 2 * info.size_bytes + 512 * 1024**2
                 available_free = shutil.disk_usage(destination.parent).free
                 if available_free < required_free:
-                    raise RuntimeError(f'Two-stage NVIDIA output requires at least {human_size(required_free)} free; only {human_size(available_free)} available. Original unchanged.')
+                    raise RuntimeError(f'Two-stage hardware output requires at least {human_size(required_free)} free; only {human_size(available_free)} available. Original unchanged.')
             print(f"  Recovery/partial output: {temporary}")
             job_tracking.progress('Encoding video' if video_stage is not None else 'Processing media', file_index, len(found), unit='files', detail=source.name)
             return_code, stalled = run_ffmpeg(
@@ -1436,15 +1726,42 @@ def main(argv: list[str] | None = None) -> int:
                     return_code, stalled = run_ffmpeg(command, info.duration_seconds)
             if return_code:
                 raise RuntimeError(f"ffmpeg exited with status {return_code}; partial retained: {temporary}")
-            if video_stage is not None and selection.encoder in {'hevc_nvenc', 'av1_nvenc'}:
+            if video_stage is not None and selection.encoder in {'hevc_nvenc', 'av1_nvenc', 'hevc_qsv', 'av1_qsv'}:
                 source_probe = run_json([args.ffprobe, '-v', 'error', '-show_streams', '-of', 'json', str(source)])
                 mux_command = nvidia_mux.finalize_command(video_stage, source, temporary, source_probe, args.ffmpeg)
                 entry['finalize_command'] = mux_command
-                print('  Finalizing NVIDIA video with original audio, subtitles and metadata', flush=True)
-                job_tracking.progress('Finalizing NVIDIA output', file_index, len(found), unit='files', detail='Copying original tracks; no second video encode')
+                print('  Finalizing hardware video with original audio, subtitles and metadata', flush=True)
+                job_tracking.progress('Finalizing hardware output', file_index, len(found), unit='files', detail='Copying original tracks; no second video encode')
                 return_code, _ = run_ffmpeg(mux_command, info.duration_seconds, args.hardware_stall_timeout)
                 if return_code:
                     raise RuntimeError(f'Final mux failed; video stage and partial retained: {temporary}')
+            if playback is not None:
+                before_playback = temporary
+                required = before_playback.stat().st_size + int(info.duration_seconds * 80000) + 512 * 1024**2
+                if shutil.disk_usage(before_playback.parent).free < required:
+                    raise RuntimeError('Insufficient free space for separately saved playback output; original retained')
+                prepared = fresh_partial(temporary.with_name(temporary.stem + '.playback.mkv'))
+                entry['recovery_files'].append(str(prepared))
+                before_probe = run_json([args.ffprobe, '-v', 'error', '-show_streams', '-show_chapters', '-of', 'json', str(before_playback)])
+                playback = nvidia_mux.playback_plan(before_probe, args.compatibility_audio_track, args.default_subtitle_track)
+                original_streams = {s['index']: s for s in before_probe['streams']}
+                playback_audio_codecs = [('eac3' if index is None else original_streams[index]['codec_name'])
+                                         for index in playback['output_order']
+                                         if index is None or original_streams[index]['codec_type'] == 'audio']
+                playback_cmd = nvidia_mux.playback_command(before_playback, prepared, before_probe, playback, args.ffmpeg)
+                entry['playback_command'] = playback_cmd
+                job_tracking.progress('Preparing default compatibility audio', file_index, len(found), unit='files', detail='Original tracks retained; no video encode')
+                code, _ = run_ffmpeg(playback_cmd, info.duration_seconds, args.hardware_stall_timeout)
+                if code:
+                    raise RuntimeError('Compatibility preparation failed; outputs retained')
+                after_probe = run_json([args.ffprobe, '-v', 'error', '-show_streams', '-show_chapters', '-of', 'json', str(prepared)])
+                job_tracking.progress('Verifying playback tracks and timestamps', file_index, len(found), unit='files')
+                entry['playback_verification'] = nvidia_mux.verify_playback_copy(before_playback, prepared, before_probe, after_probe, playback, args.ffprobe)
+                decode = [args.ffmpeg, '-v', 'error', '-xerror', '-nostdin', '-i', str(prepared), '-map', '0:v', '-map', '0:a', '-f', 'null', '-']
+                code, _ = run_ffmpeg(decode, info.duration_seconds, args.hardware_stall_timeout)
+                if code:
+                    raise RuntimeError('Compatibility output decode failed; outputs retained')
+                temporary = prepared
             expected_codec = target_codec if info.recommendation == "transcode" else info.video_codec
             valid, message = verify_output(
                 info,
@@ -1454,12 +1771,21 @@ def main(argv: list[str] | None = None) -> int:
                 expected_codec,
                 enforce_min_savings=info.recommendation == "transcode",
                 expected_dimensions=output_dimensions(info, args.resolution),
+                additional_audio=bool(playback and playback['added_audio']),
+                playback_audio_codecs=playback_audio_codecs if playback is not None else None,
             )
             if valid:
                 interleaved, detail = verify_startup_interleaving(temporary, args.ffprobe)
                 entry['startup_interleaving'] = {'passed': interleaved, 'detail': detail}
                 if not interleaved:
                     valid, message = False, detail
+            if valid and (video_stage is not None or playback is not None):
+                duration = info.duration_seconds
+                positions = sorted({0.0, min(60.0, max(0.0, duration-5)), duration/2, max(0.0, duration-60)})
+                seek_ok, seek_checks = nvidia_mux.verify_seek_interleaving(temporary, args.ffprobe, positions)
+                entry['seek_interleaving'] = {'passed': seek_ok, 'checks': seek_checks}
+                if not seek_ok:
+                    valid, message = False, 'Seek interleaving failed; output retained for review'
             if not valid:
                 print(f"  REJECTED: {message}; original and partial retained: {temporary}")
                 entry["status"] = "rejected"
@@ -1474,7 +1800,7 @@ def main(argv: list[str] | None = None) -> int:
             entry['video_only_folder'] = args.video_only_folder
             entry["result"] = message
             report["files"].append(entry)
-        except (OSError, RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
             print(f"\n{source}\n  ERROR: {exc}", file=sys.stderr)
             report["errors"].append({"path": str(source), "error": str(exc)})
         finally:
