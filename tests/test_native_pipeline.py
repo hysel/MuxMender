@@ -78,6 +78,12 @@ class NativePipelineTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             stage([sys.executable, '-c', 'raise SystemExit(7)'], 1, timeout=5)
 
+    @patch('job_tracking.stage_progress')
+    def test_stage_updates_dashboard_separately_from_overall_checkpoints(self, update):
+        stage([sys.executable,'-c','print("out_time_us=5000000",flush=True)'],10,offset=10,span=55,timeout=5)
+        self.assertIn((50.0,None),[call.args for call in update.call_args_list])
+        self.assertEqual(update.call_args.args,(100,0))
+
     def test_subprocess_is_bounded(self):
         with self.assertRaisesRegex(RuntimeError, 'timed out'):
             stage([sys.executable, '-c', 'import time; time.sleep(20)'], 1, timeout=0.5, stall=0)

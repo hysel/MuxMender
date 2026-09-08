@@ -27,7 +27,7 @@ class NvidiaMuxTests(unittest.TestCase):
         self.assertEqual(command[command.index('-disposition:1') + 1], '0')
         self.assertEqual(command[command.index('-c') + 1], 'copy')
         self.assertEqual(command[command.index('-map_chapters') + 1], '1')
-        self.assertNotEqual(command[command.index('-max_interleave_delta') + 1], '0')
+        self.assertEqual(command[command.index('-max_interleave_delta') + 1], '0')
 
     def test_extra_video_fails_closed(self):
         with self.assertRaises(ValueError):

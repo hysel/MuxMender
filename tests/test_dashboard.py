@@ -13,6 +13,16 @@ from job_tracking import tracked_call
 
 
 class DashboardTests(unittest.TestCase):
+    def test_unfinished_validation_cannot_revive_finished_process(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); run=root/'reports'/'run';run.mkdir(parents=True)
+            (run/'validation.json').write_text(json.dumps(dict(status='running')))
+            for state in ('completed','failed','interrupted'):
+                result=apply_outcome(dict(state=state,phase='Last completed step'),run,root)
+                self.assertEqual(result['state'],state)
+                self.assertTrue(result['validation_pending'])
+                self.assertEqual(result['result']['status'],'running')
+
     def test_revalidation_review_and_cleanup_preserve_failure(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);run=root/'reports'/'run';run.mkdir(parents=True)
@@ -135,6 +145,19 @@ class DashboardTests(unittest.TestCase):
             self.assertIsNone(job['stage_percent'])
             self.assertEqual(job['completed'], 1)
             self.assertEqual(job['phase'], 'Checking output')
+
+    def test_current_encoder_log_fills_missing_structured_eta(self):
+        with tempfile.TemporaryDirectory() as folder:
+            run = Path(folder)/'reports'/'job-eta'; run.mkdir(parents=True)
+            (run/'job.json').write_text(json.dumps(dict(state='running', pid=123,
+                updated=time.time(), progress_kind='structured', percent=0,
+                phase='Encoding video', stage_percent=None, stage_eta=None)))
+            (run/'terminal.log').write_text('Encoding [==                  ] 10.0% | elapsed 20s | ETA 180s\nEncoding [====                ] 20.0% | elapsed 40s | ETA 160s\n')
+            with patch('dashboard.alive', return_value=True):
+                job = Catalog(folder).snapshot()[0]
+            self.assertEqual(job['percent'], 0)
+            self.assertEqual(job['stage_percent'], 20)
+            self.assertEqual(job['stage_eta'], 160)
 
     def test_dashboard_has_no_animated_progress(self):
         from dashboard import HTML

@@ -1,4 +1,4 @@
-"""Validate NVIDIA with generated fixtures and optional, separately saved samples."""
+"""Validate NVIDIA or Intel generated fixtures; optional, separately saved real-media samples."""
 import argparse
 from collections import deque
 from fractions import Fraction
@@ -18,6 +18,7 @@ import uuid
 import job_tracking as jobs
 import muxmender as mm
 import job_tracking
+from runtime_support import guard_ordered_mux_memory
 import mux_integrity as nvidia_mux
 from mux_integrity import startup_audio_lead, MAX_STARTUP_AUDIO_LEAD
 
@@ -74,11 +75,33 @@ def packet_signature(packet):
     return tuple(packet.get(k) for k in ('pts_time', 'duration_time', 'size', 'data_hash'))
 
 
-def copied_subset(original, sample):
+def copied_subset(original, sample, decoded_audio=None):
     """Require copied packet bytes/durations and one common timestamp shift."""
     offsets = []
-    for before, after in zip(packet_groups(original, ('video', 'audio', 'subtitle')),
-                             packet_groups(sample, ('video', 'audio', 'subtitle'))):
+    sample_streams = [s for s in sample.get('streams', []) if s.get('codec_type') in ('video', 'audio', 'subtitle')]
+    original_streams = [s for s in original.get('streams', []) if s.get('codec_type') in ('video', 'audio', 'subtitle')]
+    def same_duration(a, b, index):
+        if a.get('duration_time') == b.get('duration_time'):
+            return True
+        stream = sample_streams[index]
+        source_stream = original_streams[index]
+        if stream.get('codec_type') != 'audio' or decoded_audio is None:
+            return False
+        frames = [f for f in decoded_audio if f.get('stream_index') == stream['index'] and f.get('pts_time') == b.get('pts_time')]
+        if len(frames) != 1 or not isinstance(frames[0].get('nb_samples'), int):
+            return False
+        try:
+            rate = int(stream['sample_rate'])
+            tick = Fraction(stream['time_base'])
+            if rate != int(source_stream['sample_rate']) or tick != Fraction(source_stream['time_base']) or not 0 < tick <= Fraction(1, 1000) or frames[0]['nb_samples'] <= 0:
+                return False
+            duration = Fraction(frames[0]['nb_samples'], rate)
+            allowed = {math.floor(duration/tick)*tick, math.ceil(duration/tick)*tick}
+            return Fraction(a['duration_time']) in allowed and Fraction(b['duration_time']) in allowed
+        except (KeyError, ValueError, ZeroDivisionError):
+            return False
+    for stream_index, (before, after) in enumerate(zip(packet_groups(original, ('video', 'audio', 'subtitle')),
+                             packet_groups(sample, ('video', 'audio', 'subtitle')))):
         if not after:
             continue
         match = None
@@ -88,8 +111,8 @@ def copied_subset(original, sample):
             chunk = before[index:index + len(after)]
             if len(chunk) != len(after):
                 continue
-            if any((a.get('data_hash'), a.get('size'), a.get('duration_time')) !=
-                   (b.get('data_hash'), b.get('size'), b.get('duration_time')) for a, b in zip(chunk, after)):
+            if any((a.get('data_hash'), a.get('size')) !=
+                   (b.get('data_hash'), b.get('size')) or not same_duration(a, b, stream_index) for a, b in zip(chunk, after)):
                 continue
             shifts = [float(a['pts_time']) - float(b['pts_time']) for a, b in zip(chunk, after)]
             if max(shifts) - min(shifts) <= .003:
@@ -126,6 +149,17 @@ def static_metadata(frame):
             if s.get('side_data_type') in ('Mastering display metadata', 'Content light level metadata')}
 
 
+def repair_av1_hdr_research_ivf(source, destination, mastering):
+    from mux_integrity import _repair_av1_hdr_bytes
+    source, destination = Path(source), Path(destination)
+    if source.stat().st_size > 512 * 1024**2:
+        raise ValueError('Research IVF exceeds 512 MiB bound')
+    data, report = _repair_av1_hdr_bytes(source.read_bytes(), mastering)
+    with destination.open('xb') as output:
+        output.write(data)
+    return report
+
+
 def metadata_equal(left, right):
     if left.keys() != right.keys():
         return False
@@ -140,6 +174,23 @@ def metadata_equal(left, right):
                 if value != right[kind][key]:
                     return False
     return True
+
+
+def av1_quantized_frames(frames):
+    """Expected AV1 MDCV precision only; keep all other evidence unchanged."""
+    import copy
+    result = copy.deepcopy(frames)
+    for frame in result:
+        for side in frame.get('side_data_list', []):
+            if side.get('side_data_type') != 'Mastering display metadata':
+                continue
+            for field in list(side):
+                if field == 'side_data_type':
+                    continue
+                scale = 256 if field == 'max_luminance' else 16384 if field == 'min_luminance' else 65536
+                value = Fraction(str(side[field])) * scale + Fraction(1, 2)
+                side[field] = str(Fraction(value.numerator // value.denominator, scale))
+    return result
 
 
 def compare_sample(before, after, before_frames, after_frames, codec):
@@ -168,24 +219,26 @@ def compare_sample(before, after, before_frames, after_frames, codec):
 class Validation:
     def __init__(self, args):
         self.args = args
+        self.hardware = getattr(args, 'hardware', 'nvidia')
+        self.vendor_label = mm.VENDOR_LABELS[self.hardware]
         self.root = Path(__file__).resolve().parent.parent
-        self.directory = self.root / 'reports' / ('nvidia-validation-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
+        self.directory = self.root / 'reports' / (self.hardware + '-validation-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
         self.directory.mkdir(parents=True, exist_ok=False)
         self.completed = 0
-        self.total = 6 + 2 * bool(args.source) + 2 * bool(args.hdr_source)
+        self.total = 8 + 2 * bool(args.source) + 2 * bool(args.hdr_source)
         self.counter = 0
-        self.report = dict(status='running', scope='NVIDIA capability validation on this GPU/driver/FFmpeg build',
+        self.report = dict(status='running', scope=self.vendor_label + ' capability validation on this GPU/driver/FFmpeg build',
                            capabilities=[], results=[], source=str(args.source) if args.source else None,
                            limitations=['Short samples are not full-file or sustained-load validation.',
                                         'No identical visual-quality claim. Playback review is required.',
                                         'Hardware decoding is not tested. Dolby Vision remains blocked.'])
-        for mode in ('sdr1080', 'pq1080', 'pq2160'):
+        for mode in ('sdr1080', 'pq1080', 'pq2160', 'irregular360'):
             for codec in ('hevc', 'av1'):
                 self.capability(mode + '-' + codec, 'not-tested', 'Generated fixture not yet run.')
         for kind in ('SDR', 'HDR'):
             for codec in ('hevc', 'av1'):
                 self.capability(kind + ' sample ' + codec.upper(), 'not-tested', 'No real sample validated yet.')
-        self.capability('Dolby Vision preservation', 'not-tested', 'Blocked on NVIDIA; AMD-only gate unchanged.')
+        self.capability('Dolby Vision preservation', 'not-tested', 'Blocked in this validator; normal AMD-only gate unchanged.')
         self.save()
 
     def capability(self, label, status, note):
@@ -237,6 +290,7 @@ class Validation:
             try:
                 while len(ended) < 2 or process.poll() is None:
                     self.guard()
+                    guard_ordered_mux_memory(process, cmd)
                     now = time.monotonic()
                     if now - started > timeout or (seconds and now - last_advanced > 45):
                         raise TimeoutError(label + ': timeout/no advancing media time; partials retained.')
@@ -337,7 +391,12 @@ class Validation:
                                      interval=f'{max(0, self.args.start-30)}%+{self.args.seconds+90}')
         if stream_inventory(original_packets) != stream_inventory(before):
             raise ValueError('Reference extraction changed the non-video stream inventory.')
-        offset = copied_subset(original_packets, before)
+        try:
+            offset = copied_subset(original_packets, before)
+        except ValueError:
+            decoded, _ = self.command([self.args.ffprobe, '-v', 'error', '-select_streams', 'a', '-show_frames', '-show_entries', 'frame=stream_index,pts_time,nb_samples', '-of', 'json', sample], kind + '-reference-audio-samples')
+            offset = copied_subset(original_packets, before, json.loads(decoded).get('frames', []))
+            self.report['reference_audio_duration_rounding'] = 'Verified from identical packet bytes, sample counts and unchanged shifted PTS; no tolerance added to video timing.'
         info = mm.probe(sample, self.args.ffprobe)
         info.recommendation = 'transcode'
         reference_hash = hashlib.sha256(sample.read_bytes()).hexdigest()
@@ -348,9 +407,10 @@ class Validation:
             self.report['results'].append(entry)
             try:
                 output = self.directory / (kind.lower() + '-' + codec + '-sample.mkv')
-                cmd = mm.build_ffmpeg_command(sample, output, info, codec, 'balanced', self.args.ffmpeg, codec + '_nvenc', 'keep')
+                selection = mm.select_encoder(codec, self.hardware, mm.ffmpeg_encoder_names(self.args.ffmpeg), mm.gpu_vendors())
+                cmd = mm.build_ffmpeg_command(sample, output, info, codec, 'balanced', self.args.ffmpeg, selection.encoder, 'keep')
                 cmd[cmd.index('-i'):cmd.index('-i')] = ['-copyts']
-                cmd[-1:-1] = ['-gpu', str(self.args.gpu), '-fps_mode', 'passthrough',
+                cmd[-1:-1] = (['-gpu', str(self.args.gpu)] if self.hardware == 'nvidia' else []) + ['-fps_mode', 'passthrough',
                               *disposition_options(before), '-avoid_negative_ts', 'disabled', '-progress', 'pipe:1', '-nostats']
                 video_stage = self.directory / (kind.lower() + '-' + codec + '-video-stage.mkv')
                 cmd[-1] = str(video_stage)
@@ -398,7 +458,7 @@ class Validation:
                     self.completed += 1
                 self.progress('Generated: ' + label, percent)
             validate_generated_fixtures(['--ffmpeg', self.args.ffmpeg, '--ffprobe', self.args.ffprobe,
-                                    '--gpu', str(self.args.gpu)], self.directory/'fixtures', fixture_progress, self.guard)
+                                    '--gpu', str(self.args.gpu), '--hardware', self.hardware], self.directory/'fixtures', fixture_progress, self.guard)
             fixture = json.loads((self.directory/'fixtures'/'validation.json').read_text(encoding='utf-8'))
             self.report['environment'] = {k: fixture.get(k) for k in ('python', 'gpu', 'ffmpeg', 'ffprobe')}
             self.report['gpu_index'] = self.args.gpu
@@ -426,7 +486,7 @@ class Validation:
         finally:
             self.save()
             self.progress(self.report['status'])
-            lines = ['# NVIDIA validation', '', self.report['status'], '',
+            lines = ['# ' + self.vendor_label + ' validation', '', self.report['status'], '',
                      'Validated only on the recorded GPU, driver and FFmpeg build. Playback review is separate.', '',
                      '| Capability | Result | Notes |', '|---|---|---|']
             for c in self.report['capabilities']:
@@ -439,7 +499,7 @@ class Validation:
                     lines.append(f"  {r['speed_x']:.2f}x; reference {r['reference_bytes']:,} bytes; output {r['output_bytes']:,} bytes; size change {r['size_change_percent']:+.1f}%. Passed: {r['passed']}.")
             lines += ['', *self.report['limitations'], '', 'Detailed evidence: validation.json and numbered logs in this folder.']
             (self.directory/'REPORT.md').write_text('\n'.join(lines), encoding='utf-8')
-            print('\nNVIDIA validation results:', flush=True)
+            print('\n' + self.vendor_label + ' validation results:', flush=True)
             for c in self.report['capabilities']:
                 print(f"  {c['status'].upper():10} {c['label']}", flush=True)
             print(f'Report: {self.directory / "REPORT.md"}', flush=True)
@@ -451,9 +511,10 @@ def validate_generated_fixtures(argv=None, run_directory=None, progress_callback
     parser.add_argument('--ffmpeg', required=True)
     parser.add_argument('--ffprobe', required=True)
     parser.add_argument('--gpu', type=int, default=0)
+    parser.add_argument('--hardware', choices=('nvidia', 'intel'), default='nvidia')
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parent.parent
-    run = Path(run_directory) if run_directory else root / 'reports' / ('nvidia-fixtures-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
+    run = Path(run_directory) if run_directory else root / 'reports' / (args.hardware + '-fixtures-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
     run.mkdir(parents=True, exist_ok=False)
     report = dict(scope='Generated fixtures only; no Dolby Vision or static HDR metadata validation; no visual-quality equivalence claim.', results=[])
 
@@ -532,7 +593,11 @@ def validate_generated_fixtures(argv=None, run_directory=None, progress_callback
 
     try:
         report['python'] = sys.version
-        report['gpu'], _ = command(['nvidia-smi', '--query-gpu=index,name,driver_version,memory.total', '--format=csv'], 'gpu')
+        if args.hardware == 'nvidia':
+            report['gpu'], _ = command(['nvidia-smi', '--query-gpu=index,name,driver_version,memory.total', '--format=csv'], 'gpu')
+        else:
+            report['gpu'], _ = command(['powershell', '-NoProfile', '-Command', 'Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion,PNPDeviceID,Status | ConvertTo-Json'], 'gpu')
+        report['hardware'] = args.hardware
         report['ffmpeg'], _ = command([args.ffmpeg, '-version'], 'ffmpeg-version')
         report['ffprobe'], _ = command([args.ffprobe, '-version'], 'ffprobe-version')
         report['encoders'], _ = command([args.ffmpeg, '-hide_banner', '-encoders'], 'encoders')
@@ -540,17 +605,21 @@ def validate_generated_fixtures(argv=None, run_directory=None, progress_callback
         available = mm.ffmpeg_encoder_names(args.ffmpeg)
         subtitles = run / 'generated.srt'
         with subtitles.open('x', encoding='utf-8') as stream:
-            stream.write('1\n00:00:00,000 --> 00:00:01,500\nGenerated NVENC validation fixture\n')
+            stream.write('1\n00:00:00,000 --> 00:00:01,500\nGenerated hardware validation fixture\n')
         metadata = run / 'generated.ffmeta'
         with metadata.open('x', encoding='utf-8') as stream:
             stream.write(';FFMETADATA1\ntitle=Generated validation\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=2000\ntitle=Generated chapter\n')
         for mode, size, pixel, primaries, transfer, space in [
+            ('irregular360', '640x360', 'yuv420p', 'bt709', 'bt709', 'bt709'),
             ('sdr1080', '1920x1080', 'yuv420p', 'bt709', 'bt709', 'bt709'),
             ('pq1080', '1920x1080', 'yuv420p10le', 'bt2020', 'smpte2084', 'bt2020nc'),
             ('pq2160', '3840x2160', 'yuv420p10le', 'bt2020', 'smpte2084', 'bt2020nc'),
         ]:
             source = run / (mode + '-generated.mkv')
-            command([args.ffmpeg, '-hide_banner', '-nostdin', '-n', '-f', 'lavfi', '-i', f'testsrc2=size={size}:rate=24:duration=2,format={pixel},setparams=range=limited:color_primaries={primaries}:color_trc={transfer}:colorspace={space}', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=2', '-i', subtitles, '-f', 'ffmetadata', '-i', metadata, '-map', '0:v', '-map', '1:a', '-map', '2:s', '-map_metadata', '3', '-map_chapters', '3', '-c:v', 'libx265', '-preset', 'ultrafast', '-x265-params', f'lossless=1:colorprim={primaries}:transfer={transfer}:colormatrix={space}', '-pix_fmt', pixel, '-color_primaries', primaries, '-color_trc', transfer, '-colorspace', space, '-color_range', 'tv', '-c:a', 'pcm_s16le', '-c:s', 'srt', '-progress', 'pipe:1', '-nostats', source], mode + '-generate', 2)
+            generate = [args.ffmpeg, '-hide_banner', '-nostdin', '-n', '-f', 'lavfi', '-i', f'testsrc2=size={size}:rate=24:duration=2,format={pixel},setparams=range=limited:color_primaries={primaries}:color_trc={transfer}:colorspace={space}', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=2', '-i', subtitles, '-f', 'ffmetadata', '-i', metadata, '-map', '0:v', '-map', '1:a', '-map', '2:s', '-map_metadata', '3', '-map_chapters', '3', '-c:v', 'libx265', '-preset', 'ultrafast', '-x265-params', f'lossless=1:colorprim={primaries}:transfer={transfer}:colormatrix={space}', '-pix_fmt', pixel, '-color_primaries', primaries, '-color_trc', transfer, '-colorspace', space, '-color_range', 'tv', '-c:a', 'pcm_s16le', '-c:s', 'srt', '-progress', 'pipe:1', '-nostats', source]
+            if mode == 'irregular360':
+                generate[-1:-1] = ['-vf', r'setpts=(N+4*eq(N\,47))/(24*TB)', '-fps_mode', 'passthrough']
+            command(generate, mode + '-generate', 2)
             before = digest(source)
             original = probe(source)
             fixture_video = next(s for s in original['streams'] if s['codec_type'] == 'video')
@@ -564,10 +633,11 @@ def validate_generated_fixtures(argv=None, run_directory=None, progress_callback
                 entry = dict(test=label, source=str(source))
                 report['results'].append(entry)
                 try:
-                    selection = mm.select_encoder(codec, 'nvidia', available, report['vendors'])
+                    selection = mm.select_encoder(codec, args.hardware, available, report['vendors'])
                     output = run / (label + '.mkv')
-                    cmd = mm.build_ffmpeg_command(source, output, info, codec, 'balanced', args.ffmpeg, selection.encoder, 'keep')
-                    cmd[-1:-1] = ['-gpu', str(args.gpu), '-progress', 'pipe:1', '-nostats']
+                    cmd = mm.build_ffmpeg_command(source, output, info, codec, 'balanced', args.ffmpeg, selection.encoder, 'keep',
+                        experimental_av1_hdr=selection.encoder == 'av1_qsv' and info.hdr)
+                    cmd[-1:-1] = (['-gpu', str(args.gpu)] if args.hardware == 'nvidia' else []) + ['-progress', 'pipe:1', '-nostats']
                     _, elapsed = command(cmd, label + '-encode', 2)
                     actual = probe(output)
                     video = next(s for s in actual['streams'] if s['codec_type'] == 'video')
@@ -591,7 +661,7 @@ def validate_generated_fixtures(argv=None, run_directory=None, progress_callback
                     entry.update(passed=False, error=str(exc))
                     print(f'FAILED {label}: {exc}', flush=True)
                 update(label + '-complete', 100)
-        report['passed'] = len(report['results']) == 6 and all(e['passed'] for e in report['results'])
+        report['passed'] = len(report['results']) == 8 and all(e['passed'] for e in report['results'])
     except Exception as exc:
         report.update(passed=False, error=str(exc))
         print(str(exc), flush=True)
@@ -603,16 +673,32 @@ def validate_generated_fixtures(argv=None, run_directory=None, progress_callback
     return 0 if report.get('passed') else 1
 
 def verify_full_file(args):
+    def read_live_json(path):
+        # Windows may briefly deny reads during an atomic status-file replacement.
+        for attempt in range(20):
+            try:
+                return json.loads(path.read_text(encoding='utf-8'))
+            except (PermissionError, json.JSONDecodeError):
+                if attempt == 19:
+                    raise
+                time.sleep(0.1)
     v = sys.modules[__name__]
     run = args.run.resolve()
     evidence = run / ('full-verification-' + time.strftime('%H%M%S') + '-' + uuid.uuid4().hex[:8])
     evidence.mkdir(exist_ok=False)
     source = args.source.resolve()
     baseline = (source.stat().st_size, source.stat().st_mtime_ns)
-    report = dict(status='running', source=str(source), checks={},
-                  source_stat_capture='During encoding, before verification',
+    baseline_path = run / 'source-baseline.json'
+    if baseline_path.exists():
+        captured = json.loads(baseline_path.read_text(encoding='utf-8'))
+        if Path(captured['source']).resolve() != source:
+            raise ValueError('Pre-encode baseline source mismatch')
+        baseline = (captured['size'], captured['mtime_ns'])
+    kind = 'HDR' if getattr(args, 'hdr', False) else 'SDR'
+    report = dict(status='running', source=str(source), color_scope=kind, checks={},
+                  source_stat_capture='Before encoding' if baseline_path.exists() else 'During encoding, before verification',
                   limitations=['Playback and visual-quality review required.',
-                               'This SDR HEVC result does not certify HDR, AV1, or Dolby Vision.'])
+                               'This result covers only its reported color scope and encoder/codec; not Dolby Vision.'])
     def save():
         (evidence / 'validation.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
     def guard(start, limit=1800):
@@ -646,36 +732,75 @@ def verify_full_file(args):
         return output
     save()
     try:
-        jobs.progress('Waiting for full-file NVIDIA encode and mux', 0, 6, directory=evidence)
+        jobs.progress('Waiting for full-file encode and mux', 0, 6, directory=evidence)
         started = time.monotonic()
         while not (run / 'cli-report.json').exists():
             guard(started, 7200)
-            state = json.loads(args.job.read_text(encoding='utf-8'))
+            state = read_live_json(args.job)
             if state.get('state') in ('failed', 'cancelled'):
                 raise RuntimeError('Encoding job did not complete successfully.')
             time.sleep(2)
-        cli = json.loads((run / 'cli-report.json').read_text(encoding='utf-8'))
+        cli = read_live_json(run / 'cli-report.json')
         if cli.get('errors') or len(cli.get('files', [])) != 1 or cli['files'][0].get('status') != 'complete':
             raise RuntimeError('Normal CLI did not accept exactly one output.')
         entry = cli['files'][0]
         output = Path(entry['output'])
+        comparison_output = output
+        if entry.get('playback_command'):
+            if not entry.get('playback_verification') or not all(entry['playback_verification'].values()):
+                raise RuntimeError('Compatibility output has no successful preservation verification')
+            cmd = entry['playback_command']
+            comparison_output = Path(cmd[cmd.index('-i') + 1])
+        codec = cli.get('target_codec', 'hevc')
+        if codec not in ('hevc', 'av1'):
+            raise RuntimeError('Full verification requires HEVC or AV1 output')
+        av1_research = getattr(args, 'experimental_av1_hdr', False)
+        if av1_research and (kind != 'HDR' or codec != 'av1' or
+                entry.get('encoder', {}).get('encoder') != 'av1_qsv' or not entry.get('av1_hdr_repair')):
+            raise RuntimeError('AV1 HDR verification requires explicit Intel repair evidence')
+        if kind == 'HDR' and codec != 'hevc' and not av1_research:
+            raise RuntimeError('AV1 HDR requires the explicit experimental repair verifier')
+        report.update(codec=codec, encoder=entry.get('encoder'), comparison_output=str(comparison_output))
         if Path(entry['path']).resolve() != source:
             raise RuntimeError('CLI source does not match verification source.')
         report['output'] = str(output)
-        ffprobe, ffmpeg = v.find_tool('ffprobe'), v.find_tool('ffmpeg')
+        ffprobe, ffmpeg = v.find_tool('ffprobe', getattr(args, 'ffprobe', None)), v.find_tool('ffmpeg', getattr(args, 'ffmpeg', None))
         packets = []
         frames = []
-        for index, (label, path) in enumerate((('source', source), ('output', output))):
+        for index, (label, path) in enumerate((('source', source), ('output', comparison_output))):
             result = command([ffprobe, '-v', 'error', '-show_streams', '-show_format',
                               '-show_chapters', '-show_packets', '-show_data_hash', 'sha256',
                               '-of', 'json', str(path)], label + '-packets', index*2)
             packets.append(json.loads(result.read_text(encoding='utf-8')))
-            v.validate_source(packets[-1], 'SDR')
+            v.validate_source(packets[-1], kind)
             result = command([ffprobe, '-v', 'error', '-threads', '0', '-select_streams', 'v:0', '-show_frames',
                               '-show_entries', 'frame=best_effort_timestamp_time,interlaced_frame,repeat_pict:frame_side_data',
                               '-of', 'json', str(path)], label + '-frames', index*2+1)
             frames.append(json.loads(result.read_text(encoding='utf-8'))['frames'])
-        checks = v.compare_sample(*packets, *frames, 'hevc')
+            for frame in frames[-1]:
+                for side in frame.get('side_data_list', []):
+                    name = side.get('side_data_type', '').lower()
+                    if 'dolby' in name or 'dovi' in name or 'smpte2094' in name or ('dynamic' in name and 'hdr' in name):
+                        raise RuntimeError('Dynamic HDR requires separate preservation validation')
+        comparison_frames = av1_quantized_frames(frames[0]) if av1_research else frames[0]
+        checks = v.compare_sample(*packets, comparison_frames, frames[1], codec)
+        if av1_research:
+            report['metadata_precision'] = 'AV1 MDCV nearest representable units; all other fields exact'
+        if kind == 'HDR':
+            checks['source_static_hdr_present'] = bool(frames[0]) and any(v.static_metadata(f) for f in frames[0])
+        if comparison_output != output:
+            final_probe = v.mm.run_json([ffprobe, '-v', 'error', '-show_streams', '-show_chapters', '-of', 'json', str(output)])
+            plan_data = entry['playback_plan']
+            plan = nvidia_mux.playback_plan(packets[1], plan_data['audio_ordinal'], plan_data['subtitle_track'])
+            jobs.progress('Verifying final compatibility track mapping', 4, 6, directory=evidence)
+            preserved = nvidia_mux.verify_playback_copy(comparison_output, output, packets[1], final_probe, plan, ffprobe)
+            checks['final_compatibility_preservation'] = all(preserved.values())
+        duration = float(packets[0]['format']['duration'])
+        seek_positions = sorted(set((0, min(60, duration*.1), duration/2,
+                                     max(duration*.9, duration-60))))
+        passed, seek_checks = nvidia_mux.verify_seek_interleaving(output, ffprobe, seek_positions)
+        checks['full_file_seek_interleaving'] = passed
+        report['seek_checks'] = seek_checks
         command([ffmpeg, '-v', 'error', '-xerror', '-i', str(output),
                  '-map', '0:v:0', '-map', '0:a?', '-f', 'null', '-'], 'full-output-decode', 4)
         checks['full_video_audio_decode'] = True
@@ -684,14 +809,14 @@ def verify_full_file(args):
                       saved_percent=100*(1-output.stat().st_size/source.stat().st_size),
                       duration_seconds=float(packets[0]['format']['duration']),
                       source_frames=len(frames[0]), output_frames=len(frames[1]))
-        state = json.loads(args.job.read_text(encoding='utf-8'))
+        state = read_live_json(args.job)
         if state.get('finished'):
             report['cli_elapsed_seconds'] = state['finished'] - state['started']
             report['cli_speed_x_including_mux'] = report['duration_seconds'] / report['cli_elapsed_seconds']
         if not all(checks.values()):
             raise RuntimeError('Failed checks: ' + ', '.join(k for k, value in checks.items() if not value))
         report['status'] = 'verified-full-file-awaiting-playback'
-        jobs.progress('Full SDR HEVC checks passed; playback review pending', 6, 6, directory=evidence)
+        jobs.progress('Full ' + kind + ' ' + codec.upper() + ' checks passed; playback review pending', 6, 6, directory=evidence)
         print(json.dumps(report, indent=2), flush=True)
         return 0
     except Exception as exc:
@@ -701,31 +826,193 @@ def verify_full_file(args):
     finally:
         save()
 
+def run_av1_hdr_integrated(args, source, destination):
+    """Use the audited HDR10 route; publish only after independent full verification."""
+    if (args.resolution != 'keep' or args.compatibility_audio != 'preserve'
+            or args.hardware_fallback == 'cpu' or args.delete_originals or args.overwrite_output):
+        raise ValueError('Intel AV1 HDR requires original resolution/tracks, retained originals and no CPU fallback or overwrite')
+    if destination.exists():
+        raise ValueError('Output exists; choose a fresh output directory')
+    work_parent = destination.parent.parent if args.video_only_folder else destination.parent
+    work = work_parent / '.MuxMender-work' / ('av1-hdr-' + uuid.uuid4().hex)
+    options = argparse.Namespace(source=source, run=work, execute=args.execute,
+                                 ffmpeg=args.ffmpeg, ffprobe=args.ffprobe,
+                                 quality=args.quality, min_savings=args.min_savings)
+    if av1_hdr_research(options):
+        raise RuntimeError(f'Intel AV1 HDR encoding/repair failed; retained evidence: {work}')
+    if not args.execute:
+        return dict(status='planned', output=str(destination),
+                    result='Intel AV1 HDR: repair, full preservation/decode verification, then publication')
+    # The verifier accepts an encode-job snapshot even when this function is called
+    # by an untracked embedding application. It never waits on its own parent job.
+    snapshot = work / 'encode-completed.json'
+    snapshot.write_text(json.dumps(dict(state='completed')), encoding='utf-8')
+    verify = argparse.Namespace(source=source, run=work, job=snapshot, hdr=True,
+                                experimental_av1_hdr=True, ffmpeg=args.ffmpeg, ffprobe=args.ffprobe)
+    if verify_full_file(verify):
+        raise RuntimeError(f'Intel AV1 HDR full verification failed; output not published: {work}')
+    reports = list(work.glob('full-verification-*/validation.json'))
+    if len(reports) != 1:
+        raise RuntimeError('Ambiguous full verification evidence; no publication')
+    proof = json.loads(reports[0].read_text(encoding='utf-8'))
+    if not proof.get('status', '').startswith('verified') or not proof.get('checks') or not all(proof['checks'].values()):
+        raise RuntimeError('Incomplete full verification; no publication')
+    output = Path(proof['output'])
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    mm.publish_output(output, destination)
+    return dict(status='complete', output=str(destination), output_size_bytes=output.stat().st_size,
+                saved_percent=proof['saved_percent'], verification=str(reports[0]),
+                recovery_files=[str(work)], result='Intel AV1 HDR repair and full preservation/decode checks passed; playback review recommended')
+
+
+def av1_hdr_research(args):
+    """Separate-output Intel HDR10 experiment. No production gate or source writes."""
+    import native_pipeline
+    from runtime_support import frame_evidence_percent, TerminalProgress
+    source, directory = args.source.resolve(), args.run.resolve()
+    ffmpeg, ffprobe = find_tool('ffmpeg', getattr(args, 'ffmpeg', None)), find_tool('ffprobe', getattr(args, 'ffprobe', None))
+    quality, minimum = getattr(args, 'quality', 'transparent'), getattr(args, 'min_savings', 5.)
+    if quality not in ('transparent', 'balanced', 'compact') or not math.isfinite(minimum) or not 0 <= minimum < 100:
+        raise ValueError('Invalid quality or minimum savings')
+    info = mm.probe(source, ffprobe)
+    probe = mm.run_json([ffprobe, '-v', 'error', '-show_streams', '-show_format', '-show_chapters', '-of', 'json', str(source)])
+    video = validate_source(probe, 'HDR')
+    if 'intel' not in mm.gpu_vendors() or 'av1_qsv' not in mm.ffmpeg_encoder_names(ffmpeg):
+        raise ValueError('Intel AV1 capability unavailable; no fallback')
+    if not math.isfinite(info.duration_seconds) or not 0 < info.duration_seconds <= 14400:
+        raise ValueError('Research duration must be known and at most four hours')
+    print(f'AV1 HDR RESEARCH: {source}; exact {info.width}x{info.height}; separate output {directory}', flush=True)
+    if not args.execute:
+        return 0
+    directory.mkdir(parents=True, exist_ok=False)
+    baseline = source.stat()
+    (directory/'source-baseline.json').write_text(json.dumps(dict(source=str(source), size=baseline.st_size, mtime_ns=baseline.st_mtime_ns)), encoding='utf-8')
+    report = dict(target_codec='av1', mode='experimental-research', files=[], errors=[])
+    entry = dict(path=str(source), encoder=dict(encoder='av1_qsv', vendor='intel'), status='running')
+    report['files'].append(entry)
+    def guard():
+        if (directory/'STOP').exists() or shutil.disk_usage(directory).free < 2*1024**3:
+            raise RuntimeError('Stop requested or disk reserve reached; generated files retained')
+    def stage(command, label, offset, span):
+        jobs.progress(label, offset, 100, directory=directory)
+        print(label, flush=True)
+        entry.setdefault('commands', []).append([str(x) for x in command])
+        native_pipeline.stage([str(x) for x in command], info.duration_seconds, offset, span,
+                              timeout=14400, stall=180, guard=guard)
+    try:
+        if shutil.disk_usage(directory).free < 4*info.size_bytes + 2*1024**3:
+            raise ValueError('Insufficient reserve for retained AV1 research intermediates')
+        jobs.progress('Checking every source HDR frame', 0, 100, directory=directory)
+        frame_file = directory/'source-hdr-frames.json'
+        command = [ffprobe, '-v', 'error', '-threads', '0', '-select_streams', 'v:0', '-show_frames',
+                   '-show_entries', 'frame=best_effort_timestamp_time,interlaced_frame,repeat_pict:frame_side_data', '-of', 'json', str(source)]
+        started = time.monotonic()
+        display = TerminalProgress(label='Source HDR frame audit', machine=False)
+        with frame_file.open('xb') as out, (directory/'source-hdr-frames.log').open('xb') as err:
+            process = subprocess.Popen(command, stdout=out, stderr=err)
+            try:
+                last = started
+                while process.poll() is None:
+                    guard()
+                    if time.monotonic()-started > 3600:
+                        raise RuntimeError('Source frame audit time limit')
+                    if time.monotonic()-last > 15:
+                        percent = frame_evidence_percent(frame_file, info.duration_seconds)
+                        if percent is None:
+                            print(f'Source HDR frame audit: {time.monotonic()-started:.0f}s elapsed', flush=True)
+                        else:
+                            display.update(percent)
+                            jobs.stage_progress(percent, display.eta_seconds)
+                        last = time.monotonic()
+                    time.sleep(.5)
+                if process.returncode:
+                    raise RuntimeError('Source frame audit failed')
+            finally:
+                if process.poll() is None:
+                    process.kill(); process.wait()
+        frames = json.loads(frame_file.read_text(encoding='utf-8'))['frames']
+        reference = static_metadata(frames[0]) if frames else {}
+        if 'Mastering display metadata' not in reference or not all(metadata_equal(reference, static_metadata(f)) for f in frames):
+            raise ValueError('Research requires constant mastering/static HDR metadata on every frame')
+        if any(any(x in s.get('side_data_type','').lower() for x in ('dovi','dolby','dynamic','smpte2094')) for f in frames for s in f.get('side_data_list', [])):
+            raise ValueError('Dynamic HDR is outside this HDR10 route')
+        entry['source_frame_count'] = len(frames)
+        first_pts = float(frames[0]['best_effort_timestamp_time'])
+        del frames
+        options = mm.encoder_options('av1', quality, info, 'av1_qsv', experimental_av1_hdr=True)
+        raw, fixed = directory/'encoded.ivf', directory/'repaired.ivf'
+        output = directory/source.with_suffix('.mkv').name
+        common = [ffmpeg, '-hide_banner', '-loglevel', 'warning', '-nostdin', '-n']
+        progress = ['-progress','pipe:1','-nostats']
+        gop = max(1, round(float(Fraction(video['r_frame_rate']))*2))
+        stage(common+['-copyts','-i',source,'-map','0:v:0',*options,'-g',str(gop),'-fps_mode','passthrough','-avoid_negative_ts','disabled',*progress,'-f','ivf',raw], 'Encoding Intel AV1 HDR10', 10, 55)
+        jobs.progress('Validating and repairing AV1 HDR metadata', 65, 100, directory=directory)
+        def repair_progress(percent):
+            guard()
+            jobs.stage_progress(percent, None)
+        entry['av1_hdr_repair'] = nvidia_mux.repair_av1_hdr_stream(raw, fixed, reference['Mastering display metadata'], repair_progress)
+        packet = mm.run_json([ffprobe,'-v','error','-read_intervals','%+#1','-show_packets','-of','json',str(fixed)])['packets'][0]
+        offset = first_pts-float(packet['pts_time'])
+        entry['ivf_timestamp_offset_seconds'] = offset
+        mux = nvidia_mux.finalize_command(fixed, source, output, probe, ffmpeg)
+        mux[mux.index('-i'):mux.index('-i')] = ['-itsoffset',format(offset,'.9f')]
+        mux[-1:-1] = progress
+        stage(mux, 'Ordered mux with all original tracks', 70, 25)
+        accepted, reason = mm.verify_output(info, output, ffprobe, minimum, 'av1')
+        if not accepted:
+            raise RuntimeError(reason)
+        if output.stat().st_size >= info.size_bytes or 100*(1-output.stat().st_size/info.size_bytes) < minimum:
+            raise RuntimeError('Output fails requested savings threshold; keep original')
+        if (source.stat().st_size,source.stat().st_mtime_ns) != (baseline.st_size,baseline.st_mtime_ns):
+            raise RuntimeError('Source changed during research')
+        entry.update(output=str(output), status='complete', saved_percent=100*(1-output.stat().st_size/info.size_bytes))
+        jobs.progress('AV1 research encoded; full verification required before Plex', 100, 100, directory=directory)
+        return 0
+    except Exception as exc:
+        entry.update(status='failed', error=str(exc)); report['errors'].append(str(exc))
+        print('FAILED: '+str(exc), flush=True)
+        return 1
+    finally:
+        (directory/'cli-report.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source', nargs='?', type=Path, help='optional SDR file for a separately saved sample')
     parser.add_argument('--hdr-source', type=Path, help='optional non-Dolby-Vision PQ file')
     parser.add_argument('--start', type=float, default=300, help='seek near this second (default 300)')
     parser.add_argument('--seconds', type=float, default=30, help='requested sample length, 1–60 seconds (default 30)')
+    parser.add_argument('--hardware', choices=('nvidia', 'intel'), default='nvidia', help='hardware vendor for generated fixtures and separately saved samples')
     parser.add_argument('--gpu', type=int, default=0, help='NVIDIA device index (default 0); actual encodes validate it')
     parser.add_argument('--ffmpeg')
     parser.add_argument('--ffprobe')
     args = parser.parse_args(argv)
+    if args.hardware == 'intel' and args.gpu != 0:
+        parser.error('Intel currently uses the default QSV device; explicit device selection needs separate validation.')
     if not math.isfinite(args.start) or args.start < 0 or not math.isfinite(args.seconds) or not 1 <= args.seconds <= 60 or args.gpu < 0:
         parser.error('start must be nonnegative, seconds must be 1–60, and GPU index nonnegative')
     return args
 
 
 def cli():
+    if len(sys.argv) > 1 and sys.argv[1] == 'av1-hdr-research':
+        parser = argparse.ArgumentParser(description='Explicit Intel AV1 HDR10 research; general preservation gate remains closed')
+        parser.add_argument('source', type=Path)
+        parser.add_argument('--run', required=True, type=Path)
+        parser.add_argument('--execute', action='store_true')
+        args = parser.parse_args(sys.argv[2:])
+        return jobs.tracked_call(lambda: av1_hdr_research(args), 'Intel AV1 HDR research')
     if len(sys.argv) > 1 and sys.argv[1] == 'verify-full':
-        parser = argparse.ArgumentParser(description='Verify an existing full NVIDIA output without encoding')
+        parser = argparse.ArgumentParser(description='Verify an existing full hardware output without encoding')
         parser.add_argument('source', type=Path)
         parser.add_argument('run', type=Path)
         parser.add_argument('--job', required=True, type=Path)
+        parser.add_argument('--hdr', action='store_true', help='Explicit HEVC HDR10 full-file validation; excludes AV1 HDR and Dolby Vision')
+        parser.add_argument('--experimental-av1-hdr', action='store_true', help='Explicit repaired Intel AV1 HDR10 evidence; requires --hdr')
         args = parser.parse_args(sys.argv[2:])
-        return jobs.tracked_call(lambda: verify_full_file(args), 'NVIDIA full-file verification')
+        return jobs.tracked_call(lambda: verify_full_file(args), 'Hardware full-file verification')
     args = parse_args()
-    return jobs.tracked_call(lambda: Validation(args).run(), 'Validate NVIDIA')
+    return jobs.tracked_call(lambda: Validation(args).run(), 'Validate ' + mm.VENDOR_LABELS[args.hardware])
 
 
 if __name__ == '__main__':

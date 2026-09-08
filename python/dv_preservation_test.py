@@ -103,8 +103,13 @@ def experimental_encoder_options(info, qp_i=18, qp_p=20):
     return options
 
 
-def sample_encoder_options(info, experimental_nvidia=False):
+def sample_encoder_options(info, experimental_nvidia=False, experimental_intel=False):
     """Separate opt-in sample route; the integrated/full-file AMD gate is unchanged."""
+    if experimental_nvidia and experimental_intel:
+        raise ValueError("Choose only one experimental hardware vendor")
+    if experimental_intel:
+        require_candidate(info)
+        return mm.encoder_options("hevc", "transparent", info, "hevc_qsv")
     if not experimental_nvidia:
         return experimental_encoder_options(info)
     require_candidate(info)
@@ -116,7 +121,7 @@ def sample_encoder_options(info, experimental_nvidia=False):
 def require_nvidia_frames(frames):
     for frame in frames:
         if frame.get('interlaced_frame') != 0 or frame.get('repeat_pict', 0) != 0:
-            raise ValueError('NVIDIA sample requires progressive frames without repeats')
+            raise ValueError('Hardware research sample requires progressive frames without repeats')
         for side in frame.get('side_data_list', []):
             name = side.get('side_data_type', '').lower()
             if 'hdr10+' in name or 'smpte2094' in name or ('dynamic' in name and 'hdr' in name):
@@ -126,8 +131,10 @@ def require_nvidia_frames(frames):
 class NvidiaSampleGuard(RunGuard):
     def status(self, percent):
         super().status(percent)
-        jobs.progress(self.phase, percent, 100, directory=self.directory,
-                      unit='validation checkpoints', detail='Experimental NVIDIA DV sample; full-file gate remains AMD-only.')
+        overall = getattr(self, 'overall_offset', 0) + percent*getattr(self, 'overall_span', 100)/100
+        jobs.progress(self.phase, overall, 100, directory=self.directory,
+                      unit='validation checkpoints', detail=getattr(self, 'detail',
+                      'Experimental DV sample; integrated opt-in supports AMD/Intel Profile 8.1.'))
 
 
 def run(args):
@@ -144,8 +151,10 @@ def run(args):
     require_candidate(info)
     qp_i, qp_p = getattr(args, 'qp_i', 18), getattr(args, 'qp_p', 20)
     nvidia = getattr(args, 'experimental_nvidia', False)
-    options = sample_encoder_options(info, True) if nvidia else experimental_encoder_options(info, qp_i, qp_p)
-    encoder = 'hevc_nvenc' if nvidia else 'hevc_amf'
+    intel = getattr(args, 'experimental_intel', False)
+    experimental = nvidia or intel
+    options = sample_encoder_options(info, nvidia, intel) if experimental else experimental_encoder_options(info, qp_i, qp_p)
+    encoder = 'hevc_qsv' if intel else 'hevc_nvenc' if nvidia else 'hevc_amf'
     print(f'PLAN: {args.seconds:g}s near {start:g}s, exact {info.width}x{info.height}, {encoder}, original RPU; no tone mapping', flush=True)
     print(f'ENCODER OPTIONS: {options}; visual review required', flush=True)
     if not args.execute:
@@ -153,16 +162,21 @@ def run(args):
         return 0
     if encoder not in mm.ffmpeg_encoder_names(args.ffmpeg):
         raise ValueError(f'{encoder} unavailable; no automatic CPU fallback')
+    if intel and 'intel' not in mm.gpu_vendors():
+        raise ValueError('Intel GPU not detected; no automatic CPU fallback')
     if nvidia and 'nvidia' not in mm.gpu_vendors():
         raise ValueError('NVIDIA GPU not detected; no automatic CPU fallback')
     run_id = 'dv81-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8]
     directory = args.work_dir.resolve() / run_id
     directory.mkdir(parents=True, exist_ok=False)
-    guard = (NvidiaSampleGuard if nvidia else RunGuard)(directory, reserve=1024**3)
+    guard = (NvidiaSampleGuard if experimental else RunGuard)(directory, reserve=1024**3)
+    if experimental:
+        guard.overall_offset = getattr(args, 'overall_offset', 0)
+        guard.overall_span = getattr(args, 'overall_span', 100)
     before = source.stat()
     report = {'status': 'running', 'source': str(source), 'scope': 'experimental keyframe-seek sample, not full episode',
               'requested_start': start, 'requested_seconds': args.seconds,
-              'encoder_settings': ({'encoder': encoder, 'options': options} if nvidia else
+              'encoder_settings': ({'encoder': encoder, 'options': options} if experimental else
                                    {'encoder': 'hevc_amf', 'preset': 'quality', 'qp_i': qp_i, 'qp_p': qp_p}),
               'commands': [], 'quality_note': 'Metadata and decode checks do not prove identical visual quality.'}
     def stage(command, phase, offset, span):
@@ -181,18 +195,18 @@ def run(args):
     injected = directory / 'injected.hevc'
     final = directory / 'candidate-dolby-vision.mkv'
     try:
-        original_streams = stream_info(args.ffprobe, source) if nvidia else []
-        if nvidia and (sum(s['codec_type'] == 'video' for s in original_streams) != 1
+        original_streams = stream_info(args.ffprobe, source) if experimental else []
+        if experimental and (sum(s['codec_type'] == 'video' for s in original_streams) != 1
                        or any(s['codec_type'] not in ('video', 'audio', 'subtitle', 'attachment') for s in original_streams)):
-            raise ValueError('NVIDIA sample requires one video and supported original track types')
-        source_dispositions = nv.disposition_options({'streams': original_streams}) if nvidia else []
+            raise ValueError('Hardware research sample requires one video and supported original track types')
+        source_dispositions = nv.disposition_options({'streams': original_streams}) if experimental else []
         # Keep all packets in the bounded, keyframe-starting reference; no seek
         # or trim after extraction can silently change RPU/frame correspondence.
         stage(ff + ['-ss', str(start), '-i', source, '-t', str(args.seconds + 8), '-map', '0:v:0', '-map', '0:a?', '-map', '0:s?',
                     '-map', '0:t?', '-map_metadata', '0', '-map_chapters', '-1', '-c', 'copy',
                     '-avoid_negative_ts', 'make_zero', *source_dispositions, *progress, clip], 'copy reference clip', 0, 10)
         frames = frame_info(args.ffprobe, clip)
-        if nvidia:
+        if experimental:
             require_nvidia_frames(frames)
         video = next(s for s in stream_info(args.ffprobe, clip) if s['codec_type'] == 'video')
         pts = sorted(float(f['best_effort_timestamp_time']) for f in frames)
@@ -257,10 +271,11 @@ def run(args):
         stage([args.dovi_tool, 'inject-rpu', '-i', encoded, '--rpu-in', rpu, '-o', injected],
               'inject unchanged RPU', 65, 5)
         video_input = ['-r', rate, '-i', injected]
-        if nvidia:
+        if experimental:
             from dv_full_file import timestamped_video_command
             timestamped = directory / 'timestamped-sample-video.mkv'
-            stage(timestamped_video_command(args.ffmpeg, injected, timestamped, rate),
+            timestamp_command = timestamped_video_command(args.ffmpeg, injected, timestamped, rate, intel=intel)
+            stage(timestamp_command,
                   'materialize sample video timestamps', 70, 0)
             video_input = ['-i', timestamped]
         stage(ff + ['-copyts', '-itsoffset', str(pts[0]), *video_input, '-i', clip,
@@ -276,7 +291,7 @@ def run(args):
             if getattr(info, field) != getattr(result, field):
                 raise ValueError(f'{field} changed')
         final_frames = frame_info(args.ffprobe, final)
-        if nvidia:
+        if experimental:
             require_nvidia_frames(final_frames)
             clip_streams = {'streams': stream_info(args.ffprobe, clip)}
             final_streams = {'streams': stream_info(args.ffprobe, final)}
@@ -319,7 +334,7 @@ def run(args):
         report['rpu_content_and_frame_order_unchanged'] = True
         report['rpu_comparison_note'] = 'Compare every parsed field; only extension-block ordering and recalculated CRC are ignored. Frame order is never ignored.'
         stage(ff + ['-v', 'error', '-xerror', '-threads', '2', '-i', final, '-map', '0:v:0',
-                    *(['-map', '0:a?'] if nvidia else []), '-f', 'null', '-', *progress], 'decode validation', 90, 10)
+                    *(['-map', '0:a?'] if experimental else []), '-f', 'null', '-', *progress], 'decode validation', 90, 10)
         report.update(status='verified-structure-awaiting-visual-review', frames=len(frames),
                       original_rpu_sha256=sha256(rpu), final_rpu_sha256=sha256(check_rpu),
                       output=str(final), original_video_bytes=sample_video_bytes,
@@ -348,7 +363,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source', type=Path)
     parser.add_argument('--execute', action='store_true')
-    parser.add_argument('--experimental-nvidia', action='store_true', help='Explicit bounded NVIDIA Profile 8.1 research sample; does not enable general/full-file preservation')
+    hardware = parser.add_mutually_exclusive_group()
+    hardware.add_argument('--experimental-intel', action='store_true', help='Explicit bounded Intel Profile 8.1 research sample; normal/full-file gate unchanged')
+    hardware.add_argument('--experimental-nvidia', action='store_true', help='Explicit bounded NVIDIA Profile 8.1 research sample; does not enable general/full-file preservation')
     parser.add_argument('--seconds', type=float, default=10)
     parser.add_argument('--start', type=float, default=0, help='Seek near this time; starts at preceding keyframe')
     parser.add_argument('--qp-i', type=int, default=18, help='Experimental I-frame QP (0..51); higher compresses more')

@@ -23,13 +23,13 @@ class IntegratedDVTests(unittest.TestCase):
                     self.assertEqual(options.execute,execute)
                     self.assertEqual((options.qp_i,options.qp_p),(21,23))
                     self.assertEqual(options.min_savings,5)
-                    self.assertEqual(gpu.call_count, int(execute))
+                    self.assertEqual(gpu.call_count, 1)
 
     def test_conflicts_do_not_start_pipeline(self):
         with tempfile.TemporaryDirectory() as folder:
             source=Path(folder)/'fixture.mkv'; source.touch()
             for flags in (['--resolution','1080p'],['--codec','av1'],['--hardware','nvidia'],
-                          ['--hardware','intel'],['--hardware','cpu'],['--hardware-fallback','cpu'],
+                          ['--hardware','cpu'],['--hardware-fallback','cpu'],
                           ['--full-file-streaming'],['--preview-seconds','30'],['--quality','compact'],
                           ['--dolby-vision-policy','copy'],['--dv-qp-i','52'],['--execute','--dry-run'],
                           ['--delete-originals'],['--overwrite-output']):
@@ -50,4 +50,15 @@ class IntegratedDVTests(unittest.TestCase):
             with patch('dv_full_file.shutil.which',return_value=None), patch.object(mm,'offer_requirement') as offer, patch.object(full,'run') as run:
                 self.assertEqual(full.run_integrated(args,source),3)
                 self.assertFalse(offer.call_args.kwargs['allow_cpu'])
+                run.assert_not_called()
+
+    def test_intel_explicit_and_auto_dispatch_without_model_name(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source=Path(folder)/'fixture.mkv'; source.touch()
+            for vendor in ('intel','auto'):
+                with patch('dv_full_file.shutil.which',return_value='tool'), patch.object(mm,'gpu_vendors',return_value=['intel']), patch.object(full,'run',return_value=0) as run:
+                    self.assertEqual(mm.main([str(source),'--preserve-dolby-vision','--hardware',vendor,'--execute']),0)
+                    self.assertTrue(run.call_args.args[0].experimental_intel)
+            with patch('dv_full_file.shutil.which',return_value='tool'), patch.object(mm,'gpu_vendors',return_value=['amd']), patch.object(full,'run') as run:
+                self.assertEqual(mm.main([str(source),'--preserve-dolby-vision','--hardware','intel','--execute']),3)
                 run.assert_not_called()

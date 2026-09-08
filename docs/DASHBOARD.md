@@ -21,6 +21,12 @@ progress is text only; unknown progress displays a message without a bar. The
 overall test count is not a time estimate. Older logs without an overall count
 show text for running-stage progress rather than a misleading whole-job bar.
 
+Full Intel AV1 HDR and DV research audits can now report decoded-frame progress
+from a bounded 64 KiB tail of their evidence file. The existing rolling ETA
+uses observed progress; it estimates the current audit only, excluding later
+encoding/mux/verification. Missing or incomplete telemetry remains unknown and
+never interrupts validation. This adds no dashboard animation or design change.
+
 New scans that reach the end with unreadable files show **Completed with errors**.
 Validation success remains distinct from playback approval. Historical records
 keep their original status. Unicode filenames are supported by shared CLI logging.
@@ -71,3 +77,16 @@ Do not expose or reverse-proxy this development server onto a network.
 NVIDIA execution reports separate encoding and finalization phases with the
 same overall file count. Finalization copies original non-video tracks; it
 does not re-encode the video. No animated or indeterminate bars were added.
+
+
+ETA update (2026-09-07): ordinary FFmpeg runs now report current-stage percent
+and ETA into the structured job record without resetting completed-work progress.
+New terminal runs estimate from up to 120 seconds of recent throughput, warm up
+for 10 seconds, and refresh at least every five seconds while progress arrives.
+ETA resets when progress restarts; stale structured estimates are hidden.
+Already-running legacy encodes can expose fresh Encoding-video log telemetry in
+the dashboard without restarting the encoder. Later stages never inherit that
+encoding ETA. The control room explicitly labels ETA as current-stage only;
+unmeasured later muxing and verification are not included in a claimed finish time.
+Targeted runtime/dashboard tests: 21 passed. Node DOM test unavailable on this
+machine (Node executable not found); no software installed.

@@ -60,6 +60,8 @@ def compare_track_packets(before, after, streams):
     return rounded
 
 def frame_evidence(ffprobe, source, output, guard, timeout=3600):
+    from runtime_support import frame_evidence_percent, TerminalProgress
+    display = TerminalProgress(label=guard.phase, machine=False)
     fields = ('side_data_type,red_x,red_y,green_x,green_y,blue_x,blue_y,'
               'white_point_x,white_point_y,min_luminance,max_luminance,max_content,max_average')
     command = [ffprobe, '-v', 'error', '-threads', '0', '-select_streams', 'v:0',
@@ -76,7 +78,12 @@ def frame_evidence(ffprobe, source, output, guard, timeout=3600):
                 if now-started > timeout:
                     raise RuntimeError('Frame evidence timeout; all files retained')
                 if now-last > 15:
-                    print(f'{guard.phase}: {now-started:.0f}s elapsed', flush=True)
+                    percent = frame_evidence_percent(output, getattr(guard, 'duration', None))
+                    if percent is None:
+                        print(f'{guard.phase}: {now-started:.0f}s elapsed', flush=True)
+                    else:
+                        display.update(percent)
+                        dv.jobs.stage_progress(percent, display.eta_seconds)
                     last = now
                 time.sleep(.5)
             if process.returncode:
@@ -203,11 +210,16 @@ def mux_command(ffmpeg, source, injected, output, rate):
         '-progress', 'pipe:1', '-nostats', str(output)]
 
 
-def timestamped_video_command(ffmpeg, injected, output, rate):
+def timestamped_video_command(ffmpeg, injected, output, rate, intel=False):
     """Materialize raw HEVC timestamps before it shares a mux queue with audio."""
+    bsf = "dovi_rpu=compression=none"
+    if intel:
+        cadence = Fraction(rate)
+        bsf += (f",setts=pts=N*{cadence.denominator}/({cadence.numerator}*TB)"
+                f":dts=N*{cadence.denominator}/({cadence.numerator}*TB)")
     return [ffmpeg, '-hide_banner', '-loglevel', 'warning', '-nostdin', '-n',
             '-r', rate, '-i', str(injected), '-map', '0:v:0', '-c', 'copy',
-            '-bsf:v', 'dovi_rpu=compression=none', '-avoid_negative_ts', 'disabled',
+            '-bsf:v', bsf, '-avoid_negative_ts', 'disabled',
             '-progress', 'pipe:1', '-nostats', str(output)]
 
 
@@ -220,17 +232,19 @@ def ordered_dv_mux_command(ffmpeg, video, source, output, streams):
     return command
 
 
-def nvidia_savings_preflight(args):
+def nvidia_savings_preflight(args, duration=None):
     """Bounded sample must shrink before any full-file NVIDIA encode starts."""
     root = args.work_dir.resolve()/('nvidia-size-preflight-'+time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:8])
     root.mkdir(parents=True,exist_ok=False)
+    start = min(300., max(0., duration/2-15)) if duration else 0.
     sample_args = argparse.Namespace(source=args.source, execute=True,
-        experimental_nvidia=True, seconds=30, start=0, work_dir=root,
+        overall_offset=0, overall_span=10,
+        experimental_nvidia=not getattr(args,'experimental_intel',False), experimental_intel=getattr(args,'experimental_intel',False), seconds=30, start=start, work_dir=root,
         ffmpeg=args.ffmpeg, ffprobe=args.ffprobe, dovi_tool=args.dovi_tool)
     result = dv.run(sample_args)
     reports = list(root.glob('dv81-*/validation.json'))
     if result or len(reports) != 1:
-        raise ValueError('Bounded NVIDIA sample did not pass; full-file encode not started')
+        raise ValueError('Bounded hardware DV sample did not pass; full-file encode not started')
     sample = json.loads(reports[0].read_text(encoding='utf-8'))
     if not sample.get('status','').startswith('verified') or not sample.get('original_stat_unchanged'):
         raise ValueError('Sample preservation failed; full-file encode not started')
@@ -252,8 +266,10 @@ def run(args):
     if not math.isfinite(info.duration_seconds) or not 0 < info.duration_seconds <= 86400:
         raise ValueError('Requires a known duration of at most 24 hours')
     nvidia = getattr(args, 'experimental_nvidia', False)
-    options = dv.sample_encoder_options(info, True) if nvidia else dv.experimental_encoder_options(info, args.qp_i, args.qp_p)
-    encoder = 'hevc_nvenc' if nvidia else 'hevc_amf'
+    intel = getattr(args, 'experimental_intel', False)
+    experimental = nvidia or intel
+    options = dv.sample_encoder_options(info, nvidia, intel) if experimental else dv.experimental_encoder_options(info, args.qp_i, args.qp_p)
+    encoder = 'hevc_qsv' if intel else 'hevc_nvenc' if nvidia else 'hevc_amf'
     for tool in (args.ffmpeg, args.ffprobe, args.dovi_tool):
         if not shutil.which(tool):
             raise ValueError(f'Missing tool: {tool}; no automatic installation')
@@ -263,10 +279,12 @@ def run(args):
         return 0
     if encoder not in mm.ffmpeg_encoder_names(args.ffmpeg):
         raise ValueError(f'{encoder} missing; no CPU fallback')
+    if intel and 'intel' not in mm.gpu_vendors():
+        raise ValueError('Intel GPU not detected; no CPU fallback')
     if nvidia and 'nvidia' not in mm.gpu_vendors():
         raise ValueError('NVIDIA GPU not detected; no CPU fallback')
-    if nvidia:
-        decision = nvidia_savings_preflight(args)
+    if experimental:
+        decision = nvidia_savings_preflight(args, info.duration_seconds)
         if not decision['eligible']:
             print(f"SKIPPED: {decision['reason']}. No full-file encode; original retained.",flush=True)
             return 0
@@ -275,14 +293,18 @@ def run(args):
         raise ValueError('Insufficient reserve for retained compressed intermediates')
     directory = args.work_dir / ('dv-full-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
     directory.mkdir(exist_ok=False)
-    guard = (dv.NvidiaSampleGuard if nvidia else RunGuard)(directory, reserve=2 * 1024**3)
+    guard = (dv.NvidiaSampleGuard if experimental else RunGuard)(directory, reserve=2 * 1024**3)
+    if experimental:
+        guard.detail = 'Full-file DV preservation; integrated opt-in supports AMD/Intel Profile 8.1. Playback review follows automated checks.'
+        guard.duration = info.duration_seconds
+        guard.overall_offset, guard.overall_span = 10, 90
     before = args.source.stat()
     report = {'status': 'running', 'source': str(args.source), 'commands': [],
               'qp_i': args.qp_i, 'qp_p': args.qp_p, 'scope': 'full-file Profile 8.1 experimental',
               'quality_note': 'Metadata validation does not prove identical visual quality.'}
-    if nvidia:
+    if experimental:
         report.update(encoder_settings={'encoder': encoder, 'options': options},
-                      scope='explicit NVIDIA full-file Profile 8.1 experiment; normal AMD gate unchanged')
+                      scope=f'explicit {encoder} full-file Profile 8.1 experiment; normal AMD gate unchanged')
     terminal = sys.stdout
     with (directory / 'terminal.log').open('x', encoding='utf-8') as log:
         sys.stdout = Tee(terminal, log)
@@ -310,7 +332,7 @@ def run(args):
             step = 1 / float(dv.Fraction(rate))
             if not source_pts or abs(source_pts[0]) > .002 or any(abs(b-a-step) > .002 for a,b in zip(source_pts, source_pts[1:])):
                 raise ValueError('Only continuous constant-rate video starting at zero is supported')
-            if nvidia:
+            if experimental:
                 audit = sys.modules[__name__]
                 nv.first_video(streams)
                 if any(s['codec_type'] not in ('video','audio','subtitle','attachment') for s in streams['streams']):
@@ -321,21 +343,21 @@ def run(args):
                 report['commands'].append(audit.frame_evidence(args.ffprobe, args.source, source_frames, guard))
                 audit.validate_source_frames(source_frames, source_pts, guard)
             raw, rpu, encoded, injected, final = [directory / n for n in
-                ('original.hevc', 'original-rpu.bin', 'encoded.hevc', 'injected.hevc', mm.clean_media_name(args.source))]
+                ('original.hevc', 'original-rpu.bin', 'encoded.hevc', 'injected.hevc', args.source.with_suffix('.mkv').name)]
             if getattr(args, 'video_only_folder', False):
                 final = directory / 'media' / final.name
                 final.parent.mkdir(exist_ok=False)
             stage(ff + ['-i', args.source, '-map', '0:v:0', '-c', 'copy', '-bsf:v', 'hevc_mp4toannexb', '-f', 'hevc', *progress, raw], 'extract source bitstream', 0, 8)
             stage([args.dovi_tool, 'extract-rpu', '-i', raw, '-o', rpu], 'extract full RPU', 8, 2)
-            stage(ff + ['-threads', '0' if nvidia else '2', '-i', args.source, '-map', '0:v:0', *options,
+            stage(ff + ['-threads', '0' if experimental else '2', '-i', args.source, '-map', '0:v:0', *options,
                   '-profile:v', 'main10', '-fps_mode', 'passthrough', '-f', 'hevc', *progress, encoded], f'{encoder} full encode', 10, 55)
-            if nvidia and shutil.disk_usage(directory).free < 4*encoded.stat().st_size + 3*1024**3:
+            if experimental and shutil.disk_usage(directory).free < 4*encoded.stat().st_size + 3*1024**3:
                 raise ValueError('Insufficient room for injection, final mux and retained verification copy')
             stage([args.dovi_tool, 'inject-rpu', '-i', encoded, '--rpu-in', rpu, '-o', injected], 'inject full RPU', 65, 5)
             mux = mux_command(args.ffmpeg, args.source, injected, final, rate)
-            if nvidia:
+            if experimental:
                 timestamped = directory/'timestamped-dv-video.mkv'
-                stage(timestamped_video_command(args.ffmpeg, injected, timestamped, rate),
+                stage(timestamped_video_command(args.ffmpeg, injected, timestamped, rate, intel=intel),
                       'materialize DV video timestamps', 70, 0)
                 mux = ordered_dv_mux_command(args.ffmpeg, timestamped, args.source, final, streams)
             stage(mux, 'copy all audio subtitles chapters', 70, 5)
@@ -348,7 +370,7 @@ def run(args):
                 raise NoSavingsError(decision['reason'])
             guard.phase = 'validate streams and timestamps'
             guard.status(75)
-            if nvidia:
+            if experimental:
                 seek_ok, seek_checks = verify_seek_interleaving(final, args.ffprobe,
                     [info.duration_seconds * fraction for fraction in (0, .1, .25, .5, .75, .9)])
                 report['seek_interleaving'] = seek_checks
@@ -356,7 +378,7 @@ def run(args):
                     raise ValueError('Audio/video packet ordering failed seek-point validation')
             output_info = mm.probe(final, args.ffprobe)
             dv.require_candidate(output_info)
-            if nvidia:
+            if experimental:
                 final_streams = {'streams': dv.stream_info(args.ffprobe, final)}
                 if nv.stream_inventory(streams) != nv.stream_inventory(final_streams):
                     raise ValueError('Original stream inventory/dispositions changed')
@@ -376,7 +398,7 @@ def run(args):
                 guard()
                 source_packets = np.packet_signatures(args.ffprobe, args.source, selector, timeout=600)
                 final_packets = np.packet_signatures(args.ffprobe, final, selector, timeout=600)
-                if nvidia:
+                if experimental:
                     rounded = audit.compare_track_packets(source_packets, final_packets, streams['streams'])
                     for index, count in rounded.items():
                         hashes = []
@@ -406,14 +428,14 @@ def run(args):
                 digests.append(rpu_digest(exported, guard))
             if digests[0] != digests[1] or digests[0][0] != len(source_pts):
                 raise ValueError('Full RPU content/count/frame order mismatch')
-            if nvidia:
+            if experimental:
                 guard.phase = 'Compare every decoded output frame and static HDR value'
                 guard.status(80)
                 output_frames = directory/'output-frames.compact'
                 report['commands'].append(audit.frame_evidence(args.ffprobe, final, output_frames, guard))
                 report['decoded_frame_checks'] = audit.compare_frames(source_frames, output_frames, guard)
-            stage(ff + ['-v', 'error', '-xerror', '-threads', '0' if nvidia else '2', '-i', final, '-map', '0:v:0',
-                        *(['-map', '0:a?'] if nvidia else []), '-f', 'null', '-', *progress], 'complete output decode', 80, 20)
+            stage(ff + ['-v', 'error', '-xerror', '-threads', '0' if experimental else '2', '-i', final, '-map', '0:v:0',
+                        *(['-map', '0:a?'] if experimental else []), '-f', 'null', '-', *progress], 'complete output decode', 80, 20)
             report.update(status='verified-full-file-awaiting-playback', output=str(final.resolve()), frames=len(source_pts),
                 rpu_content_digest=digests[0][1], rpu_byte_identical=dv.sha256(rpu)==dv.sha256(check_rpu),
                 audio_subtitle_packets_unchanged=True, chapters_unchanged=True,
@@ -454,13 +476,13 @@ def run_integrated(args, source):
     """Narrow opt-in CLI route; never silently substitute codecs or DV profiles."""
     conflicts = (
         not source.is_file() or args.resolution != 'keep' or args.codec not in ('auto', 'hevc')
-        or args.hardware not in ('auto', 'amd') or args.hardware_fallback == 'cpu'
+        or args.hardware not in ('auto', 'amd', 'intel') or args.hardware_fallback == 'cpu'
         or args.dolby_vision_policy != 'skip' or args.dolby_preview_backend != 'vulkan'
         or args.native_delivery_test or args.streaming_delivery_test or args.full_file_streaming
         or args.preview_range_explicit or args.report is not None or args.quality != 'balanced'
     )
     if conflicts:
-        print('BLOCKED: preservation requires one file, original resolution, AMD/auto HEVC, '
+        print('BLOCKED: preservation requires one file, original resolution, AMD/Intel/auto HEVC, '
               'balanced quality with --dv-qp-i/--dv-qp-p, and no preview, other DV policy, '
               'CPU fallback, or --report. A validation report is created in the unique output run.')
         return 2
@@ -473,15 +495,23 @@ def run_integrated(args, source):
                 url = 'https://github.com/quietvoid/dovi_tool/releases' if label == 'dovi_tool' else mm.DOWNLOAD_URLS['ffmpeg']
                 mm.offer_requirement(mm.HardwareRequirementError(label, f'Missing {label}: {tool}. Install it, then retry.', url), allow_cpu=False)
                 return 3
-        if args.execute and 'amd' not in mm.gpu_vendors():
-            print('BLOCKED: AMD GPU not detected. NVIDIA/Intel preservation is not validated; no CPU fallback.')
-            return 3
-        print('Experimental preservation: Profile 8.1 only; no scaling or tone mapping. '
+        vendor = args.hardware
+        if args.execute:
+            vendors = mm.gpu_vendors()
+            if vendor == 'auto':
+                vendor = next((v for v in ('amd', 'intel') if v in vendors), None)
+            if vendor not in vendors or vendor not in ('amd', 'intel'):
+                print('BLOCKED: supported AMD/Intel GPU not detected; no CPU fallback.')
+                return 3
+        elif vendor == 'auto':
+            vendor = next((v for v in ('amd', 'intel') if v in mm.gpu_vendors()), 'amd')
+        print('Preservation: Profile 8.1 only; no scaling or tone mapping. '
               'All originals and intermediate files retained. Playback review remains required.')
         return run(argparse.Namespace(source=source, execute=args.execute, qp_i=args.dv_qp_i,
             qp_p=args.dv_qp_p, work_dir=args.output_dir or Path(__file__).resolve().parent.parent/'reports',
             ffmpeg=args.ffmpeg, ffprobe=args.ffprobe, dovi_tool=args.dovi_tool,
-            min_savings=args.min_savings, video_only_folder=getattr(args, 'video_only_folder', False)))
+            min_savings=args.min_savings, video_only_folder=getattr(args, 'video_only_folder', False),
+            experimental_intel=vendor == 'intel'))
     except (OSError, ValueError, RuntimeError) as exc:
         print(f'BLOCKED: {exc}; original and any partial output retained')
         return 4
@@ -593,7 +623,9 @@ def main():
     parser.add_argument('--verify-existing', type=Path, help='Verify a retained run without encoding')
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--video-only-folder', action='store_true', help='Place accepted video alone in the run media folder; omit artwork and external subtitles, retain embedded tracks and sources')
-    parser.add_argument('--experimental-nvidia', action='store_true', help='Explicit research run only; normal optimizer remains AMD-only')
+    hardware = parser.add_mutually_exclusive_group()
+    hardware.add_argument('--experimental-intel', action='store_true', help='Explicit Intel Profile 8.1 full-file research; bounded preflight and all preservation checks required')
+    hardware.add_argument('--experimental-nvidia', action='store_true', help='Explicit NVIDIA research run; integrated opt-in supports AMD/Intel')
     parser.add_argument('--min-savings', type=float, default=5.0, help='Minimum percentage reduction; larger/equal outputs are always rejected')
     parser.add_argument('--qp-i',type=int,default=21)
     parser.add_argument('--qp-p',type=int,default=23)
