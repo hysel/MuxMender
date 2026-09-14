@@ -22,11 +22,15 @@ muxmender-dashboard = "dashboard:main"
 muxmender-validate-nvidia = "validate_nvidia:cli"
 muxmender-webui = "webui:main"
 muxmender-plan = "library_planner:main"
+muxmender-preview-amd-av1 = "amd_av1_preview:main"
+muxmender-batch-amd-av1 = "amd_av1_batch:main"
+muxmender-hardware = "encoder_capabilities:main"
+muxmender-dvd-av1 = "dvd_av1_batch:main"
 
 [tool.setuptools]
 package-dir = {"" = "python"}
 packages = ["ui"]
-py-modules = ["muxmender", "native_pipeline", "runtime_support", "streaming_pipeline", "job_tracking", "dashboard", "run_logged", "dv_full_file", "dv_preservation_test", "validate_nvidia", "mux_integrity", "library_planner", "workflow_worker", "webui", "revalidate_output"]
+py-modules = ["muxmender", "native_pipeline", "runtime_support", "streaming_pipeline", "job_tracking", "dashboard", "run_logged", "dv_full_file", "dv_preservation_test", "validate_nvidia", "mux_integrity", "library_planner", "workflow_worker", "webui", "revalidate_output", "amd_av1_preview", "amd_av1_batch", "encoder_capabilities", "dvd_av1_batch"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

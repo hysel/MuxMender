@@ -7,6 +7,61 @@ import hashlib
 from pathlib import Path
 
 
+def require_original_dimensions(original, actual, encoder):
+    """Reject padded output too; crop metadata is not a universal player guarantee."""
+    expected=(original.width,original.height)
+    observed=(actual.width,actual.height)
+    if expected==observed:return
+    detail=f'Output resolution changed: {expected[0]}x{expected[1]} -> {observed[0]}x{observed[1]}.'
+    if encoder=='av1_amf':
+        detail+=' AMD AV1 alignment/padding may be involved. Crop metadata is not accepted as proof of preserved playback dimensions. Select HEVC explicitly or keep the original; no automatic resizing or CPU fallback.'
+    raise ValueError(detail)
+
+
+def verify_av1_display_geometry(original, encoded, decoded_sizes):
+    """Validate known AMF padding using decoded evidence, never metadata alone.
+
+    This does not override the default strict publication gate or establish
+    client compatibility. Callers must explicitly select a crop-aware workflow.
+    """
+    expected = (original.get('width'), original.get('height'))
+    coded = (encoded.get('width'), encoded.get('height'))
+    if encoded.get('codec_name') != 'av1':
+        raise ValueError('Expected AV1 output')
+    if original.get('side_data_list'):
+        raise ValueError('Source geometry side data requires separate review')
+    if any(s.get('side_data_type') == 'Display Matrix' for s in encoded.get('side_data_list', [])):
+        raise ValueError('Output rotation requires separate review')
+    try:
+        sar = Fraction(original['sample_aspect_ratio'].replace(':', '/'))
+        actual_sar = Fraction(encoded['sample_aspect_ratio'].replace(':', '/'))
+        if sar <= 0 or sar != actual_sar:
+            raise ValueError('Sample aspect ratio changed')
+    except (KeyError, TypeError, AttributeError, ZeroDivisionError):
+        raise ValueError('Missing or invalid sample aspect ratio') from None
+    crops = [s for s in encoded.get('side_data_list', []) if s.get('side_data_type') == 'Frame Cropping']
+    if coded == expected:
+        if crops:
+            raise ValueError('Unexpected crop on exact-size output')
+    else:
+        allowed = {
+            ((1920, 1080), (1920, 1082)): (0, 2, 0, 0),
+            ((720, 480), (768, 480)): (0, 0, 0, 48),
+        }
+        padding = allowed.get((expected, coded))
+        if padding is None or len(crops) != 1:
+            raise ValueError('Unexpected AV1 padding or missing crop metadata')
+        for name, value in zip(('top', 'bottom', 'left', 'right'), padding):
+            observed = crops[0].get('crop_' + name)
+            if type(observed) is not int or observed != value:
+                raise ValueError('Unexpected AV1 crop offsets')
+    if not decoded_sizes or any(tuple(size) != expected for size in decoded_sizes):
+        raise ValueError('Every decoded displayed frame must retain source dimensions')
+    return dict(coded=list(coded), displayed=list(expected), frames=len(decoded_sizes),
+                sample_aspect_ratio=str(sar),
+                playback_caveat='Padded outputs require a crop-aware player; not universal compatibility')
+
+
 def playback_plan(data, audio_track=None, subtitle_track=None):
     """Explicit additive EAC3 policy; track selectors are zero-based by type."""
     streams = data['streams']

@@ -3,6 +3,13 @@ from workflow_worker import compare_packets
 
 
 class WorkerValidationTests(unittest.TestCase):
+    def test_lost_aac_priming_is_not_duration_rounding(self):
+        original=[dict(stream_index=1,pts_time='-0.021333',duration_time='0.021333',data_hash='same',
+                       side_data_list=[dict(side_data_type='Skip Samples',skip_samples=1024,discard_padding=0)])]
+        output=[dict(stream_index=1,pts_time='-0.021000',duration_time='0.021000',data_hash='same')]
+        with self.assertRaisesRegex(ValueError,'priming/padding'):
+            compare_packets(original,output,True)
+
     def test_interleaving_is_not_track_content(self):
         a=[dict(stream_index=s,pts_time=str(t),data_hash=f'{s}-{t}') for s,t in ((1,0),(1,1),(2,0),(2,1))]
         b=[a[0],a[2],a[1],a[3]]

@@ -800,10 +800,12 @@ def encoder_options(
     quality: str,
     info: MediaInfo,
     encoder: str | None = None,
-    *, experimental_av1_hdr: bool = False,
+    *, experimental_av1_hdr: bool = False, experimental_amd_av1_qp80: bool = False,
 ) -> list[str]:
     encoder = encoder or SOFTWARE_ENCODERS[codec]
     ten_bit = info.bit_depth > 8 or info.hdr
+    if experimental_amd_av1_qp80 and (encoder != 'av1_amf' or codec != 'av1' or quality != 'balanced' or ten_bit or info.dolby_vision):
+        raise ValueError('Experimental AMD AV1 QP80 requires balanced 8-bit SDR AV1/AMF without Dolby Vision')
     if experimental_av1_hdr and (encoder != 'av1_qsv' or not info.hdr or info.dolby_vision):
         raise ValueError('AV1 HDR research requires Intel AV1 HDR10 without Dolby Vision')
     if encoder == "av1_qsv" and (info.hdr or info.mastering_display_metadata) and not experimental_av1_hdr:
@@ -832,6 +834,9 @@ def encoder_options(
         qp_i = {"transparent": "18", "balanced": "21", "compact": "24"}[quality]
         qp_p = {"transparent": "20", "balanced": "23", "compact": "26"}[quality]
         preset = {"transparent": "quality", "balanced": "balanced", "compact": "speed"}[quality]
+        if experimental_amd_av1_qp80:
+            qp_i = qp_p = '80'
+            preset = 'quality'
         options = [
             "-c:v", encoder, "-usage", "transcoding", "-quality", preset,
             "-rc", "cqp", "-qp_i", qp_i, "-qp_p", qp_p,
@@ -1472,6 +1477,14 @@ def main(argv: list[str] | None = None) -> int:
         selection = select_encoder(
             target_codec, args.hardware, available_encoders, detected_vendors
         )
+        if args.execute and selection.hardware:
+            from encoder_capabilities import probe_encoder
+            capability = probe_encoder(args.ffmpeg, selection.encoder)
+            emit_action('MUXMENDER_ENCODER_CAPABILITY', capability)
+            if capability['status'] != 'working':
+                raise HardwareRequirementError(selection.vendor,
+                    f"{selection.encoder} is listed but failed its runtime check: {capability['detail']}",
+                    DOWNLOAD_URLS[selection.vendor])
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
         if isinstance(exc, HardwareRequirementError):
             error = exc

@@ -166,7 +166,18 @@ def enumerate_media(source, excluded=(), guard=lambda:None):
     return files
 
 
-def scan(source, directory, ffprobe='ffprobe', guard=lambda:None, update=lambda *a:None, excluded=()):
+def amd_av1_eligibility(info, geometry):
+    action, reason = classify(info)
+    if action != 'preview-candidate':
+        return action, reason
+    if (info.width, info.height, info.bit_depth) != (1920, 1080, 8):
+        return 'needs-review', 'Experimental AMD QP80 route is limited to 1080p 8-bit SDR'
+    if geometry.get('field_order') != 'progressive' or geometry.get('sample_aspect_ratio') != '1:1' or geometry.get('side_data_list'):
+        return 'needs-review', 'AMD experiment requires progressive square pixels without geometry side data'
+    return 'preview-candidate', 'AMD QP80 experiment eligible; GPU preflight, measured savings and playback review still required'
+
+
+def scan(source, directory, ffprobe='ffprobe', guard=lambda:None, update=lambda *a:None, excluded=(), amd_av1=False):
     directory=Path(directory)
     paths=enumerate_media(source,tuple(Path(p).resolve() for p in excluded),guard)
     counts=Counter(); codecs=Counter(); total=0
@@ -181,6 +192,9 @@ def scan(source, directory, ffprobe='ffprobe', guard=lambda:None, update=lambda 
                 row['fingerprint']={'size':before.st_size,'mtime_ns':before.st_mtime_ns}
                 row['color_check']='Missing stream fields may be recovered from consistent explicit tags on the first eight decoded frames; no inferred defaults'
                 row['action'],row['reason']=classify(info)
+                if amd_av1:
+                    from workflow_worker import shape
+                    row['action'],row['reason']=amd_av1_eligibility(info, shape(path, ffprobe))
                 if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):
                     row.update(action='needs-review',reason='Source changed externally during scan')
                 total+=info.size_bytes; codecs[info.video_codec]+=1
@@ -201,6 +215,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source',type=Path)
     parser.add_argument('--ffprobe',default='ffprobe')
+    parser.add_argument('--amd-av1', action='store_true', help='Read-only eligibility plan for the experimental AMD QP80 route')
     parser.add_argument('--reports',type=Path,default=Path(__file__).resolve().parent.parent/'reports')
     args=parser.parse_args()
     from job_tracking import tracked_call,phase
@@ -211,7 +226,7 @@ def main():
         bar=TerminalProgress('Read-only library scan')
         def update(label,percent):
             phase(directory,label,percent);bar.update(percent)
-        result=scan(args.source,directory,args.ffprobe,update=update,excluded=(args.reports,))
+        result=scan(args.source,directory,args.ffprobe,update=update,excluded=(args.reports,),amd_av1=args.amd_av1)
         print(f'REPORT: {directory / "summary.json"}',flush=True)
         return int(bool(result['actions'].get('probe-error')))
     return tracked_call(work,'Read-only library scan',args.reports)

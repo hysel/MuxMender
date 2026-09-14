@@ -8,7 +8,7 @@ import shutil
 import time
 import muxmender as mm
 import native_pipeline as np
-from mux_integrity import conversion_preflight
+from mux_integrity import conversion_preflight, require_original_dimensions
 from library_planner import scan, classify, probe_with_frame_color
 from streaming_pipeline import chapter_summary
 
@@ -91,6 +91,8 @@ def compare_track_packets(left,right,infer_audio_duration=False):
         a,b=dict(original),dict(encoded)
         if not a.get('data_hash') or a.get('data_hash')!=b.get('data_hash'):
             raise ValueError('Audio/subtitle packet payload changed')
+        if a.get('side_data_list',[])!=b.get('side_data_list',[]):
+            raise ValueError('Audio/subtitle packet side data changed (including priming/padding); copied payload alone is insufficient')
         if infer_audio_duration and ('duration_time' in a)!=('duration_time' in b):
             supplied=a.get('duration_time',b.get('duration_time'))
             following=next((p for p in left[index+1:] if p.get('stream_index')==a.get('stream_index')),None)
@@ -176,6 +178,7 @@ def convert(request,ctx):
             info.duration_seconds,'Encode '+selection.label,10,60)
         ctx.update('Validate streams and frame timing',70)
         actual=probe_with_frame_color(output,ffprobe)
+        require_original_dimensions(info,actual,selection.encoder)
         for key in ('width','height','bit_depth','color_primaries','color_transfer','color_space','color_range','audio_codecs','subtitle_codecs'):
             if getattr(info,key)!=getattr(actual,key): raise ValueError('Output mismatch: '+key)
         if actual.video_codec!=request['codec'] or actual.hdr or actual.dolby_vision: raise ValueError('Unexpected codec/HDR signaling')

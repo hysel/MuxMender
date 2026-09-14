@@ -5,12 +5,24 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from native_pipeline import allow_cpu, encode_command, progress, remux_command, stage, validate_options, video_payload, comparison_window, matching_timeline
+from native_pipeline import allow_cpu, encode_command, progress, frame_progress, remux_command, stage, validate_options, video_payload, comparison_window, matching_timeline
 from muxmender import parse_args
 from tests.test_muxmender import sample
 
 
 class NativePipelineTests(unittest.TestCase):
+    def test_frame_progress_ignores_stuck_mux_timestamps(self):
+        self.assertEqual(frame_progress('frame= 50',100),50)
+        self.assertIsNone(frame_progress('out_time_us=17375000',100))
+        self.assertIsNone(frame_progress('frame=N/A',100))
+        self.assertIsNone(frame_progress('frame=-1',100))
+        self.assertIsNone(frame_progress('frame=1',0))
+        with patch('job_tracking.stage_progress') as update:
+            stage([sys.executable,'-c','print("frame=50"); print("out_time_us=17375000"); print("frame=100")'],
+                  1000,0,100,timeout=10,expected_frames=100)
+        self.assertEqual(update.call_args_list[0].args[0],50)
+        self.assertEqual(update.call_args_list[-1].args[0],100)
+
     def test_comparison_reads_past_clip_boundaries(self):
         self.assertEqual(comparison_window(300, 10), '295%315')
         self.assertEqual(comparison_window(0, 10), '0%15')
@@ -29,6 +41,14 @@ class NativePipelineTests(unittest.TestCase):
         self.assertEqual(progress('out_time_us=5000000', 10), 50)
         self.assertIsNone(progress('out_time_us=N/A', 10))
         self.assertIsNone(progress('encoder log', 10))
+
+    def test_invalid_mux_timestamps_do_not_report_completion(self):
+        for value in ('9223372036824275808','-9223372036854775808','nan','inf','-inf'):
+            with self.subTest(value=value):
+                self.assertIsNone(progress('out_time_us='+value,30))
+        for duration in (0,-1,float('nan'),float('inf')):
+            self.assertIsNone(progress('out_time_us=5000000',duration))
+        self.assertEqual(progress('out_time_us=31000000',30),100)
 
     def test_remux_aligns_timestamps_and_copies_streams(self):
         cmd = remux_command('ffmpeg', Path('original.mkv'), Path('ref.mkv'), Path('new.mkv'), 300, 10)
