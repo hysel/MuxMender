@@ -1,5 +1,9 @@
 # MuxMender
 
+Standalone hardware runtime checks and the opt-in DVD AMD AV1 batch command
+are documented in [DVD AV1 workflow](docs/dvd-av1-workflow.md). Both default to
+read-only inspection; DVD batch execution never deletes original media.
+
 MuxMender recursively analyzes a media library and creates a safe optimization plan. It can transcode inefficient video streams to HEVC or AV1 while preserving the original resolution and copying audio, subtitles, attachments, metadata, and chapters.
 
 The default is a **dry run**. Originals are retained during normal execution and optimized files are written as sidecars such as `Movie.mp4.muxmender.mkv`.
@@ -37,6 +41,12 @@ python python/muxmender.py "D:\Media" --codec av1 --quality balanced --output-di
 ```
 
 ## Safety behavior
+
+For the separately validated, experimental **AMD 1080p SDR AV1 batch route**, see
+[safe sequential batches](docs/AMD-AV1-BATCH.md). It uses a disjoint output folder,
+per-file integrity checks, bounded execution and checksum-verified repeat-run
+skipping. It never publishes or deletes originals and does not change the general
+optimizer's defaults.
 
 - Dry-run is the default; `--execute` is required to run FFmpeg.
 - Existing outputs are always skipped. Deletion and overwrite flags are rejected.

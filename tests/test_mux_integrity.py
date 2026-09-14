@@ -5,8 +5,23 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from mux_integrity import verify_startup_interleaving, seek_track_alignment
-from mux_integrity import playback_plan, verify_playback_copy
+from mux_integrity import playback_plan, verify_playback_copy, require_original_dimensions
 from copy import deepcopy
+
+
+class DimensionSafetyTests(unittest.TestCase):
+    def test_exact_dimensions_pass_without_vendor_blacklist(self):
+        for width,height in ((1920,1080),(3840,2160),(1280,720)):
+            info=SimpleNamespace(width=width,height=height)
+            self.assertIsNone(require_original_dimensions(info,info,'av1_amf'))
+
+    def test_amd_padding_rejected_with_explicit_hevc_recovery(self):
+        with self.assertRaisesRegex(ValueError,'Select HEVC explicitly'):
+            require_original_dimensions(SimpleNamespace(width=1920,height=1080),SimpleNamespace(width=1920,height=1082),'av1_amf')
+
+    def test_other_encoder_dimension_changes_still_rejected(self):
+        with self.assertRaisesRegex(ValueError,'resolution changed'):
+            require_original_dimensions(SimpleNamespace(width=3840,height=2160),SimpleNamespace(width=1920,height=1080),'hevc_amf')
 
 
 class PlaybackDefaultsTests(unittest.TestCase):

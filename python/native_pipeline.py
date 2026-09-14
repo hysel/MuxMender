@@ -32,13 +32,30 @@ def progress(line, seconds):
         return min(100.0, max(0.0, float(line.split("=", 1)[1])))
     if line.startswith("out_time_us="):
         try:
-            return min(100.0, max(0.0, float(line.split("=", 1)[1]) / (seconds * 10000)))
+            timestamp = float(line.split("=", 1)[1])
+            # Some muxes with empty subtitle tracks emit near-int64-limit
+            # timestamps. These are not usable progress, nor proof of completion.
+            if not math.isfinite(timestamp) or abs(timestamp) >= 2**62 or not math.isfinite(seconds) or seconds <= 0:
+                return None
+            return min(100.0, max(0.0, timestamp / (seconds * 10000)))
         except ValueError:
             return None
     return None
 
 
-def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None):
+def frame_progress(line, expected_frames):
+    if not line.startswith('frame='):
+        return None
+    try:
+        count = int(line.split('=', 1)[1])
+        if count < 0 or expected_frames <= 0:
+            return None
+        return min(100.0, 100*count/expected_frames)
+    except ValueError:
+        return None
+
+
+def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None, observe=None, expected_frames=None):
     """Stream logs/progress to caller; cap both stalls and total elapsed time."""
     from muxmender import stop_process_tree
     from job_tracking import stage_progress
@@ -73,10 +90,13 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None)
             if line is None:
                 eof = True
                 continue
+            # An observer can validate every frame without retaining verbose logs.
+            suppressed = observe(line) if observe else False
             log.append(line)
             if len(log) > 200:
                 log.pop(0)
-            value = progress(line.strip(), seconds)
+            value = (frame_progress(line.strip(), expected_frames) if expected_frames is not None
+                     else progress(line.strip(), seconds))
             if value is not None:
                 if value > last:
                     advanced = now
@@ -85,7 +105,7 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None)
                     display.update(min(value, 99))
                     stage_progress(min(value, 99), display.eta_seconds)
                     print(f"MUXMENDER_PROGRESS={offset + span * value / 100:.1f}", flush=True)
-            elif not re.match(r"^(frame|fps|stream_\d+_\d+_q|bitrate|total_size|out_time|dup_frames|drop_frames|speed|progress)=", line):
+            elif not suppressed and not re.match(r"^(frame|fps|stream_\d+_\d+_q|bitrate|total_size|out_time|dup_frames|drop_frames|speed|progress)=", line):
                 print(line.rstrip(), flush=True)
         if child.returncode:
             raise RuntimeError(f"Stage failed ({child.returncode}): {''.join(log)[-1600:]}")
