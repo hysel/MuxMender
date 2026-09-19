@@ -331,8 +331,11 @@ def gpu_vendors() -> list[str]:
             "powershell", "-NoProfile", "-NonInteractive", "-Command",
             "(Get-CimInstance Win32_VideoController).Name",
         ])
-    elif platform.system() == "Linux" and shutil.which("lspci"):
-        commands.append(["lspci"])
+    elif platform.system() == "Linux":
+        if shutil.which("lspci"):
+            commands.append(["lspci"])
+        if shutil.which("nvidia-smi"):
+            commands.append(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
     elif platform.system() == "Darwin":
         commands.append(["system_profiler", "SPDisplaysDataType"])
 
@@ -352,6 +355,15 @@ def gpu_vendors() -> list[str]:
         except (OSError, subprocess.TimeoutExpired):
             continue
 
+    if platform.system() == "Linux":
+        # Containers may not have lspci. Only inspect DRM nodes exposed to this
+        # container; host sysfs alone must not nominate unmounted render devices.
+        for node in Path('/dev/dri').glob('renderD*'):
+            try:
+                vendor=(Path('/sys/class/drm')/node.name/'device/vendor').read_text().strip()
+                text += '\n' + {'0x1002':'amd', '0x8086':'intel', '0x10de':'nvidia'}.get(vendor,'')
+            except OSError:
+                pass
     detected: list[str] = []
     if any(name in text for name in ("nvidia", "geforce", "quadro")):
         detected.append("nvidia")

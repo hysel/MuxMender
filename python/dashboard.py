@@ -6,6 +6,7 @@ import ctypes
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -103,7 +104,21 @@ def latest_outcome(directory,root):
             stamp=report.get('finished',path.stat().st_mtime)
             if isinstance(stamp,(int,float)):
                 candidates.append((stamp,path.name,report))
-    if not candidates:return {},False
+    if not candidates:
+        status_path=directory/'status.json'
+        status=read_json(status_path) if contained(status_path,root) else {}
+        state=status.get('state')
+        if state=='trials-completed':
+            decision=status.get('decision',{})
+            return dict(status='skipped' if decision.get('action')=='keep_original' else 'completed',
+                        detail=decision.get('reason'), decision=decision, original_retained=True),False
+        if state=='validated-copy-awaiting-playback':
+            return dict(status='verified-awaiting-playback', output=status.get('output'),
+                        total_savings_percent=status.get('saved_percent'), original_retained=True),False
+        if state in ('stopped-original-retained','full-output-rejected-insufficient-savings'):
+            return dict(status='failed' if state=='stopped-original-retained' else 'skipped',
+                        error=status.get('error'), detail=state, original_retained=True),False
+        return {},False
     _,name,report=max(candidates,key=lambda item:(item[0],item[1]))
     review=read_json(directory/'playback-review.json') if contained(directory/'playback-review.json',root) else {}
     approved=(review.get('approved') is True and review.get('validation_report')==name
@@ -117,7 +132,7 @@ def apply_outcome(data,directory,root):
     if not report:return data
     data=dict(data)
     initial=read_json(directory/'job.json')
-    data['execution_state']=initial.get('state',data.get('state'))
+    data['execution_state']=initial.get('state',data.get('execution_state',data.get('state')))
     data['execution_error']=initial.get('error')
     data['result']=report
     if report.get('status') in ('running','queued','cancelling'):
@@ -127,6 +142,7 @@ def apply_outcome(data,directory,root):
     data['state']='playback-approved' if approved else ('verified' if str(report.get('status','')).startswith('verified') else report.get('status',data.get('state')))
     data['phase']='Playback approved' if approved else report.get('status',data.get('phase'))
     data['error']=report.get('error')
+    if report.get('detail'):data['detail']=report['detail']
     output=report.get('output')
     if output:
         target=Path(output)
@@ -141,16 +157,48 @@ def apply_outcome(data,directory,root):
     return data
 
 
+def file_savings(report):
+    """Final whole-file reduction only; never infer savings from partial media."""
+    status = str(report.get('status', ''))
+    if not status.startswith(('verified', 'validated-', 'experimental-preview-awaiting-playback')):
+        return None
+    value = report.get('total_savings_percent')
+    if type(value) not in (int, float) or not math.isfinite(value) or value > 100:
+        return None
+    return value
+
+
+def batch_savings(batch):
+    """Size-weighted reduction for newly validated copies, not pending/skipped files."""
+    source_bytes = reduced_bytes = count = 0
+    for row in batch.get('entries', []):
+        if not isinstance(row, dict) or row.get('status') != 'validated-copy':
+            continue
+        size = row.get('fingerprint', {}).get('size')
+        value = row.get('savings_percent')
+        if (type(size) not in (int, float) or not math.isfinite(size) or size <= 0
+                or type(value) not in (int, float) or not math.isfinite(value) or value > 100):
+            continue
+        source_bytes += size
+        reduced_bytes += size * value / 100
+        count += 1
+    return dict(percent=100 * reduced_bytes / source_bytes, files=count) if count else None
+
+
 class Catalog:
-    def __init__(self, root):
+    def __init__(self, root, artifact_roots=()):
         self.root = Path(root).resolve()
+        self.artifact_roots = [self.root, *(Path(p).resolve() for p in artifact_roots)]
         self.lock = threading.Lock()
         self.cached_at = 0
         self.jobs = []
         self.logs = {}
 
     def read(self, path):
-        return read_json(path) if contained(path, self.root) else {}
+        return read_json(path) if self.allowed_root(path) else {}
+
+    def allowed_root(self, path):
+        return next((root for root in self.artifact_roots if contained(path, root)), None)
 
     def snapshot(self):
         with self.lock:
@@ -158,9 +206,11 @@ class Catalog:
                 return self.jobs
             directories = set()
             # Only known artifact roots; never enumerate source drives or media contents.
-            for name in ('reports', 'test-output'):
-                base = self.root / name
-                if not base.is_dir() or not contained(base, self.root):
+            bases = [self.root/'reports', self.root/'test-output', *self.artifact_roots[1:]]
+            for base in dict.fromkeys(bases):
+                try:accessible=bool(self.allowed_root(base)) and base.is_dir()
+                except OSError:accessible=False
+                if not accessible:
                     continue
                 for parent, children, files in os.walk(base, followlinks=False):
                     children[:] = [c for c in children if contained(Path(parent)/c, base)
@@ -174,17 +224,26 @@ class Catalog:
                 if not job and any(contained(directory, Path(parent)) for parent in linked):
                     continue
                 run = Path(job.get('linked_run', directory))
-                if not contained(run, self.root):
+                if not self.allowed_root(run):
                     run = directory
+                run_root = self.allowed_root(run)
                 status = self.read(run/'status.json')
-                report, _ = latest_outcome(run,self.root)
+                plan = self.read(run/'plan.json')
+                report, _ = latest_outcome(run,run_root)
+                savings_percent = file_savings(report)
+                savings_scope = 'Validated file'
+                batch = self.read(run/'batch.json') or self.read(run.parent/'batch.json')
+                aggregate = batch_savings(batch)
+                if aggregate:
+                    savings_percent = aggregate['percent']
+                    savings_scope = f"{aggregate['files']} validated batch file(s)"
                 publication = self.read(run/'publication.json')
                 logpath = directory/'terminal.log'
                 if not logpath.is_file():
                     logpath = run/'terminal.log'
-                log = tail(logpath) if contained(logpath, self.root) else ''
+                log = tail(logpath) if self.allowed_root(logpath) else ''
                 stamps = [p.stat().st_mtime for p in (run/'status.json', run/'validation.json', logpath)
-                          if p.is_file() and contained(p, self.root)]
+                          if p.is_file() and self.allowed_root(p)]
                 updated = max(stamps + [job.get('updated', 0)])
                 phase = report.get('status') or status.get('phase') or job.get('phase') or 'Starting'
                 if report.get('status') == 'running' and job.get('progress_kind') == 'structured':
@@ -236,13 +295,24 @@ class Catalog:
                         target = self.root/target
                     output_state = ('Available' if target.is_file() else 'Not present (historical result retained)') if contained(target,self.root) else 'Outside project (not checked)'
                 identifier = hashlib.sha256(str(directory).encode()).hexdigest()[:20]
-                if log and contained(logpath, self.root):
+                if log and self.allowed_root(logpath):
                     logs[identifier] = logpath
                 title = job.get('title') or ('Full Dolby Vision preservation' if directory.name.startswith('dv-full-') else report.get('scope')) or directory.name
+                source = report.get('source') or status.get('source') or plan.get('source')
+                if title == 'Measured codec selection':
+                    modes = plan.get('hevc_nvenc_cq')
+                    mode = 'HEVC CQ '+ '/'.join(map(str,modes)) if modes else 'Codec comparison'
+                    if plan.get('adaptive'):mode='Adaptive '+mode
+                    filename = str(source).replace('\\', '/').rsplit('/',1)[-1] if source else 'Unknown source'
+                    title = mode+' · '+filename+' · '+directory.name.removeprefix('job-')
                 jobs.append(apply_outcome(dict(id=identifier, title=title,
-                    directory=str(directory.relative_to(self.root)), state=state, phase=phase, percent=percent,
+                    execution_state=job.get('state',state),
+                    directory=str(directory.relative_to(self.root)) if contained(directory,self.root) else str(directory), state=state, phase=phase, percent=percent,
                     stage_eta=stage_eta if state == 'running' else None,
                     stage_percent=stage_percent,
+                    stage_started=job.get('stage_started'),
+                    performance_seconds=job.get('performance_seconds',{}),
+                    performance_scope=job.get('performance_scope'),
                     progress_kind=job.get('progress_kind', 'legacy'),
                     completed=job.get('completed'), total=job.get('total'), unit=job.get('unit', 'steps'),
                     detail=job.get('detail'), results=report.get('capabilities', []),
@@ -251,38 +321,76 @@ class Catalog:
                     environment=report.get('environment', {}),
                     progress_label=parsed.get('progress_label'), updated=updated, started=started,
                     elapsed=max(0, (job.get('finished') or (time.time() if state=='running' else updated))-(started or updated)),
-                    source=report.get('source'), output=output, output_state=output_state,
+                    source=source, output=output, output_state=output_state,
+                    file_savings_percent=savings_percent, savings_scope=savings_scope,
                     savings=publication.get('video_savings_percent', report.get('video_savings_percent',report.get('video_payload_saving_percent'))),
                     error=report.get('error'), has_log=identifier in logs,
-                    awaiting_playback='awaiting' in str(phase), original_unchanged=report.get('original_stat_unchanged',report.get('media_stat_unchanged'))),run,self.root))
+                    awaiting_playback='awaiting' in str(phase), original_unchanged=report.get('original_size_mtime_unchanged',report.get('original_stat_unchanged',report.get('media_stat_unchanged')))),run,run_root))
             self.jobs = sorted(jobs, key=lambda j:(j['state']=='running', j['started'] or j['updated']), reverse=True)
             self.logs = logs
             self.cached_at = time.time()
             return self.jobs
 
 
-def make_handler(catalog):
+def make_handler(catalog, page=HTML, batch_provider=None, review_writer=None, allowed_hosts=(), authorize=None, app_provider=None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
 
+        def permitted(self):
+            hosts=(f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}', *allowed_hosts)
+            if self.headers.get('Host') not in hosts:
+                self.send_error(403);return False
+            if authorize is not None and not authorize(self.headers.get('Authorization','')):
+                self.send_response(401)
+                self.send_header('WWW-Authenticate','Basic realm="MuxMender", charset="UTF-8"')
+                self.send_header('Content-Length','0')
+                self.send_header('Cache-Control','no-store')
+                self.end_headers();return False
+            return True
+
+        def do_POST(self):
+            if not self.permitted():return
+            if review_writer is None:
+                self.send_error(501);return
+            host=self.headers.get('Host','')
+            if host not in (f'127.0.0.1:{self.server.server_port}',f'localhost:{self.server.server_port}') or self.headers.get('Origin')!='http://'+host:
+                self.send_error(403);return
+            if self.path!='/api/review' or review_writer is None:
+                self.send_error(404);return
+            try:
+                length=int(self.headers.get('Content-Length','0'))
+                if not 0<length<=8192 or self.headers.get('Content-Type')!='application/json':raise ValueError('Invalid request')
+                data=json.loads(self.rfile.read(length))
+                if not isinstance(data,dict):raise ValueError('Invalid object')
+                body=json.dumps(review_writer(data)).encode()
+            except (ValueError,OSError,StopIteration):
+                self.send_error(400);return
+            self.send_response(200)
+            self.send_header('Content-Type','application/json')
+            self.send_header('Content-Length',str(len(body)))
+            self.send_header('Cache-Control','no-store')
+            self.end_headers();self.wfile.write(body)
+
         def do_GET(self):
             # Loopback only plus Host validation blocks DNS-rebinding access.
-            if self.headers.get('Host') not in (f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}'):
-                self.send_error(403)
-                return
+            if not self.permitted():return
             url = urlparse(self.path)
             kind = 'application/json; charset=utf-8'
             if url.path == '/':
-                body = HTML.encode()
+                body = page.encode()
                 kind = 'text/html; charset=utf-8'
             elif url.path == '/api/jobs':
                 body = json.dumps(dict(jobs=catalog.snapshot(), now=time.time())).encode()
+            elif url.path == '/api/app' and app_provider is not None:
+                body = json.dumps(app_provider()).encode()
+            elif url.path == '/api/batches' and batch_provider is not None:
+                body = json.dumps(dict(batches=batch_provider(), now=time.time())).encode()
             elif url.path == '/api/log':
                 catalog.snapshot()
                 identifier = parse_qs(url.query).get('id', [''])[0]
                 path = catalog.logs.get(identifier)
-                if not path or not contained(path, catalog.root):
+                if not path or not catalog.allowed_root(path):
                     self.send_error(404)
                     return
                 body = json.dumps(dict(text=tail(path))).encode()
@@ -306,8 +414,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument('--port', type=int, default=8765)
+    parser.add_argument('--artifact-root', type=Path, action='append', default=[],
+                        help='Additional trusted output directory for linked validation reports (repeatable)')
     args = parser.parse_args()
-    server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(Catalog(args.root)))
+    server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(Catalog(args.root, args.artifact_root)))
     print(f'MuxMender dashboard: http://127.0.0.1:{server.server_port} (read-only; Ctrl+C stops monitoring only)', flush=True)
     try:
         server.serve_forever()

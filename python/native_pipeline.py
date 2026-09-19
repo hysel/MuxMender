@@ -55,13 +55,13 @@ def frame_progress(line, expected_frames):
         return None
 
 
-def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None, observe=None, expected_frames=None):
+def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None, observe=None, expected_frames=None, cwd=None):
     """Stream logs/progress to caller; cap both stalls and total elapsed time."""
     from muxmender import stop_process_tree
     from job_tracking import stage_progress
     from runtime_support import guard_ordered_mux_memory
     child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             text=True, encoding="utf-8", errors="replace")
+                             text=True, encoding="utf-8", errors="replace", cwd=cwd)
     lines = queue.Queue()
     def read():
         try:

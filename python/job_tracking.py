@@ -7,6 +7,8 @@ import threading
 import time
 import uuid
 import traceback
+from app_version import VERSION
+from performance import accumulate
 
 _active = None
 
@@ -16,11 +18,20 @@ class Job:
         self.directory = Path(folder) / ('job-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
         self.directory.mkdir(parents=True, exist_ok=False)
         self.lock = threading.Lock()
-        self.data = dict(title=title, state='running', pid=os.getpid(), started=time.time())
+        self.last_timing = time.monotonic()
+        self.data = dict(title=title, state='running', pid=os.getpid(), started=time.time(),
+                         phase='Starting task', stage_started=time.time(), app_version=VERSION,
+                         performance_seconds={}, performance_scope='Observed job wall time by stage; not CPU time or an end-to-end speedup')
         self.save()
 
     def save(self, **changes):
         with self.lock:
+            now=time.monotonic()
+            if self.data.get('state')=='running':
+                accumulate(self.data['performance_seconds'], self.data.get('phase',''), now-self.last_timing)
+            self.last_timing=now
+            if 'phase' in changes and changes['phase'] != self.data.get('phase'):
+                changes['stage_started']=time.time()
             self.data.update(changes, updated=time.time())
             temporary = self.directory / 'job.json.tmp'
             temporary.write_text(json.dumps(self.data), encoding='utf-8')
