@@ -8,11 +8,75 @@ import unittest
 from unittest.mock import patch
 from http.server import ThreadingHTTPServer
 
-from dashboard import Catalog, make_handler, progress, tail, apply_outcome
+from dashboard import Catalog, make_handler, progress, tail, apply_outcome, file_savings, batch_savings
 from job_tracking import tracked_call
 
 
 class DashboardTests(unittest.TestCase):
+    def test_codec_run_identity_source_and_execution_state(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            run=root/'auto-test';run.mkdir()
+            job=root/'job-20260916-123821-example';job.mkdir()
+            source='/media/TV/Example/episode.mkv'
+            (job/'job.json').write_text(json.dumps(dict(title='Measured codec selection',
+                state='completed',linked_run=str(run),started=1,updated=2)))
+            (run/'status.json').write_text(json.dumps(dict(state='trials-completed',source=source,
+                decision=dict(action='keep_original',reason='Quality threshold not met'))))
+            (run/'plan.json').write_text(json.dumps(dict(hevc_nvenc_cq=[22,23,24])))
+            rows=Catalog(root,[root]).snapshot()
+            self.assertEqual(len(rows),1)
+            row=rows[0]
+            self.assertEqual(row['source'],source)
+            self.assertIn('HEVC CQ 22/23/24',row['title'])
+            self.assertIn('episode.mkv',row['title'])
+            self.assertIn('123821-example',row['title'])
+            self.assertEqual(row['state'],'skipped')
+            self.assertEqual(row['execution_state'],'completed')
+            self.assertEqual(row['detail'],'Quality threshold not met')
+
+    def test_external_scan_job_discovery_and_live_progress(self):
+        with tempfile.TemporaryDirectory() as folder:
+            base=Path(folder);repo=base/'repo';repo.mkdir();external=base/'external'
+            job=external/'Library-Scans'/'job-test';job.mkdir(parents=True)
+            run=external/'Library-Scans'/'scan-test';run.mkdir()
+            record=dict(title='Read-only library scan',state='running',pid=1,started=time.time(),updated=time.time(),linked_run=str(run),phase='Read-only scan',percent=22.5)
+            (job/'job.json').write_text(json.dumps(record))
+            (job/'terminal.log').write_text('MUXMENDER_PROGRESS=22.5\n')
+            with patch('dashboard.alive',return_value=True):
+                self.assertEqual(Catalog(repo).snapshot(),[])
+                catalog=Catalog(repo,[external]);jobs=catalog.snapshot()
+                self.assertEqual(len(jobs),1)
+                self.assertEqual(jobs[0]['percent'],22.5)
+                self.assertEqual(catalog.logs[jobs[0]['id']],job/'terminal.log')
+                record['percent']=45;(job/'job.json').write_text(json.dumps(record))
+                (job/'terminal.log').write_text('MUXMENDER_PROGRESS=45\n')
+                catalog.cached_at=0
+                self.assertEqual(catalog.snapshot()[0]['percent'],45)
+    def test_file_savings_requires_final_valid_result(self):
+        for status in ('running', 'failed', 'cancelled', ''):
+            self.assertIsNone(file_savings(dict(status=status, total_savings_percent=90)))
+        for value in (True, '70', float('nan'), float('inf'), 101, None):
+            self.assertIsNone(file_savings(dict(status='verified', total_savings_percent=value)))
+        self.assertEqual(file_savings(dict(status='validated-experimental-full-file-awaiting-playback', total_savings_percent=70.2)), 70.2)
+        self.assertEqual(file_savings(dict(status='verified', total_savings_percent=-10)), -10)
+
+    def test_batch_savings_weighted_and_excludes_pending_or_cached(self):
+        rows = [dict(status='validated-copy', fingerprint=dict(size=100), savings_percent=80),
+                dict(status='validated-copy', fingerprint=dict(size=300), savings_percent=40)]
+        for state in ('converting', 'failed-retained', 'already-validated'):
+            rows.append(dict(status=state, fingerprint=dict(size=9000), savings_percent=99))
+        self.assertEqual(batch_savings(dict(entries=rows)), dict(percent=50, files=2))
+        self.assertIsNone(batch_savings(dict(entries=[])))
+
+    def test_explicit_external_artifact_root_exposes_savings_only_when_allowed(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as external:
+            run = Path(folder)/'reports'/'job'; run.mkdir(parents=True)
+            (run/'job.json').write_text(json.dumps(dict(state='completed', linked_run=external)))
+            (Path(external)/'validation.json').write_text(json.dumps(dict(status='verified', total_savings_percent=66.5)))
+            self.assertIsNone(Catalog(folder).snapshot()[0]['file_savings_percent'])
+            self.assertEqual(Catalog(folder, [external]).snapshot()[0]['file_savings_percent'], 66.5)
+
     def test_unfinished_validation_cannot_revive_finished_process(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder); run=root/'reports'/'run';run.mkdir(parents=True)

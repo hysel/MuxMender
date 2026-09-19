@@ -1,0 +1,54 @@
+# Requires the staged build context. GPU/runtime setup already passed preflight.
+# Local image build installs Python inside the IMAGE, never on the host.
+services:
+  auto-pilot:
+    build:
+      context: /mnt/FR4G/Apps/muxmender/auto-build-20260915-v1
+      dockerfile: deploy/truenas/Dockerfile
+    image: muxmender-auto:20260915-v1
+    platform: linux/amd64
+    user: "3005:3005"
+    restart: "no"
+    init: true
+    read_only: true
+    network_mode: none
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 4g
+    cpus: 4.0
+    environment:
+      NVIDIA_VISIBLE_DEVICES: GPU-cebbcdda-9d7a-eace-37c1-42082ec0bc54
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [GPU-cebbcdda-9d7a-eace-37c1-42082ec0bc54]
+              capabilities: [gpu]
+    tmpfs:
+      - /tmp:size=134217728,mode=1777
+    volumes:
+      - type: bind
+        source: /mnt/FR4G/Media
+        target: /media
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/FR4G/Apps/muxmender/output
+        target: /output
+        bind:
+          create_host_path: false
+    command:
+      - /media/TV/Series/Season 1/Example.Series.S01E01-03.Episode.Part1-3.EXTENDED.1080p.BluRay.EAC3.AVC-PiR8.mkv
+      - --output-dir
+      - /output
+      - --hardware
+      - nvidia
+      - --playback-verified-codecs
+      - hevc
+      - av1
+      - --execute
+      - --encode-best

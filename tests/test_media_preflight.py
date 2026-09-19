@@ -86,7 +86,9 @@ class PreflightTests(unittest.TestCase):
                 hdr=False,dolby_vision=False,audio_codecs=[],subtitle_codecs=[],recommendation='transcode')
             with patch.object(mm,'probe',return_value=info), patch.object(mm,'recommend',return_value=info), \
                  patch.object(mm.shutil,'which',return_value='tool'), patch.object(mm,'ffmpeg_encoder_names',return_value={'hevc_amf'}), \
-                 patch.object(mm,'gpu_vendors',return_value=['amd']), patch.object(mm,'run_ffmpeg') as encode:
+                 patch.object(mm,'gpu_vendors',return_value=['amd']), \
+                 patch('encoder_capabilities.probe_encoder',return_value={'status':'working'}), \
+                 patch.object(mm,'run_ffmpeg') as encode:
                 result=mm.main([str(source),'--execute','--output-dir',str(output)])
             self.assertEqual(result,1)
             encode.assert_not_called()

@@ -1,0 +1,71 @@
+# TrueNAS: Apps > Discover Apps > Install via YAML.
+# Create /mnt/FR4G/Apps/muxmender/output first, owned by UID/GID 3005.
+# Bootstrap only: no library conversion, dashboard, or automatic replacement.
+services:
+  preflight:
+    # FFmpeg 8.0.1 / nv-codec-headers n13.0.19.0 (Linux driver >=570).
+    # Immutable linux/amd64 manifest, verified against the publisher registry.
+    image: ghcr.io/linuxserver/ffmpeg:8.0.1-cli-ls61@sha256:81e11f5953179536ca3b478f406d77ae3f114ad72a6243d78ff2476a2b76eb3a
+    platform: linux/amd64
+    user: "3005:3005"
+    restart: "no"
+    init: true
+    read_only: true
+    network_mode: none
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 2.0
+    environment:
+      NVIDIA_VISIBLE_DEVICES: GPU-cebbcdda-9d7a-eace-37c1-42082ec0bc54
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [GPU-cebbcdda-9d7a-eace-37c1-42082ec0bc54]
+              capabilities: [gpu]
+    tmpfs:
+      - /tmp:size=134217728,mode=1777
+    volumes:
+      - type: bind
+        source: /mnt/FR4G/Media
+        target: /media
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/FR4G/Apps/muxmender/output
+        target: /output
+        bind:
+          create_host_path: false
+    entrypoint: [/bin/sh, -c]
+    command:
+      - |
+        set -eu
+        umask 077
+        run=$$(mktemp -d /output/preflight-XXXXXXXX)
+        echo "Results: $$run"
+        nvidia-smi > "$$run/gpu.txt" 2>&1
+        cat "$$run/gpu.txt"
+        ffmpeg -version > "$$run/ffmpeg.txt" 2>&1
+        ffmpeg -hide_banner -encoders > "$$run/encoders.txt" 2>&1
+        failed=0
+        for encoder in hevc_nvenc av1_nvenc; do
+          for pixel in nv12 p010le; do
+            label="$$encoder-$$pixel"
+            echo "Testing $$label (four generated frames, 30-second limit)"
+            if timeout -k 5 30 ffmpeg -hide_banner -nostdin -v error -f lavfi -i color=size=1280x720:rate=30 -frames:v 4 -pix_fmt "$$pixel" -c:v "$$encoder" -f null - > "$$run/$$label.log" 2>&1; then
+              echo "PASS $$label" | tee -a "$$run/results.txt"
+            else
+              code=$$?
+              echo "FAIL $$label exit=$$code" | tee -a "$$run/results.txt"
+              cat "$$run/$$label.log"
+              failed=1
+            fi
+          done
+        done
+        echo "Complete. These checks do not validate HDR, Dolby Vision, quality, or playback."
+        exit "$$failed"

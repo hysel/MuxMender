@@ -19,18 +19,22 @@ classifiers = [
 [project.scripts]
 muxmender = "muxmender:cli"
 muxmender-dashboard = "dashboard:main"
+muxmender-batch-dashboard = "batch_dashboard:main"
 muxmender-validate-nvidia = "validate_nvidia:cli"
 muxmender-webui = "webui:main"
 muxmender-plan = "library_planner:main"
 muxmender-preview-amd-av1 = "amd_av1_preview:main"
 muxmender-batch-amd-av1 = "amd_av1_batch:main"
 muxmender-hardware = "encoder_capabilities:main"
+muxmender-select-codec = "codec_selection:main"
+muxmender-auto = "auto_optimize:main"
+muxmender-app = "app_service:main"
 muxmender-dvd-av1 = "dvd_av1_batch:main"
 
 [tool.setuptools]
 package-dir = {"" = "python"}
 packages = ["ui"]
-py-modules = ["muxmender", "native_pipeline", "runtime_support", "streaming_pipeline", "job_tracking", "dashboard", "run_logged", "dv_full_file", "dv_preservation_test", "validate_nvidia", "mux_integrity", "library_planner", "workflow_worker", "webui", "revalidate_output", "amd_av1_preview", "amd_av1_batch", "encoder_capabilities", "dvd_av1_batch"]
+py-modules = ["muxmender", "native_pipeline", "runtime_support", "streaming_pipeline", "job_tracking", "dashboard", "batch_dashboard", "run_logged", "dv_full_file", "dv_preservation_test", "validate_nvidia", "mux_integrity", "library_planner", "workflow_worker", "webui", "revalidate_output", "amd_av1_preview", "amd_av1_batch", "encoder_capabilities", "dvd_av1_batch", "codec_selection", "auto_optimize", "app_service", "app_version", "autonomous_queue", "control_service", "legacy_color", "media_metadata", "packet_validation", "publish_worker", "resource_governor", "task_progress", "validated_replace", "workspace_history", "amd_av1_repair_dispositions", "amd_av1_revalidate", "staged_mux_stress", "performance"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

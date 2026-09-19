@@ -27,6 +27,15 @@ class BatchSafetyTests(unittest.TestCase):
                         patch.object(batch.shutil,'disk_usage',return_value=SimpleNamespace(free=100*1024**3)),
                         patch.object(batch.av.np,'stage')]
         self.mocks = [self.enterContext(p) for p in self.patches]
+        # Filesystem timestamp resolution is not an ordering guarantee (e.g.
+        # two synthetic batches can finish within one Linux filesystem tick).
+        real_save=batch.worker.save
+        self.latest_report=None
+        def observe_save(path,data):
+            result=real_save(path,data)
+            if path.name=='batch.json':self.latest_report=path
+            return result
+        self.enterContext(patch.object(batch.worker,'save',side_effect=observe_save))
         self.enterContext(contextlib.redirect_stdout(io.StringIO()))
 
     def runner(self, args, on_result, guard):
@@ -40,7 +49,8 @@ class BatchSafetyTests(unittest.TestCase):
         return 0
 
     def report(self):
-        path=sorted(self.output.glob('AMD-BATCH-*/batch.json'),key=lambda p:p.stat().st_mtime_ns)[-1]
+        path=self.latest_report
+        self.assertIsNotNone(path)
         return json.loads(path.read_text())
 
     def test_sequential_success_originals_retained_and_repeat_skipped(self):
