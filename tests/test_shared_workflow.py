@@ -24,7 +24,7 @@ class SharedWorkflowTests(unittest.TestCase):
 
     def test_cli_and_app_launch_identical_automatic_arguments(self):
         for mode in ('analyze','test','encode'):
-            settings=dict(mode=mode,hardware='nvidia',quality='auto',minimum_savings=0.0,
+            settings=dict(mode=mode,hardware='nvidia',quality='auto',minimum_savings=25.0,
                           codecs=['hevc','av1'],legacy_color='inspect')
             app=Controls.build_command(SimpleNamespace(output=Path('shared-output')),dict(source='source.mkv',settings=settings),Path('output'))
             with patch('auto_optimize.main',return_value=0) as engine:

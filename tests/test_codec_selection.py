@@ -18,6 +18,15 @@ def evidence():
 
 
 class CodecSelectionTests(unittest.TestCase):
+    def test_default_requires_at_least_twenty_five_percent(self):
+        report=evidence()
+        for trial in report['trials']:
+            for sample in trial['samples']:sample['bytes']=751
+        self.assertEqual(select_candidate(report)['action'],'keep_original')
+        for trial in report['trials']:
+            for sample in trial['samples']:sample['bytes']=750
+        self.assertEqual(select_candidate(report)['action'],'encode_copy')
+
     def test_smallest_eligible_wins_and_input_unchanged(self):
         report = evidence()
         before = copy.deepcopy(report)

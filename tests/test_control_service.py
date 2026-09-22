@@ -14,6 +14,27 @@ from autonomous_queue import write
 
 
 class ControlTests(unittest.TestCase):
+    def test_savings_choices_reach_shared_engine_and_default_to_25(self):
+        from ui.app import HTML
+        from html.parser import HTMLParser
+        class Options(HTMLParser):
+            def __init__(self):super().__init__();self.active=False;self.options=[]
+            def handle_starttag(self,tag,attrs):
+                attrs=dict(attrs)
+                if tag=='select':self.active=attrs.get('id')=='minimum-savings'
+                if tag=='option' and self.active:self.options.append(attrs)
+            def handle_endtag(self,tag):
+                if tag=='select':self.active=False
+        parser=Options();parser.feed(HTML)
+        self.assertEqual([o['value'] for o in parser.options],['25','20','15','10'])
+        self.assertEqual([o['value'] for o in parser.options if 'selected' in o],['25'])
+        self.assertEqual(self.controls.preview(dict(path=str(self.media)))['settings']['minimum_savings'],25)
+        for value in (25,20,15,10):
+            preview=self.controls.preview(dict(path=str(self.media),minimum_savings=value))
+            self.assertEqual(preview['settings']['minimum_savings'],value)
+            command=self.controls.build_command(dict(source=str(self.media/'example.mkv'),settings=preview['settings']),Path('output'))
+            self.assertEqual(command[command.index('--minimum-savings-percent')+1],str(value))
+
     def test_creation_age_filters_nested_files_without_changing_existing_queue(self):
         self.controls.submit(self.draft(mode='analyze')['preview_id'])
         nested=self.media/'nested';nested.mkdir()

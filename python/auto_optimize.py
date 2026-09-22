@@ -210,6 +210,14 @@ def encode_command(ffmpeg, source, output, settings, info, streams):
 
 
 class Workflow:
+    def cleanup_terminal_artifacts(self):
+        from replacement_cleanup import cleanup_terminal
+        try:
+            report=cleanup_terminal(self.directory,execute=True)
+        except Exception as exc:
+            report=dict(state='needs-attention',error=str(exc))
+        save(self.directory/'terminal-cleanup.json',report)
+
     def decoder_options(self, source):
         build=getattr(self.args,'h264_build',None)
         original=getattr(self.args,'source',None)
@@ -227,8 +235,19 @@ class Workflow:
         self.hdr_mode=getattr(args,'hdr_mode',None)
         self.frame_cache={}
         self.hdr_intermediates={}
+        self.aac_priming_outputs={}
+        self.source_packet_cache=None
 
     def encode_preserving_color(self, source, output, settings, info, before, label, duration):
+        from aac_priming import inspect, finalize
+        tracks=inspect(self,source,before,label)
+        if not tracks:return self._encode_preserving_color(source,output,settings,info,before,label,duration)
+        encoded=output.with_name(output.stem+'-before-aac-priming.mkv')
+        self._encode_preserving_color(source,encoded,settings,info,before,label,duration)
+        finalize(self,source,encoded,output,before,tracks,label,duration)
+        self.aac_priming_outputs[output.resolve()]=set(tracks)
+
+    def _encode_preserving_color(self, source, output, settings, info, before, label, duration):
         if self.hdr_mode:
             from hdr_auto import encode_preserved
             return encode_preserved(self,source,output,settings,info,before,label,duration)
@@ -334,7 +353,9 @@ class Workflow:
         metadata=metadata if metadata is not None else self.probe(source)['format']
         path = self.directory/(label+'-frames.jsonl')
         if self.hdr_mode:
-            run_probe([self.args.ffprobe,'-v','error','-threads','2','-select_streams','v:0',
+            from resource_governor import hdr_validation_threads
+            threads=hdr_validation_threads() if float(metadata['duration'])>=300 else 2
+            run_probe([self.args.ffprobe,'-v','error','-threads',str(threads),'-select_streams','v:0',
                        '-show_frames','-of','json',*self.decoder_options(source),str(source)],path,'Checking HDR frame timing: '+label,
                       self.args.timeout,self.guard,float(metadata['duration']),float(metadata.get('start_time',0)))
             if path.with_suffix(path.suffix+'.stderr').stat().st_size:
@@ -411,6 +432,17 @@ class Workflow:
         return path
 
     def copied_packets(self, source, label, indices, metadata, reuse_sample=False):
+        if not indices:return {}
+        cached_source=self.source_packet_cache
+        if (cached_source and source.resolve()==cached_source['source'] and tuple(indices)==cached_source['indices']):
+            self.guard()
+            if digest(source,self.guard)!=cached_source['source_hash']:
+                raise RuntimeError('Source changed since preflight; cached evidence cannot be reused')
+            cached=cached_source['evidence']
+            if all(path.is_file() and not path.is_symlink() and digest(path,self.guard)==value
+                   for path,value in cached.values()):
+                progress('Reusing verified source track evidence',detail='Current source and evidence checksums match this run\'s preflight')
+                return {index:item[0] for index,item in cached.items()}
         # Only generated clips in this workflow can be reused. Verify content,
         # including cached evidence, on every reuse; no persistent/stat-only cache.
         cacheable=(reuse_sample and source.resolve().parent==self.directory.resolve()
@@ -426,6 +458,62 @@ class Workflow:
         if key:self.packet_reference_cache[key]={index:(path,digest(path,self.guard)) for index,path in result.items()}
         return result
 
+    def preflight_source(self, source, metadata, source_hash):
+        from media_metadata import preflight_metadata
+        from aac_priming import inspect as inspect_priming
+        summary={'state':'running','stage':'metadata','original_retained':True}
+        path=self.directory/'source-preflight.json'
+        save(path,summary)
+        try:
+            self.guard()
+            progress('Checking source metadata structure',directory=self.directory)
+            summary.update(metadata=preflight_metadata(metadata),stage='audio-priming')
+            save(path,summary)
+            tracks=inspect_priming(self,source,metadata,'preflight-source')
+            summary.update(priming_tracks=sorted(tracks),stage='audio-decode');save(path,summary)
+            self.preflight_source_audio(source,metadata)
+            if getattr(self.args,'encode_best',False):
+                summary['stage']='copied-track-read';save(path,summary)
+                indices=[s['index'] for s in metadata['streams'] if s['codec_type'] in ('audio','subtitle') or is_cover(s)]
+                result=collect_packets(self.args.ffprobe,source,self.directory,'preflight-source',indices,
+                                       self.args.timeout,self.guard,float(metadata['format']['duration']),
+                                       float(metadata['format'].get('start_time',0)))
+                errors=self.directory/'preflight-source-all-packets.txt.stderr'
+                if errors.exists() and errors.stat().st_size:
+                    raise ValueError('Source track reader reported errors; inspect preflight-source-all-packets.txt.stderr')
+                self.source_packet_cache=dict(source=source.resolve(),source_hash=source_hash,indices=tuple(indices),
+                    evidence={i:(p,digest(p,self.guard)) for i,p in result.items()})
+                summary['copied_streams']=indices
+            self.guard()
+            summary.update(state='passed',stage='complete',full_video_decode=False,
+                           video_checks='Existing decoded sample checks and full output validation remain required')
+        except BaseException as exc:
+            summary.update(state='failed',error=str(exc));save(path,summary)
+            raise
+        save(path,summary)
+
+    def preflight_source_audio(self, source, metadata):
+        """Catch damaged source audio before codec trials or full encoding.
+
+        Read the complete tracks, not seeked samples (AVI seeking can itself
+        start inside an audio frame). Never trim, conceal or re-encode defects.
+        Output decode validation remains independent and mandatory.
+        """
+        indices=[s['index'] for s in metadata['streams'] if s.get('codec_type')=='audio']
+        if not indices:return
+        evidence=self.directory/'source-audio-preflight.json'
+        try:
+            self.execute([self.args.ffmpeg,'-hide_banner','-nostdin','-v','error','-xerror',
+                          '-threads','2','-i',str(source),
+                          *[item for index in indices for item in ('-map',f'0:{index}')],
+                          '-progress','pipe:1','-nostats','-f','null','-'],
+                         'source-audio-preflight-decode',float(metadata['format']['duration']),strict_decode=True)
+        except RuntimeError as exc:
+            save(evidence,dict(state='failed',stage='source-audio-preflight',
+                               tracks=indices,original_retained=True,error=str(exc)))
+            raise RuntimeError('Source audio preflight failed before conversion; original retained. '+str(exc)) from exc
+        save(evidence,dict(state='passed',tracks=indices,complete_decode=True,strict_decode=True))
+
     def validate(self, reference, output, before, codec, label, reference_frames):
         actual = self.probe(output)
         frames = self.frame_file(output, label, actual['format'])
@@ -438,12 +526,18 @@ class Workflow:
             cover=any(s['index']==index and is_cover(s) for s in before['streams'])
             try:
                 compare_packets(original[index],encoded[index],cover=cover)
+                if index not in self.aac_priming_outputs.get(output.resolve(),set()):continue
+                # Preserved decoder priming requires full decoded evidence even
+                # when compressed packet timestamps happen to compare equal.
+                raise ValueError('Verify preserved AAC priming')
             except ValueError:
                 stream=next(s for s in before['streams'] if s['index']==index)
-                from packet_validation import aac_initialization_timestamp_case, packet_rows, compare_decoded_audio
+                from packet_validation import aac_initialization_timestamp_case, aac_terminal_duration_case, packet_rows, compare_decoded_audio
                 if stream.get('codec_name')!='aac':raise
                 non_output_case=aac_initialization_timestamp_case(original[index],encoded[index])
-                if not (non_output_case or aac_initialization_timestamp_case(original[index],encoded[index],missing_initial_duration=True)):
+                priming_verified=index in self.aac_priming_outputs.get(output.resolve(),set())
+                terminal=aac_terminal_duration_case(original[index],encoded[index],preserved_priming=priming_verified)
+                if not (terminal or priming_verified or non_output_case or aac_initialization_timestamp_case(original[index],encoded[index],missing_initial_duration=True)):
                     raise
                 evidence=[]
                 first_output=[]
@@ -456,9 +550,9 @@ class Workflow:
                     evidence.append(hashes)
                     first_output.append(next(itertools.islice(packet_rows(packets),1,None))['pts_time'] if non_output_case else None)
                 proof=compare_decoded_audio(*evidence,*first_output)
-                proof['packet_representation_case']='non-output-initial-pts' if non_output_case else 'missing-initial-duration'
+                proof['packet_representation_case']='terminal-duration' if terminal else ('preserved-priming' if priming_verified else ('non-output-initial-pts' if non_output_case else 'missing-initial-duration'))
                 save(self.directory/(label+f'-aac-{index}-presentation.json'),proof)
-                compare_packets(original[index],encoded[index],aac_initialization_verified=True)
+                compare_packets(original[index],encoded[index],aac_initialization_verified=non_output_case or not (terminal or priming_verified),aac_terminal_verified=terminal,aac_priming_verified=priming_verified)
         maps,reused=decode_maps_after_frame_audit(actual,count)
         if maps:
             self.execute([self.args.ffmpeg, '-hide_banner', '-nostdin', '-v', 'error', '-xerror',
@@ -550,7 +644,7 @@ def compare_frames(reference, output):
     return count
 
 
-def compare_packets(reference, output, cover=False, *, aac_initialization_verified=False):
+def compare_packets(reference, output, cover=False, *, aac_initialization_verified=False, aac_terminal_verified=None, aac_priming_verified=False):
     progress('Comparing copied track evidence',detail='Checking packet hashes and timestamps; percentage unavailable')
     count=0
     for a, b in itertools.zip_longest(compact_rows(reference, 'data_hash'), compact_rows(output, 'data_hash')):
@@ -559,15 +653,17 @@ def compare_packets(reference, output, cover=False, *, aac_initialization_verifi
             raise ValueError('Copied packet payload/count changed')
         if cover:continue  # Static attachments have no playback timeline.
         for key in ('pts_time', 'dts_time', 'duration_time'):
+            if aac_terminal_verified==count and key=='duration_time':continue
             if aac_initialization_verified and count==1 and key=='pts_time':continue
             left, right = a.get(key), b.get(key)
-            if (aac_initialization_verified and count==1 and key=='duration_time'
+            if ((aac_initialization_verified or aac_priming_verified) and count==1 and key=='duration_time'
                     and right in (None,'N/A')):continue
             if any(value not in (None,'N/A') and not math.isfinite(float(value)) for value in (left,right)):
                 raise ValueError('Invalid copied packet timestamp: '+key)
             if left != right and (left in (None, 'N/A') or right in (None, 'N/A') or abs(Fraction(left)-Fraction(right)) > Fraction(1,500)):
                 raise ValueError(f'Copied packet timing changed: packet {count}, {key}: {left} -> {right}')
     if cover and count!=1:raise ValueError('Expected exactly one unchanged cover-image packet')
+    if aac_terminal_verified is not None and count!=aac_terminal_verified:raise ValueError('Terminal AAC evidence count changed')
 
 
 def check_reference_window(probe, seconds):
@@ -642,6 +738,10 @@ def run(args):
     args.h264_build=None
     args.decoder_context=None
     data = Workflow(args, root, lambda: None).probe(source)
+    if (getattr(args,'experimental_dv81',False) and
+            hdr_inspection.classify(main_video(data),[])['kind']=='Dolby Vision'):
+        from dv_workflow import run as run_dv
+        return run_dv(args,source,root,data,baseline)
     color_report=None
     scan_report=None
     hdr_report=None
@@ -751,6 +851,7 @@ def run(args):
     try:
         guard()
         source_hash = digest(source, guard)
+        workflow.preflight_source(source,data,source_hash)
         progress('Checking available encoders and quality tools',directory=directory)
         report = dict(schema='muxmender-codec-trials-v1', source_id=source_hash, color_mode=workflow.hdr_mode or 'sdr', references=[], trials=[])
         workflow_stage('compare')
@@ -949,6 +1050,7 @@ def run(args):
                              output_bytes=output.stat().st_size, minimum_savings_percent=args.minimum_savings_percent,
                              full_validation_performed=False, source_sha256=source_hash)
                 save(directory/'status.json', state)
+                workflow.cleanup_terminal_artifacts()
                 progress('Keeping original: full output did not meet savings target',directory=directory,
                          detail=f'{actual_savings:.2f}% smaller; {args.minimum_savings_percent:g}% required. Full validation not needed for rejection.')
                 print(json.dumps(state, indent=2))
@@ -972,11 +1074,15 @@ def run(args):
                 raise RuntimeError('Source hash changed')
             state.update(state='trials-completed', decision=decision)
         save(directory/'status.json', state)
+        if (state['state']=='full-output-rejected-insufficient-savings' or
+                (state['state']=='trials-completed' and decision.get('action')=='keep_original')):
+            workflow.cleanup_terminal_artifacts()
         print(json.dumps(state, indent=2))
         return 0
     except BaseException as exc:
         state.update(state='stopped-original-retained', error=str(exc))
         save(directory/'status.json', state)
+        if isinstance(exc,Exception):workflow.cleanup_terminal_artifacts()
         raise
 
 
@@ -988,6 +1094,8 @@ def main(argv=None):
     parser.add_argument('--hardware', choices=('auto', 'nvidia', 'amd', 'intel'), default='auto')
     parser.add_argument('--execute', action='store_true', help='Run trials; default only probes and prints plan')
     parser.add_argument('--encode-best', action='store_true', help='After trials, encode and validate a full copy')
+    parser.add_argument('--experimental-dv81',action='store_true',
+                        help='Isolated shared-workflow DV Profile 8.1 integration test; never authorizes publication')
     parser.add_argument('--legacy-color',choices=('inspect','bt709-limited'),default='inspect',
                         help='Inspect missing color tags; optional BT.709 limited-range assumption is sample-only')
     parser.add_argument('--playback-verified-codecs', nargs='+', choices=('hevc', 'av1'), default=[])
@@ -1002,7 +1110,7 @@ def main(argv=None):
     parser.add_argument('--vmaf-mean', type=float, default=90,
                         help='Minimum mean VMAF score (default: 90; not a percentage of retained quality)')
     parser.add_argument('--vmaf-p5', type=float, default=90)
-    parser.add_argument('--minimum-savings-percent', type=float, default=0,
+    parser.add_argument('--minimum-savings-percent', type=float, default=25,
                         help='Minimum reduction; 0 accepts any strictly smaller validated output')
     parser.add_argument('--min-free-gib', type=float, default=4)
     parser.add_argument('--timeout', type=float, default=7200)

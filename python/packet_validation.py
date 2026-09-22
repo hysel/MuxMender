@@ -52,6 +52,30 @@ def aac_initialization_timestamp_case(reference, output, *, missing_initial_dura
         return False
 
 
+def aac_terminal_duration_case(reference, output, *, preserved_priming=False):
+    """Recognize only a shortened final packet; decoded proof is still mandatory."""
+    count=0;mismatch=None;previous=None;last=None
+    try:
+        for a,b in zip_longest(packet_rows(reference),packet_rows(output)):
+            count+=1
+            if a is None or b is None or a['data_hash']!=b['data_hash']:return None
+            for key in ('pts_time','dts_time'):
+                if abs(Fraction(a[key])-Fraction(b[key]))>Fraction(1,500):return None
+            if (preserved_priming and count==1 and b.get('duration_time') in (None,'N/A')
+                    and Fraction(a['duration_time'])>0):
+                continue
+            x,y=Fraction(a['duration_time']),Fraction(b['duration_time'])
+            if x<=0 or y<=0:return None
+            if abs(x-y)>Fraction(1,500):
+                if mismatch is not None:return None
+                mismatch=count
+            previous,last=last,(x,y)
+        if count<2 or mismatch!=count or previous is None:return None
+        if not (last[0]<previous[0]<=Fraction(1,10) and abs(last[1]-previous[0])<=Fraction(1,500)):return None
+        return count
+    except (KeyError,ValueError,ZeroDivisionError,TypeError):return None
+
+
 def audio_hash_rows(path):
     time_base=None
     with Path(path).open(encoding='utf-8') as stream:

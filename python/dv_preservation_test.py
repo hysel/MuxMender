@@ -145,6 +145,10 @@ def require_nvidia_frames(frames,allow_hdr10plus=False):
 
 
 class NvidiaSampleGuard(RunGuard):
+    def __call__(self):
+        getattr(self,'source_guard',lambda:None)()
+        return super().__call__()
+
     def status(self, percent):
         super().status(percent)
         overall = getattr(self, 'overall_offset', 0) + percent*getattr(self, 'overall_span', 100)/100
@@ -192,6 +196,7 @@ def run(args):
     directory = args.work_dir.resolve() / run_id
     directory.mkdir(parents=True, exist_ok=False)
     guard = (NvidiaSampleGuard if experimental else RunGuard)(directory, reserve=1024**3)
+    if experimental:guard.source_guard=getattr(args,'source_guard',lambda:None)
     if experimental:
         guard.overall_offset = getattr(args, 'overall_offset', 0)
         guard.overall_span = getattr(args, 'overall_span', 100)
@@ -378,6 +383,7 @@ def run(args):
         stage(ff + ['-v', 'error', '-xerror', '-threads', '2', '-i', final, '-map', '0:v:0',
                     *(['-map', '0:a?'] if experimental else []), '-f', 'null', '-', *progress], 'decode validation', 90, 10)
         report.update(status='verified-structure-awaiting-visual-review', frames=len(frames),
+                      reference_sha256=sha256(raw),
                       original_rpu_sha256=sha256(rpu), final_rpu_sha256=sha256(check_rpu),
                       output=str(final), original_video_bytes=sample_video_bytes,
                       output_video_bytes=injected.stat().st_size, static_hdr_within_one_quantization_unit=True,

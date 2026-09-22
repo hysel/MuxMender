@@ -148,7 +148,7 @@ class Controls(WorkspaceHistory):
             raise ValueError('Unsupported operation or codec')
         if hardware not in ('auto','nvidia','amd','intel') or quality not in ('auto','transparent','balanced','compact'):
             raise ValueError('Unsupported hardware or quality preset')
-        savings=data.get('minimum_savings',0)
+        savings=data.get('minimum_savings',25)
         if type(savings) not in (int,float) or not 0<=savings<=90: raise ValueError('Savings must be 0–90 percent; outputs must always be smaller')
         recursive=data.get('recursive',True)
         if type(recursive) is not bool: raise ValueError('Invalid recursion setting')

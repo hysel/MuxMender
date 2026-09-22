@@ -38,6 +38,15 @@ A unit-test pass does not qualify every video or GPU.
 
 ## Next: spend less time on each file
 
+- [ ] Queued September 22: benchmark faster NVENC presets on the TrueNAS RTX
+  5050 against the current preset, using separate test outputs after production
+  GPU capacity is available. Compare HEVC and AV1 where supported, using the
+  same source windows and repeated measurements. Record encoding FPS/time,
+  quality scores, output size, resource use and end-to-end validation time.
+  Keep the selected quality and preservation requirements unchanged. Check
+  one versus two concurrent jobs for total throughput, not just per-job time.
+  Recommend settings from measured results before considering a GPU upgrade;
+  do not change production settings or replace source files during the benchmark.
 - [ ] Improve early no-savings decisions using measured samples, not filenames or
   codec names alone.
 - [ ] Reuse results only while the source, settings and evaluation rules match.

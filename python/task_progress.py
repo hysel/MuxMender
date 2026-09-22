@@ -60,7 +60,9 @@ def run_probe(command,path,label,timeout,guard,duration=None,start=0):
             while True:
                 guard()
                 percent,detail=probe_status(path,duration,start)
-                progress(label,stage_percent=percent,detail=detail)
+                elapsed=time.monotonic()-started
+                eta=elapsed*(100-percent)/percent if percent is not None and 0<percent<100 and elapsed>=5 else None
+                progress(label,stage_percent=percent,stage_eta=eta,detail=detail)
                 remaining=timeout-(time.monotonic()-started)
                 if remaining<=0:raise subprocess.TimeoutExpired(command,timeout)
                 try:

@@ -128,17 +128,29 @@ class ReleaseReviewTests(unittest.TestCase):
                          'deploy/truenas/Dockerfile.app','docs/note.md',
                          'docs/per-video-codec-selection.md','tools/build_app_release.py',
                          'tools/compare_encoders.py','tools/run_truenas_sample_batch.py',
+                         'tools/publish_reviewed_research.py','docs/research-checkpoint-20260922.md','tools/research_coverage.py',
+                         'tools/benchmark_hdr_reader.py','docs/artifact-retention.md',
+                         'docs/source-audio-preflight.md','docs/aac-priming-preservation.md',
+                         'docs/validation-performance-20260922.md',
                          'tools/smoke_auto_optimize.py','tools/smoke_hdr_auto.py','tools/smoke_hdr_dynamic.py','tools/smoke_timestamp.py','tools/monitor_queue.py','tools/qualify_frame_reader.py',
                          'tools/benchmark_frame_threads.py','tools/benchmark_packet_validation.py',
                          'tools/benchmark_validation_pipeline.py','tools/benchmark_gpu_decode.py']:
                 path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('fixture')
             result=create_release(root,archive,'docs/note.md')
-            self.assertEqual(len(result['files']),18)
+            self.assertEqual(len(result['files']),26)
             with tarfile.open(archive) as tar:
                 for member in tar:
                     self.assertEqual(member.mode,0o755 if member.isdir() else 0o644)
                     self.assertNotIn('__pycache__',member.name)
             with self.assertRaises(FileExistsError):create_release(root,archive,'docs/note.md')
+            (root/'deploy/truenas/Dockerfile.app').write_text('COPY vendor/dovi.tar.gz /tmp/dovi.tar.gz')
+            new_archive=Path(folder)/'with-dv.tar'
+            with self.assertRaisesRegex(ValueError,'dovi-tool-archive'):
+                create_release(root,new_archive,'docs/note.md')
+            wrong_vendor=Path(folder)/'unverified.tar.gz';wrong_vendor.write_bytes(b'unverified tool')
+            with self.assertRaisesRegex(ValueError,'checksum mismatch'):
+                create_release(root,new_archive,'docs/note.md',dovi_tool_archive=wrong_vendor)
+            self.assertFalse(new_archive.exists())
 
 
 if __name__=='__main__':unittest.main()

@@ -4,6 +4,7 @@ Does not enable automatic DV routing or authorize source publication.
 """
 import argparse
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -35,7 +36,7 @@ def assess(reports, minimum):
     return decision
 
 
-def main():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
@@ -43,7 +44,18 @@ def main():
     parser.add_argument('--combined', action='store_true')
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--dovi-tool', required=True)
-    args = parser.parse_args()
+    parser.add_argument('--minimum-savings-percent',type=float,default=25,
+                        help='Aggregate sample video-payload savings target; default 25 percent')
+    args = parser.parse_args(argv)
+    if not math.isfinite(args.minimum_savings_percent) or not 0<=args.minimum_savings_percent<100:
+        parser.error('Minimum savings must be finite and in [0,100)')
+    if not 18<=args.cq<=32:
+        parser.error('Research CQ must be between 18 and 32')
+    return args
+
+
+def main(argv=None):
+    args = parse_args(argv)
     info = mm.probe(args.source, 'ffprobe')
     positions = sample_positions(info.duration_seconds, 10)
     print('Three 10-second scenes:', positions, flush=True)
@@ -59,14 +71,14 @@ def main():
             experimental_nvidia=True, experimental_intel=False,
             experimental_hdr10plus=args.combined, nvenc_cq=args.cq,
             seconds=10, start=start, work_dir=scene, measure_quality=True,
-            minimum_savings_percent=10, ffmpeg='ffmpeg', ffprobe='ffprobe',
+            minimum_savings_percent=args.minimum_savings_percent, ffmpeg='ffmpeg', ffprobe='ffprobe',
             dovi_tool=args.dovi_tool, overall_offset=number*100/3, overall_span=100/3)
         result = dv.run(options)
         paths = list(scene.glob('dv81-*/validation.json'))
         if result or len(paths) != 1:
             raise ValueError('Scene processing failed; inspect retained report')
         reports.append(json.loads(paths[0].read_text()))
-    decision = assess(reports, 10)
+    decision = assess(reports, args.minimum_savings_percent)
     (root / 'qualification.json').write_text(json.dumps(dict(
         decision=decision, positions=positions, scenes=reports), indent=2))
     print(json.dumps(decision), flush=True)

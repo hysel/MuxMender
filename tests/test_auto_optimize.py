@@ -173,7 +173,7 @@ class AutoOptimizeTests(unittest.TestCase):
                 args = run.call_args.args[0]
                 self.assertEqual(args.vmaf_mean, expected)
                 self.assertEqual(args.vmaf_p5, 90)
-                self.assertEqual(args.minimum_savings_percent, 0)
+                self.assertEqual(args.minimum_savings_percent, 25)
 
     def test_relaxed_mean_keeps_poor_tail_guard(self):
         scores = dict(frames=[dict(metrics=dict(vmaf=92)) for _ in range(100)])

@@ -95,6 +95,7 @@ function sortedResults(rows,mode='newest'){return [...rows].sort((a,b)=>{
 })}
 function resultMeta(job){const t=outcomeTime(job),label=Number.isFinite(job.finished)&&job.finished>0?'Finished':Number.isFinite(job.started)&&job.started>0?'Started':'Queued';const action=({analyze:'Inspection',test:'Sample test',encode:'Create copy',replace:'Replace after validation',keep:'Keep original'})[job.settings?.mode]||'Request';return action+' · '+(t?label+' '+new Date(t*1000).toLocaleString():'Date unavailable')}
 function receiveControls(body){requestJobs=body.jobs||[];queueState=body;
+ renderOutcomeSummary(requestJobs);
  receiveHistory(body);
  const savings=body.lifetime_savings;if(savings){const bytes=savings.saved_bytes||0;userEl('lifetime-saved').textContent=(bytes/(bytes>=1e12?1e12:1e9)).toFixed(2)+(bytes>=1e12?' TB':' GB');userEl('lifetime-detail').textContent=savings.replaced_files+' files replaced'+(Number.isFinite(savings.percent)?' · '+savings.percent.toFixed(1)+'% smaller overall':'')}
  renderUserResults()}

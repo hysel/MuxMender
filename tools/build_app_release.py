@@ -6,11 +6,16 @@ from pathlib import Path
 import tarfile
 
 
-def create_release(root, archive, release_note, hdr_tool_archive=None):
+def create_release(root, archive, release_note, hdr_tool_archive=None, dovi_tool_archive=None):
     root=Path(root).resolve(strict=True);archive=Path(archive)
     selected=['python','tests','deploy/truenas/Dockerfile.app',release_note,
               'docs/per-video-codec-selection.md','tools/build_app_release.py',
               'tools/compare_encoders.py','tools/run_truenas_sample_batch.py',
+              'tools/publish_reviewed_research.py','docs/research-checkpoint-20260922.md',
+              'tools/research_coverage.py',
+              'tools/benchmark_hdr_reader.py','docs/artifact-retention.md',
+              'docs/source-audio-preflight.md','docs/aac-priming-preservation.md',
+              'docs/validation-performance-20260922.md',
               'tools/smoke_auto_optimize.py','tools/smoke_hdr_auto.py','tools/smoke_hdr_dynamic.py','tools/smoke_timestamp.py','tools/monitor_queue.py','tools/qualify_frame_reader.py',
               'tools/benchmark_frame_threads.py','tools/benchmark_packet_validation.py',
               'tools/benchmark_validation_pipeline.py','tools/benchmark_gpu_decode.py']
@@ -29,6 +34,13 @@ def create_release(root, archive, release_note, hdr_tool_archive=None):
         files['vendor/hdr10plus.tar.gz']=vendor
     elif 'vendor/hdr10plus.tar.gz' in (root/'deploy/truenas/Dockerfile.app').read_text():
         raise ValueError('This Dockerfile requires --hdr-tool-archive')
+    if dovi_tool_archive is not None:
+        vendor=Path(dovi_tool_archive).resolve(strict=True)
+        if hashlib.sha256(vendor.read_bytes()).hexdigest()!='5dae82cb2becd3b9fd726127f936a8d32635e60746d16238fdfded12aa05988c':
+            raise ValueError('Dolby Vision tool archive checksum mismatch')
+        files['vendor/dovi.tar.gz']=vendor
+    elif 'vendor/dovi.tar.gz' in (root/'deploy/truenas/Dockerfile.app').read_text():
+        raise ValueError('This Dockerfile requires --dovi-tool-archive')
     manifest={}
     # Exclusive creation prevents silently replacing a previously staged release.
     with tarfile.open(archive,'x',format=tarfile.PAX_FORMAT) as tar:
@@ -50,5 +62,6 @@ if __name__=='__main__':
     parser.add_argument('--archive',type=Path,required=True)
     parser.add_argument('--release-note',required=True)
     parser.add_argument('--hdr-tool-archive',type=Path)
+    parser.add_argument('--dovi-tool-archive',type=Path)
     args=parser.parse_args()
-    print(json.dumps(create_release(args.root,args.archive,args.release_note,args.hdr_tool_archive),indent=2))
+    print(json.dumps(create_release(args.root,args.archive,args.release_note,args.hdr_tool_archive,args.dovi_tool_archive),indent=2))

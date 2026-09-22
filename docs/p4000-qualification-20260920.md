@@ -5,6 +5,38 @@ target. These checks exercise shared capability detection and fallback to a
 working hardware codec. They do not certify every Pascal card, driver or older
 NVIDIA generation. No separate P4000 encoding implementation is used.
 
+## Full-length SDR follow-up, 22 September 2026
+
+The v35 shared engine completed a separate 43-minute-29-second 1920x1080
+BT.709 SDR H.264 input with EAC3 audio and PGS subtitles on the Pascal
+representative. The 3,039,233,358-byte input became a 1,734,927,618-byte HEVC
+output: **42.916% smaller**, with full-file validation successful and the
+test-source hash unchanged. The library original was not modified.
+
+The selected three-scene VMAF means were 97.745, 98.953 and 99.492; the lowest
+p5 was 94.097. These are sampled objective measurements, not whole-video
+perceptual guarantees or playback approval.
+
+The shared job took 614.9 seconds (10m15s), excluding transfer. Full encoding
+took about 193 seconds; the recorded encoding category, including trials, was
+199.4 seconds. Frame validation took 368.5 seconds. The complete workflow was
+about 4.24 times real-time, while full encoding was about 13.5 times real-time.
+
+Ten-second telemetry samples observed process-tree RSS up to 405.9 MiB, GPU
+memory up to 185 MiB and temperature up to 54 C. These are sampled readings,
+not guaranteed transient peaks. The GPU encoder reached 100% utilization.
+The regression suite ran separately during validation; timings are observed
+shared-host results, not an isolated performance benchmark.
+
+Evidence is under `/home/haven42/muxmender-full-sdr-20260922`, with a dedicated
+development-dashboard job. The separate output is retained for playback review.
+This qualifies this full-length SDR case, not every source or Pascal card.
+
+A regression run from the original v35 build context found a missing research
+audit helper and an outdated packaging test fixture. Both were corrected locally;
+a fresh test-only bundle ran 640 tests successfully with four environment/context
+skips. No deployed app, driver or running conversion code was changed for that fix.
+
 ## Real-clip follow-up, 22 September 2026
 
 Separate 30-second SDR and HDR10 excerpts were copied to the isolated test host.

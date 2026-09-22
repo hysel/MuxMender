@@ -3,6 +3,7 @@ from ui.controls import PANEL, SCRIPT
 from ui.workspace import STYLE, SCRIPT as RESULTS_SCRIPT
 from ui.workspace_history import SCRIPT as HISTORY_SCRIPT
 from app_version import VERSION
+from ui.outcome_summary import PANEL as OUTCOME_PANEL, SCRIPT as OUTCOME_SCRIPT
 
 controls = PANEL[:PANEL.index('<details class="control-advanced"><summary>Job queue & logs')]+ '</div></section>'
 for old,new in [
@@ -53,7 +54,9 @@ HTML = '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name=
 </div></section>
 <details class="panel help"><summary>How decisions are made</summary><div class="panel-body"><p><strong>Create smaller copies</strong> tests short sections using supported encoders. Only candidates meeting quality and size checks proceed to full conversion and validation.</p><p><strong>Original kept</strong> means the tested options did not qualify, or you chose not to convert. A skipped video is not an error.</p><p><strong>Needs attention</strong> means processing stopped or the input is unsupported. Open its details for the reason. No source file is deleted.</p><p>Advanced settings are optional. Automatic mode compares playback-verified formats available on your hardware. Testing covers sampled visual quality and full-file preservation/decode checks, not a perceptual guarantee for every frame.</p></div></details>
 <footer>MuxMender <span id="app-version">'''+VERSION+'''</span> · Replacement is opt-in · History and preferences are stored on the /output mount.</footer></main>
-'''+HISTORY_SCRIPT+RESULTS_SCRIPT+SCRIPT+'''</body></html>'''
+'''+HISTORY_SCRIPT+OUTCOME_SCRIPT+RESULTS_SCRIPT+SCRIPT+'''</body></html>'''
+HTML=HTML.replace('<section class="panel" id="live-resources"',OUTCOME_PANEL+'<section class="panel" id="live-resources"')
+HTML=HTML.replace('</head>','<style>.outcome-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;margin:16px 0}.outcome-grid>div{border:1px solid var(--border);border-radius:8px;padding:16px}.outcome-grid dt{color:var(--muted)}.outcome-grid dd{font-size:2rem;font-weight:700;margin:8px 0 0}</style></head>')
 HTML=HTML.replace('No source file is deleted.','Replacement failures may leave a recovery backup; inspect details before retrying.')
 HTML=HTML.replace('<div class="control-grid"><div><label for="result-search">',
                   '<details id="result-tools" open><summary>Search, filter and sort results</summary><div class="control-grid"><div><label for="result-search">')

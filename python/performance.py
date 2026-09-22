@@ -4,9 +4,9 @@
 def category(phase):
     label=str(phase).lower()
     if label.startswith('verifying file checksum:'):return 'checksums'
-    if label.startswith(('checking frame timing:', 'comparing frame geometry')):return 'frame_validation'
+    if label.startswith(('checking frame timing:', 'checking hdr frame timing:', 'comparing frame geometry')):return 'frame_validation'
     if label.startswith(('checking copied track:', 'checking all copied tracks:',
-                         'organizing copied-track', 'comparing copied track', 'reusing verified sample')):return 'track_validation'
+                         'organizing copied-track', 'comparing copied track', 'reusing verified sample', 'reusing verified source')):return 'track_validation'
     if label.startswith(('reading media metadata:', 'inspecting legacy color')):return 'metadata'
     if label.endswith('-quality'):return 'quality_measurement'
     if label.endswith('-decode'):return 'full_decode'

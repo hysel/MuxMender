@@ -1,5 +1,23 @@
 """Compare media semantics, not container-generated identifiers or time bases."""
 from fractions import Fraction
+import math
+
+
+def preflight_metadata(data):
+    """Validate structural metadata, not arbitrary codec/resolution preferences."""
+    streams=data.get('streams',[])
+    indices=[s.get('index') for s in streams]
+    if not streams or any(type(i) is not int or i<0 for i in indices) or len(set(indices))!=len(indices):
+        raise ValueError('Invalid or duplicate source stream identities')
+    try:duration=float(data['format']['duration'])
+    except (KeyError,ValueError,TypeError) as exc:raise ValueError('Missing or invalid source duration') from exc
+    if not math.isfinite(duration) or duration<=0:raise ValueError('Invalid source duration')
+    canonical_tags(data.get('format',{}).get('tags',{}),'container')
+    for stream in streams:
+        canonical_tags(stream.get('tags',{}),'stream '+str(stream['index']))
+    chapters=canonical_chapters(data.get('chapters',[]))
+    return dict(streams=len(streams),chapters=len(chapters),duration_seconds=duration,
+                metadata_structure_checked=True,full_video_decode=False)
 
 
 def equivalent_stream_language(left, right):

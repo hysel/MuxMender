@@ -64,6 +64,9 @@ def automatic_arguments(source, output, settings, *, min_free_gib=12, capability
           '--minimum-savings-percent',format(float(settings['minimum_savings']),'.15g'),
           '--min-free-gib',str(min_free_gib)]
     if capability_cache_dir is not None:args+=['--capability-cache-dir',str(capability_cache_dir)]
+    if settings.get('experimental_dv81'):
+        if mode=='replace':raise ValueError('DV integration testing cannot replace originals')
+        args+=['--experimental-dv81']
     if settings.get('nvenc_maxrate_mbps') is not None:
         value=settings['nvenc_maxrate_mbps']
         if type(value) is not int or not 1<=value<=1000 or settings['hardware'] not in ('auto','nvidia'):
@@ -89,8 +92,9 @@ def main(argv=None):
     parser.add_argument('--hardware',choices=('auto','nvidia','amd','intel'),default='auto')
     parser.add_argument('--quality',choices=('auto','transparent','balanced','compact'),default='auto')
     parser.add_argument('--nvenc-maxrate-mbps',type=int,help='Optional measured NVENC peak-rate ceiling, 1..1000 Mbps')
+    parser.add_argument('--experimental-dv81',action='store_true',help='Separate-copy DV integration qualification only')
     parser.add_argument('--playback-verified-codecs',nargs='+',choices=('hevc','av1'),default=[])
-    parser.add_argument('--minimum-savings-percent',type=float,default=0)
+    parser.add_argument('--minimum-savings-percent',type=float,default=25)
     parser.add_argument('--legacy-color',choices=('inspect','bt709-limited'),default='inspect')
     parser.add_argument('--age-unit', choices=('all','hours','days','weeks'), default='all')
     parser.add_argument('--age-value', type=int)
@@ -109,7 +113,7 @@ def main(argv=None):
     return execute(automatic_arguments(args.source,args.output_dir,dict(mode=args.mode,
         hardware=args.hardware,quality=args.quality,codecs=args.playback_verified_codecs,
         minimum_savings=args.minimum_savings_percent,legacy_color=args.legacy_color,
-        nvenc_maxrate_mbps=args.nvenc_maxrate_mbps),
+        nvenc_maxrate_mbps=args.nvenc_maxrate_mbps,experimental_dv81=args.experimental_dv81),
         capability_cache_dir=args.capability_cache_dir))
 
 

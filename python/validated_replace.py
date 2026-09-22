@@ -49,6 +49,8 @@ def replace_validated(source, media, writable, result_dir, minimum_savings, job_
         raise ValueError('Invalid publication job identifier')
     result_dir=Path(result_dir).resolve(strict=True)
     status=json.loads((result_dir/'status.json').read_text())
+    if status.get('publication_authorized') is False:
+        raise ValueError('This workflow has not been qualified for publication')
     plan_path=result_dir/'plan.json'
     if plan_path.exists() and (json.loads(plan_path.read_text()).get('color_inspection') or {}).get('assumed'):
         raise ValueError('Assumed color cannot authorize source replacement')

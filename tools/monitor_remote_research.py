@@ -43,6 +43,44 @@ for root_text in ROOTS:
 print(json.dumps(result))
 '''
 
+# Direct tracked_call jobs use the same heartbeat and stage records as local
+# work. Mirror observer PIDs locally, never remote PIDs from another namespace.
+REMOTE_TRACKED = '''
+import json,time,os,sys
+from pathlib import Path
+if sys.platform != 'linux':
+ raise RuntimeError('Remote research reader is Linux-only; never execute on Windows')
+jobs=[]
+outcomes=[]
+for root_text in ROOTS:
+ root=Path(root_text)
+ for p in root.rglob('job.json'):
+  if p.is_symlink():continue
+  try:jobs.append(json.loads(p.read_text()))
+  except (OSError,ValueError):pass
+ for p in root.rglob('auto-*/status.json'):
+  try:outcomes.append(json.loads(p.read_text()).get('state'))
+  except (OSError,ValueError):pass
+if not jobs:raise RuntimeError('Tracked development job has not registered')
+j=max(jobs,key=lambda x:x.get('started',0))
+state=j.get('state')
+done=state in ('completed','failed','cancelled')
+alive=True
+if not done:
+ try:
+  pid=int(j.get('pid',0))
+  alive=pid>0 and Path('/proc',str(pid)).is_dir()
+ except (TypeError,ValueError):alive=False
+result=[dict(state=('completed-with-failures' if state!='completed' else 'completed') if done else 'running',
+ started=j.get('started'),finished=j.get('finished'),updated=j.get('updated') if alive else 0,
+ total=1,completed=int(done),failures=int(done and state!='completed'),
+ validated=outcomes.count('validated-copy-awaiting-playback'),
+ retained=sum(s in ('trials-completed','full-output-rejected-insufficient-savings') for s in outcomes),
+ current=1,phase=j.get('phase'),stage_percent=j.get('stage_percent'),stage_eta=j.get('stage_eta'),
+ stage_updated=j.get('stage_updated'),detail=j.get('detail'),workflow_stage=j.get('workflow_stage'))]
+print(json.dumps(result))
+'''
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -79,7 +117,7 @@ def main():
         for entry, job in jobs:
             entry=refreshed.get(entry['host'],entry)
             try:
-                script = 'ROOTS='+repr(entry['roots'])+'\n'+REMOTE
+                script = 'ROOTS='+repr(entry['roots'])+'\n'+(REMOTE_TRACKED if entry.get('kind')=='tracked' else REMOTE)
                 command = ['ssh', '-i', entry['key'], '-o', 'IdentitiesOnly=yes',
                            '-o', 'StrictHostKeyChecking=yes', '-o', 'BatchMode=yes',
                            '-o', 'ConnectTimeout=10', entry['host'], *entry['command']]

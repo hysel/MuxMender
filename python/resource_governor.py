@@ -15,6 +15,30 @@ PROFILES={
 }
 
 
+def arc_memory(text):
+    """Account only resident evictable ARC, never ghost/L2 or pinned buffers."""
+    rows={parts[0]:int(parts[2]) for line in text.splitlines()
+          if len(parts:=line.split())==3 and parts[1] in ('3','4')}
+    keys=('size','c_min','mru_evictable_data','mru_evictable_metadata',
+          'mfu_evictable_data','mfu_evictable_metadata','arc_need_free')
+    if any(k not in rows or rows[k]<0 for k in keys):raise ValueError('Incomplete ARC telemetry')
+    reclaim=min(max(0,rows['size']-rows['c_min']),sum(rows[k] for k in keys[2:6]))
+    return dict(zfs_arc_gib=rows['size']/1024**3,zfs_reclaimable_gib=reclaim/1024**3,
+                zfs_need_free_gib=rows['arc_need_free']/1024**3)
+
+
+def cache_assisted_start(data, required):
+    """Bounded serial admission, not a promise that cache is immediately free."""
+    keys=('host_available_gib','host_free_gib','zfs_reclaimable_gib',
+          'zfs_need_free_gib','memory_pressure','io_pressure')
+    if any(k not in data or not math.isfinite(data[k]) or data[k]<0 for k in keys):return False
+    # Use max rather than adding to MemAvailable, which may include cache already.
+    budget=max(data['host_available_gib'],data['host_free_gib']+min(8,data['zfs_reclaimable_gib']*.5))
+    return (data['host_available_gib']>=6 and data['zfs_reclaimable_gib']>=8
+            and data['zfs_need_free_gib']==0 and data['memory_pressure']<.1
+            and data['io_pressure']<5 and budget>=required)
+
+
 def allocated_cpu_usage(previous, current, cpus):
     """Percent of the CPU allocation, not percent of the entire host."""
     elapsed=current[0]-previous[0]
@@ -23,13 +47,31 @@ def allocated_cpu_usage(previous, current, cpus):
     return min(100.0,100*used/(1e6*elapsed*cpus))
 
 
+def validation_thread_budget(data):
+    """Bound one long HDR reader; unknown/pressured hosts retain two threads."""
+    required=('cpus','cpu_percent','available_gib','host_available_gib','io_pressure','memory_pressure')
+    if any(k not in data or not math.isfinite(data[k]) or data[k]<0 for k in required):return 2
+    usage=max(data['cpu_percent'],data.get('container_cpu_percent',0))
+    if (data['cpus']>=8 and usage<=50 and data['cpus']*(1-usage/100)>=6
+            and data['available_gib']>=8 and data['host_available_gib']>=12
+            and data['io_pressure']<5 and data['memory_pressure']<.1):return 4
+    return 2
+
+
+def hdr_validation_threads():
+    governor=Governor()
+    governor.sample(include_gpu=False)
+    time.sleep(.25)
+    return validation_thread_budget(governor.sample(include_gpu=False))
+
+
 class Governor:
     def __init__(self):
         self.previous=None;self.healthy_since=None;self.last_launch=0
         self.previous_container_cpu=None
         self.status=dict(reason='Collecting resource measurements',telemetry={})
 
-    def sample(self):
+    def sample(self, *, include_gpu=True):
         values={}
         try:
             counters=list(map(int,Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
@@ -40,6 +82,8 @@ class Governor:
             info=dict(line.split(':',1) for line in Path('/proc/meminfo').read_text().splitlines())
             values['available_gib']=int(info['MemAvailable'].split()[0])/1024**2
             values['host_available_gib']=values['available_gib']
+            values['host_free_gib']=int(info['MemFree'].split()[0])/1024**2
+            values['host_total_gib']=int(info['MemTotal'].split()[0])/1024**2
             values['cpus']=len(os.sched_getaffinity(0))
             # Respect a container memory limit; host cache is not free container RAM.
             limit=Path('/sys/fs/cgroup/memory.max')
@@ -56,6 +100,8 @@ class Governor:
                 line=Path('/proc/pressure/'+kind).read_text().splitlines()[0]
                 values[kind+'_pressure']=float(dict(x.split('=') for x in line.split()[1:])['avg10'])
         except (OSError,ValueError,KeyError,AttributeError):pass
+        try:values.update(arc_memory(Path('/proc/spl/kstat/zfs/arcstats').read_text()))
+        except (OSError,ValueError):pass
         try:
             counters=dict(line.split() for line in Path('/sys/fs/cgroup/cpu.stat').read_text().splitlines())
             current=(time.monotonic(),int(counters['usage_usec']))
@@ -64,6 +110,7 @@ class Governor:
                 if percent is not None:values['container_cpu_percent']=percent
             self.previous_container_cpu=current
         except (OSError,ValueError,KeyError):pass
+        if not include_gpu:return values
         try:
             result=subprocess.check_output(['nvidia-smi','--query-gpu=utilization.gpu,utilization.encoder,utilization.decoder,memory.free,temperature.gpu',
                                             '--format=csv,noheader,nounits'],text=True,timeout=3)
@@ -86,7 +133,9 @@ class Governor:
         # Keep the host's profile reserve, but do not demand ten free GiB inside
         # an eight-GiB app. Retain a container reserve plus two GiB per new job.
         container_required=2+min(2,max(1,data.get('container_limit_gib',0)*.2))
-        if host_available<limits['memory_gib']+2:reason='Waiting for memory headroom'
+        cache_assisted=host_available<limits['memory_gib']+2 and cache_assisted_start(data,limits['memory_gib']+2)
+        if cache_assisted:maximum=1
+        if not math.isfinite(host_available) or (host_available<limits['memory_gib']+2 and not cache_assisted):reason='Waiting for memory headroom'
         elif ('container_available_gib' in data and
               data['container_available_gib']<container_required):reason='Waiting for container memory headroom'
         elif data.get('cpu_percent',100)>limits['cpu']:reason='Waiting for CPU headroom'
@@ -103,6 +152,8 @@ class Governor:
         if not reason and active>=maximum:reason='Concurrency ceiling reached'
         if not reason and active and (now-self.healthy_since<30 or now-self.last_launch<60):
             reason='Observing sustained headroom before adding a worker'
+        if not reason and cache_assisted and now-self.healthy_since<30:
+            reason='Observing memory headroom before one cache-assisted job'
         self.status=dict(profile=profile,ceiling=maximum,active=active,reason=reason or 'Resources available',
-                         telemetry=data,updated=time.time(),policy='Backoff drains running jobs; does not suspend them')
+                         telemetry=data,cache_assisted=cache_assisted,updated=time.time(),policy='Backoff drains running jobs; does not suspend them')
         return reason is None

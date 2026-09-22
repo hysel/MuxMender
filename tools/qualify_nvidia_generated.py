@@ -21,6 +21,8 @@ def main():
     parser.add_argument('--ffmpeg', required=True)
     parser.add_argument('--ffprobe', required=True)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--minimum-savings-percent', type=float, default=25)
+    parser.add_argument('--engine', type=Path, default=Path(__file__).resolve().parents[1] / 'python' / 'auto_optimize.py')
     args = parser.parse_args()
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False)
@@ -36,12 +38,12 @@ def main():
         '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',
         '-color_range', 'tv', '-c:a', 'ac3', str(source)], check=True, timeout=180)
     before = digest(source)
-    engine = Path(__file__).resolve().parents[1] / 'python' / 'auto_optimize.py'
+    engine = args.engine
     command = [sys.executable, '-u', '-B', str(engine), str(source),
         '--output-dir', str(root / 'output'), '--execute', '--encode-best',
         '--hardware', 'nvidia', '--playback-verified-codecs', 'hevc', 'av1',
         '--qualities', 'balanced', '--seconds', '2', '--vmaf-mean', '90',
-        '--vmaf-p5', '90', '--minimum-savings-percent', '10', '--min-free-gib', '2',
+        '--vmaf-p5', '90', '--minimum-savings-percent', str(args.minimum_savings_percent), '--min-free-gib', '2',
         '--timeout', '900', '--ffmpeg', args.ffmpeg, '--ffprobe', args.ffprobe]
     with (root / 'workflow.log').open('x') as log:
         result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT,

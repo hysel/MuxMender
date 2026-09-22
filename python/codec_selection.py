@@ -36,7 +36,7 @@ def impossible_size_bound(references, samples, minimum_savings_percent):
                 completed_samples=len(samples),total_samples=len(references))
 
 
-def select_candidate(report, minimum_savings_percent=10.0):
+def select_candidate(report, minimum_savings_percent=25.0):
     """Select smallest eligible aggregate output from identical sample sets.
 
     source_id should be a source content hash, not just a filename. This function
@@ -169,7 +169,7 @@ def select_candidate(report, minimum_savings_percent=10.0):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('report', help='Measured trial JSON; read-only input')
-    parser.add_argument('--minimum-savings-percent', type=float, default=10)
+    parser.add_argument('--minimum-savings-percent', type=float, default=25)
     args = parser.parse_args()
     with open(args.report, encoding='utf-8') as handle:
         report = json.load(handle)

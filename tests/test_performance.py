@@ -8,12 +8,22 @@ from unittest.mock import patch
 
 from job_tracking import Job
 from performance import category
-from resource_governor import Governor
+from resource_governor import Governor,validation_thread_budget
 
 
 class PerformanceTests(unittest.TestCase):
+    def test_hdr_reader_thread_budget_respects_shared_host_limits(self):
+        good=dict(cpus=12,cpu_percent=35,available_gib=16,host_available_gib=32,io_pressure=0,memory_pressure=0)
+        self.assertEqual(validation_thread_budget(good),4)
+        self.assertEqual(validation_thread_budget({}),2)
+        for key,value in [('cpus',4),('cpus',float('nan')),('cpu_percent',65),('container_cpu_percent',80),
+                          ('available_gib',4),('host_available_gib',8),('io_pressure',6),('memory_pressure',1)]:
+            self.assertEqual(validation_thread_budget(dict(good,**{key:value})),2)
+        self.assertEqual(validation_thread_budget(dict(good,cpus=8,cpu_percent=35)),2)
+
     def test_categories_are_bounded_and_not_filename_keys(self):
         for phase,expected in [('Checking frame timing: full','frame_validation'),
+            ('Checking HDR frame timing: full','frame_validation'),
             ('hevc_nvenc-balanced-0','encoding'),('hevc_nvenc-balanced-0-quality','quality_measurement'),
             ('full-decode','full_decode'),('Verifying file checksum: movie.mkv','checksums'),
             ('Checking all copied tracks: full','track_validation'),('Reading media metadata: movie','metadata'),

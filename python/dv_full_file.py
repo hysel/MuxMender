@@ -321,6 +321,7 @@ def nvidia_savings_preflight(args, duration=None):
         minimum_savings_percent=getattr(args,'min_savings',5.0),
         experimental_hdr10plus=getattr(args,'experimental_hdr10plus',False),
         ffmpeg=args.ffmpeg, ffprobe=args.ffprobe, dovi_tool=args.dovi_tool)
+    sample_args.source_guard=getattr(args,'source_guard',lambda:None)
     result = dv.run(sample_args)
     reports = list(root.glob('dv81-*/validation.json'))
     if result or len(reports) != 1:
@@ -381,6 +382,7 @@ def run(args):
     directory = args.work_dir / ('dv-full-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
     directory.mkdir(exist_ok=False)
     guard = (dv.NvidiaSampleGuard if experimental else RunGuard)(directory, reserve=2 * 1024**3)
+    if experimental:guard.source_guard=getattr(args,'source_guard',lambda:None)
     guard.allow_hdr10plus=combined
     if experimental:
         guard.detail = 'Full-file DV preservation; integrated opt-in supports AMD/Intel Profile 8.1. Playback review follows automated checks.'
