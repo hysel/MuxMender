@@ -1,5 +1,9 @@
 # Research execution ledger — 2026-09-21
 
+This is a historical experiment log, not a live task list. Later entries can
+supersede earlier results. Start with the [plain-language status](STATUS.md)
+and [roadmap](TODO.md); keep this page for the detailed evidence.
+
 Authorized: work through this list without step-by-step prompts. Production
 queue remains paused; source media and retained production outputs are mounted
 read-only in `muxmender-research`. Scratch: `/work/research-20260921-r1`.
@@ -97,7 +101,7 @@ isolated container. No general Docker access. No changes to Plex or Ollama.
 - Animation read-only recursive inventory: 82 current files, 51 receipt-backed
   job replacements, 14 queued, 13 retained decisions (including four blockers),
   three unresolved failures, one stale signature; no inventory read errors.
-  Stale file is Death in the Family: current 3,967,744,385 bytes versus old
+  Stale file is HDR case A: current 3,967,744,385 bytes versus old
   source records 11,263,387,718 bytes. Separate preservation report indicates
   64.773% reduction, but no matching UI replacement receipt was found yet.
   Do not infer provenance solely from matching size.

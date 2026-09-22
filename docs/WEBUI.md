@@ -1,5 +1,9 @@
 # Local Web UI and standalone planner
 
+This page describes the older local planner, not the current TrueNAS app.
+Its limits and restart behavior apply to that entry point only. For the app's
+folder selection, queue and replacement controls, use [Getting started](GETTING-STARTED.md).
+
 Requires Python 3.10+ and FFmpeg/FFprobe. No Node, VS Code, Plex or web framework
 is required at runtime. From the project folder:
 
