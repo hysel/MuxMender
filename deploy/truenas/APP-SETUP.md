@@ -1,5 +1,11 @@
 # Resident MuxMender app (native TrueNAS GPU and storage settings)
 
+Historical v2 setup notes: the image tag, login requirements and read-only
+dashboard description below are not instructions for the current app. Start
+with [Getting started](../../docs/GETTING-STARTED.md) and the
+[current status](../../docs/STATUS.md); use deployment instructions matching
+your chosen build. Do not redeploy the old example tag by accident.
+
 Use **Apps > Discover Apps > Custom App**, not Install via YAML. The guided
 installer already implements TrueNAS's native GPU selector and host-path mounts.
 Plex's catalog questions reference `definitions/gpu_configuration`; these native

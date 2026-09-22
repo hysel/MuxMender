@@ -1,5 +1,9 @@
 # Animation research status — 21 September 2026
 
+These are historical research notes. They include intermediate results and
+running-job snapshots that may no longer be current. For a readable overview,
+start with the [status report](STATUS.md) and [roadmap](TODO.md).
+
 This is a checkpoint, not a final qualification or a deployment report. The
 production queue is paused. Research uses read-only source and production-output
 mounts; generated copies are isolated in `/work` on TrueNAS. No sources were
