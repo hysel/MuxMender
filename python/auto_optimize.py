@@ -189,6 +189,14 @@ def encode_command(ffmpeg, source, output, settings, info, streams):
             raise ValueError('Adaptive preset must be NVENC p7')
         options = list(options)
         options[options.index('-preset') + 1] = settings['nvenc_preset']
+    if settings.get('nvenc_maxrate_mbps') is not None:
+        ceiling = settings['nvenc_maxrate_mbps']
+        if (settings['encoder'] not in ('hevc_nvenc','av1_nvenc') or
+                type(ceiling) is not int or not 1 <= ceiling <= 1000):
+            raise ValueError('Explicit NVENC peak rate requires HEVC/AV1 NVENC and 1..1000 Mbps')
+        # Optional, measured qualification setting. CQ can otherwise encounter
+        # a runtime-chosen ceiling; this is not a target bitrate or approval.
+        options = [*options, '-maxrate:v:0', str(ceiling * 1000000)]
     command = [ffmpeg, '-hide_banner', '-nostdin', '-n', '-xerror', '-copyts', '-i', str(source),
                '-map', '0', '-map_metadata', '0', '-map_chapters', '0', '-c', 'copy',
                *options, '-pix_fmt', encoder_pixel_format(video,settings['encoder']), '-fps_mode:v', 'passthrough',
@@ -717,6 +725,7 @@ def run(args):
                 quality_domain='hdr-common-render-v1' if getattr(args,'hdr_mode',None) else 'sdr',
                 evaluation_policy=EVALUATION_POLICY)
     plan['decoder_context']=getattr(args,'decoder_context',None)
+    plan['nvenc_maxrate_mbps']=getattr(args,'nvenc_maxrate_mbps',None)
     if not args.execute:
         print(json.dumps(dict(dry_run=True, plan=plan), indent=2))
         return 0
@@ -812,6 +821,9 @@ def run(args):
         info = mm.probe(source, args.ffprobe)
         if getattr(args,'resolved_color',None):info=replace(info,**args.resolved_color)
         def trial_candidate(settings, adaptive=False):
+            ceiling=getattr(args,'nvenc_maxrate_mbps',None)
+            if ceiling is not None and settings['encoder'] in ('hevc_nvenc','av1_nvenc'):
+                settings=dict(settings,nvenc_maxrate_mbps=ceiling)
             trial_id = settings['encoder']+'-'+settings['quality']
             if 'nvenc_cq' in settings:
                 trial_id += '-cq'+str(settings['nvenc_cq'])
@@ -982,6 +994,8 @@ def main(argv=None):
     parser.add_argument('--qualities', nargs='+', choices=('transparent', 'balanced', 'compact'), default=['balanced', 'compact'])
     parser.add_argument('--hevc-nvenc-cq', nargs='+', type=int, choices=range(18,33),
                         help='HEVC-only measured trials using balanced preset and explicit CQ values; quality/savings checks still apply')
+    parser.add_argument('--nvenc-maxrate-mbps',type=int,
+                        help='Optional explicit NVENC peak-rate ceiling (1..1000 Mbps); does not change quality or savings requirements')
     parser.add_argument('--adaptive', action='store_true', help='If baseline fails, refine runtime-tested NVENC settings using hardest-scene screening')
     parser.add_argument('--max-extra-trials', type=int, choices=range(1,13), default=8)
     parser.add_argument('--seconds', type=float, default=10)
@@ -995,6 +1009,8 @@ def main(argv=None):
     parser.add_argument('--ffmpeg', default='ffmpeg')
     parser.add_argument('--ffprobe', default='ffprobe')
     args = parser.parse_args(argv)
+    if args.nvenc_maxrate_mbps is not None and (not 1 <= args.nvenc_maxrate_mbps <= 1000 or args.hardware not in ('auto','nvidia')):
+        parser.error('Explicit NVENC peak rate requires auto/NVIDIA hardware and 1..1000 Mbps')
     for name, low, high in [('vmaf_mean', 0, 100), ('vmaf_p5', 0, 100), ('minimum_savings_percent', 0, 99.9),
                             ('min_free_gib', 1, 100000), ('timeout', 1, 86400), ('seconds', 1, 60)]:
         value = getattr(args, name)

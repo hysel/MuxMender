@@ -1,7 +1,13 @@
 # Project status
 
-Updated 21 September 2026. This is a repository and recorded-results update,
+Updated 22 September 2026. This is a repository and recorded-results update,
 not a live reading of the TrueNAS queue.
+
+The full-file research batches are now complete: 19 runs across 18 unique sources,
+with 16 validated copies and two remaining keep decisions after reconciling a
+successful retry. Potential reduction is **79.912 GB (65.863%)**; originals remain
+untouched. See the [reviewed checkpoint](research-checkpoint-20260922.md) for
+evidence, limitations and release preparation. These are not production replacements.
 
 ## Where we are
 
@@ -53,8 +59,8 @@ whole-library speedup. GPU validation is not globally enabled.
 
 ## What happens next
 
-Finish the remaining full-file tests, reconcile results and repeat the folder
-audit. Then prepare an agreed deployment checkpoint and check recovery before
+The full-file tests and result reconciliation are complete. Repeat the folder
+audit, agree the deployment checkpoint and check recovery before
 another long production run. The [roadmap](TODO.md) includes the remaining HDR,
 hardware, speed and usability work.
 

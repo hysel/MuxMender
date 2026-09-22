@@ -64,6 +64,11 @@ def automatic_arguments(source, output, settings, *, min_free_gib=12, capability
           '--minimum-savings-percent',format(float(settings['minimum_savings']),'.15g'),
           '--min-free-gib',str(min_free_gib)]
     if capability_cache_dir is not None:args+=['--capability-cache-dir',str(capability_cache_dir)]
+    if settings.get('nvenc_maxrate_mbps') is not None:
+        value=settings['nvenc_maxrate_mbps']
+        if type(value) is not int or not 1<=value<=1000 or settings['hardware'] not in ('auto','nvidia'):
+            raise ValueError('Explicit NVENC peak rate requires auto/NVIDIA hardware and 1..1000 Mbps')
+        args+=['--nvenc-maxrate-mbps',str(value)]
     if settings['codecs']:args+=['--playback-verified-codecs',*settings['codecs']]
     if settings['quality']!='auto':args+=['--qualities',settings['quality']]
     else:args+=['--adaptive']
@@ -83,6 +88,7 @@ def main(argv=None):
     parser.add_argument('--mode',choices=('analyze','test','encode'),default='analyze')
     parser.add_argument('--hardware',choices=('auto','nvidia','amd','intel'),default='auto')
     parser.add_argument('--quality',choices=('auto','transparent','balanced','compact'),default='auto')
+    parser.add_argument('--nvenc-maxrate-mbps',type=int,help='Optional measured NVENC peak-rate ceiling, 1..1000 Mbps')
     parser.add_argument('--playback-verified-codecs',nargs='+',choices=('hevc','av1'),default=[])
     parser.add_argument('--minimum-savings-percent',type=float,default=0)
     parser.add_argument('--legacy-color',choices=('inspect','bt709-limited'),default='inspect')
@@ -102,7 +108,8 @@ def main(argv=None):
     from auto_optimize import main as execute
     return execute(automatic_arguments(args.source,args.output_dir,dict(mode=args.mode,
         hardware=args.hardware,quality=args.quality,codecs=args.playback_verified_codecs,
-        minimum_savings=args.minimum_savings_percent,legacy_color=args.legacy_color),
+        minimum_savings=args.minimum_savings_percent,legacy_color=args.legacy_color,
+        nvenc_maxrate_mbps=args.nvenc_maxrate_mbps),
         capability_cache_dir=args.capability_cache_dir))
 
 

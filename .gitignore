@@ -20,6 +20,10 @@ tools/*
 !tools/benchmark_gpu_decode.py
 !tools/benchmark_frame_threads.py
 !tools/qualify_frame_reader.py
+!tools/qualify_nvidia_generated.py
+!tools/run_nvidia_generation_cases.py
+!tools/monitor_remote_research.py
+!tools/research_nvenc_rate_control.py
 !tools/smoke_auto_optimize.py
 !tools/smoke_hdr_auto.py
 !tools/smoke_hdr_dynamic.py
