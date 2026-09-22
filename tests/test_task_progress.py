@@ -37,6 +37,13 @@ class TaskProgressTests(unittest.TestCase):
         self.assertIn('width=1920',path.read_text())
         self.assertEqual(report.call_args.kwargs['stage_percent'],100)
 
+    def test_json_frame_progress_and_missing_time(self):
+        path=self.root/'frames.json'
+        path.write_text('{\n "best_effort_timestamp_time": "15.000",\n "width":1920\n')
+        self.assertEqual(tp.probe_status(path,20,5)[0],50)
+        path.write_text('{\n "width":1920\n')
+        self.assertIsNone(tp.probe_status(path,20)[0])
+
     def test_failed_probe_never_reports_success(self):
         with patch.object(tp,'progress') as report:
             with self.assertRaises(subprocess.CalledProcessError):

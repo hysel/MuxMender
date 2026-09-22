@@ -10,6 +10,76 @@ from control_service import Controls
 
 
 class ColorTests(unittest.TestCase):
+    def test_mpeg4_absent_signal_requires_parseable_video_header(self):
+        absent=bytes.fromhex('000001b5090000012000')
+        self.assertEqual(lc.mpeg4_absent_signal_headers(absent),1)
+        self.assertEqual(lc.mpeg4_absent_signal_headers(absent+absent),2)
+        self.assertEqual(lc.mpeg4_absent_signal_headers(bytes.fromhex('000001b589100000012000')),1)
+        self.assertIsNone(lc.mpeg4_absent_signal_headers(bytes.fromhex('000001b581100000012000')))
+        for raw in ('000001b5','000001b588','000001b50d','000001b511','0000012009'):
+            self.assertIsNone(lc.mpeg4_absent_signal_headers(bytes.fromhex(raw)))
+        self.assertIsNone(lc.mpeg4_absent_signal_headers(absent+bytes.fromhex('000001b50d')))
+
+    def test_mpeg4_default_range_requires_all_windows(self):
+        from types import SimpleNamespace
+        absent=SimpleNamespace(returncode=0,stdout=bytes.fromhex('000001b5090000012000'))
+        with patch.object(lc.subprocess,'run',return_value=absent) as run:
+            proof=lc.inspect_mpeg4_default_range('ffmpeg','source',100)
+            self.assertEqual(proof['value'],'tv')
+            self.assertEqual(proof['effective']['color_space'],'bt709')
+            self.assertEqual(run.call_count,3)
+        with patch.object(lc.subprocess,'run',side_effect=[absent,SimpleNamespace(returncode=0,stdout=b'')]):
+            self.assertIsNone(lc.inspect_mpeg4_default_range('ffmpeg','source',100))
+
+    def test_unspecified_colors_require_known_range_and_are_not_filled(self):
+        data=self.missing();data['streams'][0]['color_range']='tv'
+        effective,report=lc.resolve(data,[{}]*24)
+        self.assertEqual(set(report['preserved_unspecified']),set(lc.FIELDS)-{'color_range'})
+        self.assertEqual(report['assumed'],[])
+        ao.eligibility(effective)
+        self.assertNotIn('color_primaries',effective['streams'][0])
+        effective['streams'][0]['color_transfer']='smpte2084'
+        self.assertFalse(lc.is_supported(effective['streams'][0]))
+
+    def test_range_recovery_requires_absent_h264_signal_flags_in_every_window(self):
+        from types import SimpleNamespace
+        absent=SimpleNamespace(returncode=0,stderr='video_signal_type_present_flag 0 = 0')
+        explicit=SimpleNamespace(returncode=0,stderr='video_signal_type_present_flag 1 = 1\nvideo_full_range_flag 1 = 1')
+        with patch.object(lc.subprocess,'run',return_value=absent) as run:
+            proof=lc.inspect_h264_default_range('ffmpeg',Path('source'),100)
+        self.assertEqual(proof['value'],'tv');self.assertEqual(run.call_count,3)
+        with patch.object(lc.subprocess,'run',side_effect=[absent,explicit]):
+            self.assertIsNone(lc.inspect_h264_default_range('ffmpeg',Path('source'),100))
+        with patch.object(lc.subprocess,'run',return_value=SimpleNamespace(returncode=0,stderr='')):
+            self.assertIsNone(lc.inspect_h264_default_range('ffmpeg',Path('source'),100))
+        with patch.object(lc.subprocess,'run',side_effect=FileNotFoundError):
+            self.assertIsNone(lc.inspect_h264_default_range('ffmpeg',Path('source'),100))
+
+    def test_unspecified_transfer_is_preserved_not_guessed(self):
+        data=source_data();data['streams'][0].pop('color_transfer')
+        effective,report=lc.resolve(data,[dict(color_primaries='bt709',color_space='bt709',color_range='tv')]*24)
+        self.assertEqual(report['preserved_unspecified'],['color_transfer'])
+        self.assertEqual(report['assumed'],[])
+        self.assertTrue(report['replacement_allowed'])
+        self.assertNotIn('color_transfer',effective['streams'][0])
+        ao.eligibility(effective)
+        after=copy.deepcopy(effective);after['streams'][0]['codec_name']='hevc'
+        ao.metadata_check(effective,after,'hevc')
+        after['streams'][0]['color_transfer']='bt709'
+        with self.assertRaises(ValueError):ao.metadata_check(effective,after,'hevc')
+        data['streams'][0].pop('color_range')
+        self.assertFalse(lc.can_preserve_unspecified_transfer(data['streams'][0]))
+
+    def test_scan_type_needs_decoded_evidence(self):
+        frames=[dict(interlaced_frame=0,repeat_pict=0) for _ in range(24)]
+        self.assertTrue(lc.confirm_progressive(frames))
+        self.assertFalse(lc.confirm_progressive(frames[:2]))
+        self.assertFalse(lc.confirm_progressive([{}]*24))
+        frames[-1]['interlaced_frame']=1
+        self.assertFalse(lc.confirm_progressive(frames))
+        frames[-1].update(interlaced_frame=0,repeat_pict=1)
+        self.assertFalse(lc.confirm_progressive(frames))
+
     def missing(self):
         data=source_data()
         for key in lc.FIELDS:data['streams'][0].pop(key,None)

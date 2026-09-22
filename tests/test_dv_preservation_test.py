@@ -8,6 +8,24 @@ from dv_preservation_test import sample_encoder_options, require_nvidia_frames
 
 
 class DVExperimentTests(unittest.TestCase):
+    def test_bounded_nvenc_quality_search_preserves_metadata_flags(self):
+        info=sample(dolby_vision=True,video_codec='hevc',dolby_vision_profile=8,
+                    dolby_vision_compatibility_id=1,dolby_vision_rpu_present=True)
+        for cq in range(18,33):
+            opts=sample_encoder_options(info,True,nvenc_cq=cq)
+            self.assertEqual(opts[opts.index('-cq')+1],str(cq))
+            self.assertEqual(opts[opts.index('-bf')+1],'0')
+            self.assertEqual(opts[opts.index('-pix_fmt')+1],'p010le')
+        for cq in (-1,17,33,True):
+            with self.assertRaises(ValueError):sample_encoder_options(info,True,nvenc_cq=cq)
+        with self.assertRaises(ValueError):sample_encoder_options(info,nvenc_cq=22)
+
+    def test_shared_hdr_prefix_graph_limits_both_inputs(self):
+        from hdr_auto import quality_graph
+        graph=quality_graph('dv-candidate-vmaf.json','24/1',720)
+        self.assertEqual(graph.count('trim=end_frame=720'),2)
+        self.assertEqual(graph.count('tonemap=tonemap=hable'),2)
+        with self.assertRaises(ValueError):quality_graph('test.json','24/1',0)
     def test_intel_sample_is_explicit_bounded_profile81_route(self):
         info = sample(dolby_vision=True, video_codec='hevc', dolby_vision_profile=8,
                       dolby_vision_compatibility_id=1, dolby_vision_rpu_present=True)
@@ -67,11 +85,19 @@ class DVExperimentTests(unittest.TestCase):
 
     def test_timeline(self):
         frames = [{'best_effort_timestamp_time': str(n/24)} for n in range(10)]
-        validate_timeline(frames, list(reversed(frames)))
+        validate_timeline(frames, frames)
+        with self.assertRaises(ValueError):
+            validate_timeline(frames, list(reversed(frames)))
         with self.assertRaises(ValueError):
             validate_timeline(frames, frames[:-1])
         with self.assertRaises(ValueError):
             validate_timeline(frames, [{'best_effort_timestamp_time': str(n/24+.04)} for n in range(10)])
+
+    def test_combined_hdr_allowance_does_not_allow_other_dynamic_formats(self):
+        frame=dict(interlaced_frame=0,side_data_list=[dict(side_data_type='HDR Dynamic Metadata SMPTE2094-40 (HDR10+)')])
+        require_nvidia_frames([frame],allow_hdr10plus=True)
+        frame['side_data_list'][0]['side_data_type']='HDR Dynamic Metadata SMPTE2094-10'
+        with self.assertRaises(ValueError):require_nvidia_frames([frame],allow_hdr10plus=True)
 
     def test_duration_bounds(self):
         for seconds in (0, 31, float('nan'), float('inf')):

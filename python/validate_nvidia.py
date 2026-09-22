@@ -273,6 +273,8 @@ class Validation:
         events = queue.Queue()
         started = last_advanced = time.monotonic()
         high = -1.
+        from encoder_progress import EncoderActivity, timestamp_percent
+        activity = EncoderActivity()
         output, recent = [], deque(maxlen=12)
         with logfile.open('x', encoding='utf-8') as log:
             log.write(subprocess.list2cmdline([str(x) for x in cmd]) + '\n')
@@ -307,11 +309,12 @@ class Validation:
                         output.append(line)
                     else:
                         recent.append(line)
-                    if seconds and line.startswith('out_time_us='):
-                        try:
-                            value = max(0, min(99, float(line.split('=')[1]) / (seconds * 10000)))
-                        except ValueError:
-                            continue
+                    if seconds and channel == 'out' and activity.update(line):
+                        last_advanced = now
+                    if seconds and channel == 'out':
+                        value = timestamp_percent(line, seconds)
+                        if value is None:continue
+                        value = min(99, value)
                         if value > high:
                             high = value
                             last_advanced = now

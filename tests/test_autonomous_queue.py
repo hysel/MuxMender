@@ -77,12 +77,12 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(self.queue.state['state'],'waiting')
             process.assert_not_called()
 
-    def test_two_failures_pause_without_retry(self):
+    def test_failed_files_do_not_pause_or_retry(self):
         (self.scope/'second.mkv').write_bytes(b'second source')
         with patch.object(aq.subprocess,'Popen',return_value=Mock(wait=lambda:1)) as process:
             self.queue.step();self.queue.step();self.queue.step()
             self.assertEqual(process.call_count,2)
-        self.assertTrue(self.queue.pause.exists())
+        self.assertFalse(self.queue.pause.exists())
 
     def test_outcome_requires_validated_result_not_zero_exit(self):
         self.assertEqual(aq.outcome(self.output,0)[0],'failed')

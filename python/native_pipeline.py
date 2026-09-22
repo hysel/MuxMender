@@ -18,6 +18,7 @@ import uuid
 from dataclasses import replace
 from pathlib import Path
 from runtime_support import TerminalProgress
+from encoder_progress import EncoderActivity, timestamp_percent
 
 
 def checked_json(command, timeout=60):
@@ -30,17 +31,7 @@ def checked_json(command, timeout=60):
 def progress(line, seconds):
     if line.startswith("MUXMENDER_PROGRESS="):
         return min(100.0, max(0.0, float(line.split("=", 1)[1])))
-    if line.startswith("out_time_us="):
-        try:
-            timestamp = float(line.split("=", 1)[1])
-            # Some muxes with empty subtitle tracks emit near-int64-limit
-            # timestamps. These are not usable progress, nor proof of completion.
-            if not math.isfinite(timestamp) or abs(timestamp) >= 2**62 or not math.isfinite(seconds) or seconds <= 0:
-                return None
-            return min(100.0, max(0.0, timestamp / (seconds * 10000)))
-        except ValueError:
-            return None
-    return None
+    return timestamp_percent(line, seconds)
 
 
 def frame_progress(line, expected_frames):
@@ -55,7 +46,31 @@ def frame_progress(line, expected_frames):
         return None
 
 
-def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None, observe=None, expected_frames=None, cwd=None):
+def decode_maps_after_frame_audit(streams, verified_frames=None):
+    """Finish audio after a current, complete video audit; otherwise decode both.
+
+    verified_frames must come from the caller's successful full-frame comparison,
+    not a previous run's report, a sample count, or stream-header nb_frames.
+    """
+    if type(verified_frames) is not int or verified_frames<=0:
+        return ['0:v:0','0:a?'],False
+    return [f"0:{stream['index']}" for stream in streams['streams']
+            if stream.get('codec_type')=='audio'],True
+
+
+def strict_decode_line(line):
+    """For -v error/-nostats decodes: only machine progress is non-diagnostic.
+
+    FFmpeg can emit corruption diagnostics and nevertheless exit zero. Check
+    each line before bounded log retention can discard an early error.
+    """
+    text=line.strip()
+    if not text or re.fullmatch(r'(?:frame|fps|stream_\d+_\d+_q|bitrate|total_size|out_time(?:_us|_ms)?|dup_frames|drop_frames|speed|progress)=.*',text):
+        return False
+    raise RuntimeError('Strict decode reported an error: '+text[:1600])
+
+
+def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None, observe=None, expected_frames=None, cwd=None, strict_decode=False):
     """Stream logs/progress to caller; cap both stalls and total elapsed time."""
     from muxmender import stop_process_tree
     from job_tracking import stage_progress
@@ -72,8 +87,12 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None,
     threading.Thread(target=read, daemon=True).start()
     started = advanced = time.monotonic()
     last = -1.0
+    last_emitted = -1.0
+    last_emitted_at = started
+    last_frame = 0
+    activity = EncoderActivity()
     log = []
-    display = TerminalProgress(label=f"Stage ({offset:g}-{offset + span:g}% overall)", machine=False)
+    display = TerminalProgress(label=f"Stage ({offset:g}-{offset + span:g}% overall)" if span else 'Current stage', machine=False)
     try:
         eof = False
         while not eof or child.poll() is None:
@@ -82,7 +101,8 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None,
                 guard()
             now = time.monotonic()
             if now - started > timeout or (stall and now - advanced > stall):
-                raise RuntimeError(f"Stage timed out (total limit {timeout}s; progress stall limit {stall}s)")
+                cause = 'total runtime limit' if now-started > timeout else 'no advancing frame/timestamp progress'
+                raise RuntimeError(f"Stage timed out: {cause} (total limit {timeout}s; progress stall limit {stall}s)")
             try:
                 line = lines.get(timeout=0.2)
             except queue.Empty:
@@ -92,27 +112,41 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None,
                 continue
             # An observer can validate every frame without retaining verbose logs.
             suppressed = observe(line) if observe else False
+            if strict_decode:
+                strict_decode_line(line)
             log.append(line)
             if len(log) > 200:
                 log.pop(0)
+            if activity.update(line):
+                advanced = now
+            # Missing mux timestamps do not mean the encoder is stalled. Only
+            # a strictly increasing frame count is activity, not repeated logs.
+            frame_match = re.fullmatch(r'frame=\s*(\d+)\s*', line.strip())
+            if frame_match and int(frame_match[1]) > last_frame:
+                last_frame = int(frame_match[1])
+                advanced = now
+                if expected_frames is None and last < 0:
+                    stage_progress(None, None, detail=f'{last_frame:,} frames processed; timestamp-based percentage unavailable')
             value = (frame_progress(line.strip(), expected_frames) if expected_frames is not None
                      else progress(line.strip(), seconds))
             if value is not None:
                 if value > last:
                     advanced = now
                     last = value
-                if span:
+                if last_emitted < 0 or value-last_emitted >= .1 or now-last_emitted_at >= 1:
+                    last_emitted,last_emitted_at=value,now
                     display.update(min(value, 99))
-                    stage_progress(min(value, 99), display.eta_seconds)
-                    print(f"MUXMENDER_PROGRESS={offset + span * value / 100:.1f}", flush=True)
-            elif not suppressed and not re.match(r"^(frame|fps|stream_\d+_\d+_q|bitrate|total_size|out_time|dup_frames|drop_frames|speed|progress)=", line):
+                    stage_progress(min(value, 99), display.eta_seconds,
+                                   detail=f'{last_frame:,} frames processed' if last_frame else '')
+                    if span:print(f"MUXMENDER_PROGRESS={offset + span * value / 100:.1f}", flush=True)
+            elif not suppressed and not re.match(r"^(frame|fps|stream_\d+_\d+_q|bitrate|total_size|out_time(?:_us|_ms)?|dup_frames|drop_frames|speed|progress)=", line):
                 print(line.rstrip(), flush=True)
         if child.returncode:
             raise RuntimeError(f"Stage failed ({child.returncode}): {''.join(log)[-1600:]}")
-        if span:
+        if span or last >= 0:
             display.update(100)
             stage_progress(100, 0)
-            print(f"MUXMENDER_PROGRESS={offset + span:.1f}", flush=True)
+            if span:print(f"MUXMENDER_PROGRESS={offset + span:.1f}", flush=True)
         return "".join(log)
     finally:
         if child.poll() is None:

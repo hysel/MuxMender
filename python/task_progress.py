@@ -1,6 +1,7 @@
 """Bounded, measured telemetry for non-encoding work."""
 import hashlib
 import math
+import re
 import subprocess
 import time
 from job_tracking import progress
@@ -31,6 +32,13 @@ def probe_status(path, duration, start=0):
         stream.seek(max(0,size-16384));lines=stream.read().decode('utf-8',errors='replace').splitlines()
     times=[]
     for line in lines[:-1]:  # Last line may still be in flight.
+        # ffprobe JSON frame evidence (HDR) uses quoted key/value pairs.
+        match=re.search(r'"(?:best_effort_timestamp_time|pts_time)"\s*:\s*"([^"\r\n]+)"',line)
+        if match:
+            try:
+                number=float(match[1])-start
+                if math.isfinite(number):times.append(number)
+            except ValueError:pass
         for item in line.split('|'):
             key,_,value=item.partition('=')
             if key in ('best_effort_timestamp_time','pts_time'):
@@ -39,7 +47,7 @@ def probe_status(path, duration, start=0):
                     if math.isfinite(number):times.append(number)
                 except ValueError:pass
     position=max(times,default=0)
-    percent=min(99.9,max(0,100*position/duration)) if duration and duration>0 else None
+    percent=min(99.9,max(0,100*position/duration)) if times and duration and math.isfinite(duration) and duration>0 else None
     return percent,f'{position:.1f} seconds inspected · {size/1e6:.1f} MB of validation evidence'
 
 

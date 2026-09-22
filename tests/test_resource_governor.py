@@ -1,9 +1,30 @@
 import unittest
 from unittest.mock import patch
-from resource_governor import Governor
+from resource_governor import Governor,allocated_cpu_usage
 
 
 class GovernorTests(unittest.TestCase):
+    def test_container_cpu_is_normalized_to_allocation(self):
+        self.assertEqual(allocated_cpu_usage((0,0),(1,4000000),4),100)
+        self.assertEqual(allocated_cpu_usage((0,0),(2,4000000),4),50)
+        self.assertIsNone(allocated_cpu_usage((1,10),(1,20),4))
+        self.assertIsNone(allocated_cpu_usage((0,20),(1,10),4))
+
+    def test_busy_container_cannot_hide_behind_idle_host(self):
+        self.data['container_cpu_percent']=99
+        self.assertFalse(self.g.admit('faster',0,100))
+        self.assertIn('container CPU',self.g.status['reason'])
+
+    def test_healthy_eight_gib_container_is_not_permanently_blocked(self):
+        self.data.update(host_available_gib=24,container_limit_gib=8,
+                         container_available_gib=7,available_gib=7)
+        self.assertTrue(self.g.admit('shared',0,100))
+        self.data['container_available_gib']=3
+        self.assertFalse(self.g.admit('shared',0,101))
+        self.assertIn('container memory',self.g.status['reason'])
+        self.data.update(container_available_gib=7,host_available_gib=5)
+        self.assertFalse(self.g.admit('shared',0,102))
+        self.assertEqual(self.g.status['reason'],'Waiting for memory headroom')
     def setUp(self):
         self.g=Governor()
         self.data=dict(cpu_percent=20,available_gib=24,cpus=8,io_pressure=0,memory_pressure=0,

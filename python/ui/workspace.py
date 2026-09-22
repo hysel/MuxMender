@@ -11,6 +11,7 @@ h3,p,summary,.result-meta,#connection-state{overflow-wrap:anywhere}
 .sr-only{left:0;top:0;clip-path:inset(50%)}
 input[type=checkbox]{width:24px;min-height:24px;vertical-align:middle;margin-right:8px}
 .savings-hero{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:28px 32px;background:var(--soft);border-color:var(--border)}.savings-hero>div{min-width:0}.savings-number{font-size:clamp(2.6rem,7vw,5.5rem);font-weight:800;letter-spacing:-.045em;line-height:1.1;margin:8px 0 16px;overflow-wrap:anywhere}.savings-symbol{font-size:6rem;line-height:1;color:var(--text)}.savings-hero .control-note{max-width:65ch;margin-bottom:0}@media(max-width:650px){.savings-hero{padding:20px}.savings-symbol{display:none}}
+.active-job{border:1px solid var(--border);border-radius:12px;padding:18px;margin:12px 0}.active-job h3{margin:0;overflow-wrap:anywhere}.stage-title{font-size:1.15rem;font-weight:700;margin:8px 0}.stage-list{display:flex;flex-wrap:wrap;gap:8px;list-style:none;padding:0;margin:12px 0}.stage-list li{padding:5px 10px;border:1px solid var(--border);border-radius:6px;color:var(--muted)}.stage-list .current-step{background:var(--accent);color:var(--accent-text);font-weight:700;border:2px solid var(--focus)}.check-progress{font-weight:700;margin:8px 0}.active-job details{margin-top:8px}.active-job summary{cursor:pointer}#activity{scroll-margin-top:16px}
 </style>'''
 
 SCRIPT = r'''<script>
@@ -51,7 +52,36 @@ function resultGroup(state){return state==='replaced'?'replaced':['pending','run
 function sizeSummary(job){return Number.isFinite(job.original_bytes)&&Number.isFinite(job.output_bytes)?(job.original_bytes/1e9).toFixed(2)+' GB → '+(job.output_bytes/1e9).toFixed(2)+' GB · '+(100*(1-job.output_bytes/job.original_bytes)).toFixed(1)+'% smaller':''}
 function friendlyStage(value){const s=String(value||'');if(s==='full-encode')return 'Creating the full video copy';if(s==='full-decode')return 'Checking the full copy plays without decode errors';if(s.includes('Checking frame timing'))return 'Checking resolution and frame timing';if(s.includes('Checking copied track'))return 'Verifying audio or subtitles';if(s.includes('self-'))return 'Checking the quality measurement';if(s.includes('quality'))return 'Measuring visual quality';if(/nvenc|amf|qsv|vaapi/.test(s))return 'Comparing encoding options';return s.replaceAll('-',' ')||'Preparing the video'}
 function workflowStep(value){const s=String(value||'').toLowerCase();if(/publish|publication|staged|flushing/.test(s))return 'Replacement · copying and verifying publication';if(s==='full-encode')return 'Encoding · creating a separate full copy';if(/full-|frame|track|timestamp|digest|hash|verif/.test(s))return 'Validation · checking integrity and preservation';return 'Inspection / sample trials · testing candidates'}
-function mergedResults(){const rows=requestJobs.map(job=>{const detail=catalogJobs.filter(c=>(String(c.directory).replaceAll('\\','/')+'/').includes('request-'+job.id+'/')).sort((a,b)=>(b.updated||b.started||0)-(a.updated||a.started||0))[0];return {...detail,...job,phase:detail?.phase,stage_started:detail?.stage_started,updated:detail?.updated,stage_percent:detail?.stage_percent,stage_eta:detail?.stage_eta,file_savings_percent:detail?.file_savings_percent,detail:detail?.detail,logId:detail?.id,requestId:job.id,sort:job.created||0}});
+function stagePresentation(job){
+ const labels={inspect:'Inspect',compare:'Compare options',encode:'Encode',validate:'Validate',publish:'Replace',cleanup:'Clean up'};
+ const mode=job.settings?.mode;
+ const steps=mode==='analyze'?['inspect']:mode==='test'?['inspect','compare']:mode==='replace'?Object.keys(labels):['inspect','compare','encode','validate'];
+ let stage=job.workflow_stage;
+ if(!steps.includes(stage)){const p=String(job.phase||'').toLowerCase();stage=/cleaning completed/.test(p)?'cleanup':/publish|publication|flushing/.test(p)?'publish':p==='full-encode'?'encode':/^full-|checking frame timing|checking copied track/.test(p)?'validate':/nvenc|amf|qsv|reference-|quality|trial/.test(p)?'compare':null}
+ const index=steps.indexOf(stage),pct=job.stage_percent;
+ const percent=Number.isFinite(pct)&&pct>=0&&pct<=100?pct:null;
+ return {steps,labels,index,stage,title:index<0?'Preparing · stage not reported':'Step '+(index+1)+' of '+steps.length+' · '+labels[stage],
+         check:percent===null?'Current check: measuring':percent===100?'Current check complete · finishing this stage':'Current check: '+percent.toFixed(0)+'%'};
+}
+function renderActiveCard(job){
+ const card=userNode('article',null,'active-job'),view=stagePresentation(job);
+ card.append(userNode('h3',resultName(job)),userNode('p',view.title,'stage-title'));
+ const steps=userNode('ol',null,'stage-list');steps.setAttribute('aria-label','Workflow stages');
+ view.steps.forEach((stage,index)=>{const item=userNode('li',(index+1)+'. '+view.labels[stage]);if(index===view.index){item.setAttribute('aria-current','step');item.className='current-step'}steps.append(item)});
+ card.append(steps,userNode('p',view.check,'check-progress'),userNode('p',friendlyStage(job.phase),'control-note'));
+ const timing=userNode('p',null,'result-meta');
+ timing.textContent=(Number.isFinite(job.started)?'Elapsed '+Math.max(0,Math.floor((Date.now()/1000-job.started)/60))+' min':'')+
+   (Number.isFinite(job.stage_eta)?' · Current check ETA '+Math.max(1,Math.ceil(job.stage_eta/60))+' min':'');
+ card.append(timing);
+ if(Number.isFinite(job.updated)&&Date.now()/1000-job.updated>30)card.append(userNode('p','Update overdue · last reported progress may be stale','attention'));
+ const detail=userNode('details');detail.append(userNode('summary','Technical details'));
+ if(job.detail)detail.append(userNode('p',job.detail,'control-note'));
+ detail.append(userNode('p','Percent and ETA apply to the current check only. Stages contain multiple checks; their durations are not equal.','control-note'));
+ const measured=Object.entries(job.performance_seconds||{}).filter(([,v])=>Number.isFinite(v)&&v>0);
+ for(const [name,seconds] of measured)detail.append(userNode('p',name.replaceAll('_',' ')+': '+Math.round(seconds)+' sec'));
+ card.append(detail);return card;
+}
+function mergedResults(){const rows=requestJobs.map(job=>{const detail=catalogJobs.filter(c=>(String(c.directory).replaceAll('\\','/')+'/').includes('request-'+job.id+'/')).sort((a,b)=>(b.updated||b.started||0)-(a.updated||a.started||0))[0];return {...detail,...job,phase:detail?.phase,workflow_stage:detail?.workflow_stage,stage_started:detail?.stage_started,updated:detail?.updated,stage_percent:detail?.stage_percent,stage_eta:detail?.stage_eta,file_savings_percent:detail?.file_savings_percent,detail:detail?.detail,logId:detail?.id,requestId:job.id,sort:job.created||0}});
  // The workspace shows submitted requests, not legacy development catalog runs.
  return rows.sort((a,b)=>b.sort-a.sort);
 }
@@ -69,21 +99,10 @@ function receiveControls(body){requestJobs=body.jobs||[];queueState=body;
  const savings=body.lifetime_savings;if(savings){const bytes=savings.saved_bytes||0;userEl('lifetime-saved').textContent=(bytes/(bytes>=1e12?1e12:1e9)).toFixed(2)+(bytes>=1e12?' TB':' GB');userEl('lifetime-detail').textContent=savings.replaced_files+' files replaced'+(Number.isFinite(savings.percent)?' · '+savings.percent.toFixed(1)+'% smaller overall':'')}
  renderUserResults()}
 function renderUserResults(force=false){const rows=mergedResults(),running=rows.filter(j=>j.state==='running'),active=running[0],current=userEl('current-work');current.replaceChildren();
- if(active){for(const active of running){current.append(userNode('h3',active.source.replaceAll('\\','/').split('/').pop()));current.append(userNode('p',friendlyStage(active.phase)));const value=active.stage_percent;
- current.append(userNode('p',workflowStep(active.phase),'result-meta'));
- const metrics=userNode('div',null,'metrics');metrics.append(userNode('p',Number.isFinite(value)?'Current stage: '+value.toFixed(0)+'%':'This check does not report a percentage.'));
- if(Number.isFinite(active.started))metrics.append(userNode('p','Job elapsed: '+Math.max(0,Math.floor((Date.now()/1000-active.started)/60))+' min'));
- if(Number.isFinite(active.stage_started))metrics.append(userNode('p','Stage elapsed: '+Math.max(0,Math.floor(Date.now()/1000-active.stage_started))+' sec'));
- if(Number.isFinite(active.updated)){const age=Math.max(0,Math.floor(Date.now()/1000-active.updated));metrics.append(userNode('p',age<=30?'Worker heartbeat: '+age+' sec ago (does not prove forward progress)':'Status update overdue: '+age+' sec since last heartbeat',age>30?'attention':'control-note'))}
- if(!Number.isFinite(active.stage_eta))metrics.append(userNode('p','Stage ETA unavailable; waiting for measurable progress.'));
- if(active.detail)current.append(userNode('p',active.detail,'control-note'));
- if(Number.isFinite(active.stage_eta))metrics.append(userNode('p','Stage estimate: about '+Math.max(1,Math.ceil(active.stage_eta/60))+' min'));current.append(metrics,userNode('p','Stage estimates exclude later validation. Encoding finished does not mean the file has passed all checks.','control-note'));
- const measured=Object.entries(active.performance_seconds||{}).filter(([k,v])=>Number.isFinite(v)&&v>=1).sort((a,b)=>b[1]-a[1]);
- if(measured.length){const timing=userNode('details');timing.append(userNode('summary','Where processing time is spent'));for(const [name,seconds] of measured)timing.append(userNode('p',name.replaceAll('_',' ')+': '+Math.round(seconds)+' sec'));timing.append(userNode('p','Observed job wall time, not CPU usage or a measured speedup.','control-note'));current.append(timing)}
- }}else current.append(userNode('p',queueState.paused?(queueState.pause_reason||'Queue paused. Resume when ready.'):(queueState.error|| (rows.some(j=>j.state==='pending')?'Videos are queued. Waiting for the worker.':'No video is running. Select a folder above to start.'))));
+ if(active){for(const active of running)current.append(renderActiveCard(active));}else current.append(userNode('p',queueState.wait_reason|| (queueState.paused?(queueState.pause_reason||'Queue paused. Resume when ready.'):(queueState.error|| (rows.some(j=>j.state==='pending')?'Videos are queued. Checking worker availability…':'No video is running. Use Set up to start.')))));
  const counts=queueState.counts||{},total=Object.values(counts).reduce((a,b)=>a+b,0),processed=total-(counts.pending||0)-(counts.running||0);
  current.append(userNode('p',processed+' of '+total+' requests processed · '+(counts.analyzed||0)+' inspected · '+((counts.skipped||0)+(counts['kept-original']||0))+' kept · '+(counts.failed||0)+' failed','result-meta'));
- if(counts.pending)current.append(userNode('p','Waiting: '+(queueState.pause_reason||queueState.error||queueState.resources?.reason||'Worker admission check in progress')+'. Running work finishes normally.','control-note'));
+ if(counts.pending&&active)current.append(userNode('p','Queued videos: '+(queueState.wait_reason||'Waiting for an available worker slot')+'. Running work finishes normally.','control-note'));
  const batch=userEl('result-batch').value;if(batch){const selected=rows.filter(j=>(j.batch_id||'folder:'+String(j.source||'').replaceAll('\\','/').split('/').slice(0,-1).join('/'))===batch),finished=selected.filter(j=>!['pending','running'].includes(j.state)).length;current.append(userNode('p','Selected batch: '+finished+' of '+selected.length+' requests finished. Skips and failures count as finished, not successful.','result-meta'))}
  if(requestJobs.length&&requestJobs.every(j=>j.settings?.mode==='analyze'))current.append(userNode('p','Inspection only — no videos will be converted.','control-note'));
  const message=active?'Running: '+active.source.replaceAll('\\','/').split('/').pop()+' · '+friendlyStage(active.phase):rows.filter(j=>resultGroup(j.state)==='ready').length+' copies ready for review';

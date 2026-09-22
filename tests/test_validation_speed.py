@@ -57,9 +57,13 @@ class ValidationSpeedTests(unittest.TestCase):
             self.assertFalse(result['cacheable']);self.assertIsNone(result['selected'])
 
     def test_frame_reader_bounded_threads_reuses_metadata_without_dropping_side_data(self):
-        workflow=ao.Workflow(SimpleNamespace(ffprobe='probe',timeout=60),Path('job'),lambda:None)
-        with patch.object(workflow,'probe') as metadata,patch.object(ao,'run_probe') as run:
-            workflow.frame_file(Path('input'),'test',dict(duration=12,start_time=2))
+        with tempfile.TemporaryDirectory() as folder:
+            workflow=ao.Workflow(SimpleNamespace(ffprobe='probe',timeout=60),Path(folder),lambda:None)
+            def completed_probe(command,path,*args):
+                path.write_text('')
+                path.with_suffix(path.suffix+'.stderr').write_text('')
+            with patch.object(workflow,'probe') as metadata,patch.object(ao,'run_probe',side_effect=completed_probe) as run:
+                workflow.frame_file(Path('input'),'test',dict(duration=12,start_time=2))
         metadata.assert_not_called()
         command=run.call_args.args[0]
         self.assertEqual(command[command.index('-threads')+1],'2')
@@ -68,16 +72,19 @@ class ValidationSpeedTests(unittest.TestCase):
         self.assertNotIn('side_data=', ' '.join(command))
         self.assertEqual(run.call_args.args[-2:],(12.,2.))
 
-    def test_full_decode_and_packet_checks_are_still_mandatory(self):
+    def test_full_video_audit_and_packet_checks_are_still_mandatory(self):
         before=source_data();after=copy.deepcopy(before);after['streams'][0]['codec_name']='hevc'
         workflow=ao.Workflow(SimpleNamespace(ffmpeg='ffmpeg'),Path('job'),lambda:None)
         with patch.object(workflow,'probe',return_value=after),patch.object(workflow,'frame_file') as frames, \
              patch.object(ao,'compare_frames',return_value=50),patch.object(workflow,'copied_packets',return_value={}) as packets, \
-             patch.object(workflow,'execute') as execute:
+             patch.object(workflow,'execute') as execute,patch.object(ao,'save') as save:
             self.assertEqual(workflow.validate(Path('a'),Path('b'),before,'hevc','test',Path('frames')),50)
         self.assertEqual(packets.call_count,2)
-        command=execute.call_args.args[0]
-        self.assertIn('-xerror',command);self.assertIn('0:a?',command)
+        # Video-only input: its complete successful frame decode is not repeated.
+        # Audio-bearing generated fixtures independently test the mandatory audio pass.
+        execute.assert_not_called()
+        self.assertTrue(save.call_args.args[1]['video_audit_reused'])
+        self.assertEqual(save.call_args.args[1]['verified_video_frames'],50)
         self.assertEqual(frames.call_args.args[-1],after['format'])
 
     def test_separate_dangerous_side_data_line_cannot_be_ignored(self):

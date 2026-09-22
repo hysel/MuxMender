@@ -44,8 +44,8 @@ class MetadataReviewTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'tag changed'):ao.metadata_check(before,after,'hevc')
 
     def test_chapter_tag_names_normalized_not_chapter_content(self):
-        before,after=self.pair();before['chapters']=[dict(id=0,start=0,end=100,tags={'TITLE':'Intro'})]
-        after['chapters']=[dict(id=0,start=0,end=100,tags={'title':'Intro'})]
+        before,after=self.pair();before['chapters']=[dict(id=0,start=0,end=100,time_base='1/1000',tags={'TITLE':'Intro'})]
+        after['chapters']=[dict(id=0,start=0,end=100,time_base='1/1000',tags={'title':'Intro'})]
         ao.metadata_check(before,after,'hevc')
         after['chapters'][0]['end']=101
         with self.assertRaisesRegex(ValueError,'Chapters changed'):ao.metadata_check(before,after,'hevc')
@@ -128,12 +128,12 @@ class ReleaseReviewTests(unittest.TestCase):
                          'deploy/truenas/Dockerfile.app','docs/note.md',
                          'docs/per-video-codec-selection.md','tools/build_app_release.py',
                          'tools/compare_encoders.py','tools/run_truenas_sample_batch.py',
-                         'tools/smoke_auto_optimize.py','tools/qualify_frame_reader.py',
+                         'tools/smoke_auto_optimize.py','tools/smoke_hdr_auto.py','tools/smoke_hdr_dynamic.py','tools/smoke_timestamp.py','tools/monitor_queue.py','tools/qualify_frame_reader.py',
                          'tools/benchmark_frame_threads.py','tools/benchmark_packet_validation.py',
                          'tools/benchmark_validation_pipeline.py','tools/benchmark_gpu_decode.py']:
                 path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('fixture')
             result=create_release(root,archive,'docs/note.md')
-            self.assertEqual(len(result['files']),14)
+            self.assertEqual(len(result['files']),18)
             with tarfile.open(archive) as tar:
                 for member in tar:
                     self.assertEqual(member.mode,0o755 if member.isdir() else 0o644)

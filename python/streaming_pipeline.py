@@ -74,6 +74,8 @@ def pipe_encode(producer_command, consumer_command, seconds, timeout, stall, gua
     progress = TerminalProgress('Streaming HDR + encoding')
     started = advanced = time.monotonic()
     last = {'producer': -1.0, 'consumer': -1.0}
+    from encoder_progress import EncoderActivity
+    activity = {label: EncoderActivity() for label in last}
     heartbeat = 0
     def read(label, stream):
         try:
@@ -114,6 +116,8 @@ def pipe_encode(producer_command, consumer_command, seconds, timeout, stall, gua
                 continue
             logs.append(f'{label}: {line}')
             logs = logs[-100:]
+            if activity[label].update(line):
+                advanced = now
             value = np.progress(line, seconds)
             if value is not None:
                 if value > last[label]:
@@ -125,6 +129,14 @@ def pipe_encode(producer_command, consumer_command, seconds, timeout, stall, gua
                 summary = json.loads(line.split('=', 1)[1])
             elif line and not line.startswith(('frame=', 'fps=', 'bitrate=', 'total_size=', 'out_time', 'dup_frames=', 'drop_frames=', 'speed=', 'progress=', 'stream_', '[')):
                 print(f'{label}: {line}', flush=True)
+        # Both processes can exit between the last body iteration and the loop
+        # condition. EOF/success JSON is not proof of a successful process exit.
+        # Check the final statuses as well, with consumer error precedence.
+        for label,process in (('consumer',consumer),('producer',producer)):
+            code=process.wait(timeout=10)
+            if code:
+                error=EncoderFailure if label=='consumer' else RuntimeError
+                raise error(f'{label} exited {code}; '+'\n'.join(logs[-12:]))
         if not summary or not summary.get('ok'):
             raise RuntimeError('Native producer did not confirm successful completion')
         return summary

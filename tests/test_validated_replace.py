@@ -24,7 +24,44 @@ class ReplacementTests(unittest.TestCase):
         self.assertEqual(vr.digest(self.source),self.status['output_sha256'])
         self.assertEqual(result['saved_bytes'],600)
         self.assertFalse(Path(result['backup']).exists())
-        self.assertTrue(self.output.exists())
+        self.assertFalse(self.output.exists())
+        self.assertEqual(result['artifact_cleanup']['state'],'cleaned')
+    def test_cryptic_movie_is_named_after_folder_after_verified_publication(self):
+        folder=self.media/'Example Film';folder.mkdir()
+        new=folder/'sample-ab1.1080p.mkv';self.source.rename(new);self.source=new
+        self.status['source']=str(new);self.save()
+        result=self.run_replace()
+        self.assertEqual(Path(result['target']),folder/'Example Film.mkv')
+        self.assertEqual(vr.digest(Path(result['target'])),self.status['output_sha256'])
+        self.assertFalse(new.exists())
+        self.assertEqual(result['source'],str(new))
+
+    def test_readable_naming_preserves_ambiguous_and_episode_names(self):
+        folder=self.media/'Example Film';folder.mkdir()
+        source=folder/'sample-ab1.1080p.mkv';source.write_bytes(b'source')
+        self.assertEqual(vr.readable_destination(source).name,'Example Film.mkv')
+        other=folder/'other.mp4';other.write_bytes(b'other')
+        self.assertEqual(vr.readable_destination(source),source)
+        self.assertEqual(vr.readable_destination(folder/'Show.S01E01.mkv').name,'Show.S01E01.mkv')
+
+    def test_naming_does_not_overwrite_existing_title(self):
+        folder=self.media/'Example Film';folder.mkdir()
+        source=folder/'sample-ab1.1080p.mkv';source.write_bytes(b'source')
+        target=folder/'Example Film.mkv';target.write_bytes(b'existing')
+        self.assertEqual(vr.destination_for(source),source)
+        self.assertEqual(target.read_bytes(),b'existing')
+
+    def test_naming_preserves_external_subtitle_association(self):
+        folder=self.media/'Example Film';folder.mkdir()
+        source=folder/'sample-ab1.1080p.mkv';source.write_bytes(b'source')
+        (folder/'sample-ab1.1080p.en.srt').write_text('subtitle')
+        self.assertEqual(vr.readable_destination(source),source)
+    def test_zero_threshold_cannot_publish_equal_size(self):
+        self.output.write_bytes(b'x'*self.source.stat().st_size)
+        self.status['output_sha256']=vr.digest(self.output);self.save()
+        with self.assertRaisesRegex(ValueError,'minimum savings'):
+            vr.replace_validated(self.source,self.media,self.media,self.run,0,'test')
+        self.assertEqual(vr.digest(self.source),self.status['source_sha256'])
     def test_invalid_threshold_and_job_identifier_fail_before_publication(self):
         for minimum,identifier in [(float('nan'),'test'),(float('inf'),'test'),(-1,'test'),(100,'test'),(10,'../escape')]:
             with self.assertRaises(ValueError):vr.replace_validated(self.source,self.media,self.media,self.run,minimum,identifier)

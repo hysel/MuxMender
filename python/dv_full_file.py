@@ -59,15 +59,28 @@ def compare_track_packets(before, after, streams):
             rounded[index] = rounded.get(index, 0)+1
     return rounded
 
-def frame_evidence(ffprobe, source, output, guard, timeout=3600):
+def frame_evidence_timeout(duration):
+    """Bound full-frame work without assuming a short file or an idle CPU."""
+    if duration is None:return 3600
+    duration=float(duration)
+    if not math.isfinite(duration) or duration<=0:raise ValueError('Invalid frame-audit duration')
+    return max(3600,min(24*3600,duration*4+300))
+
+
+def frame_evidence(ffprobe, source, output, guard, timeout=None):
     from runtime_support import frame_evidence_percent, TerminalProgress
+    timeout=frame_evidence_timeout(getattr(guard,'duration',None)) if timeout is None else timeout
+    if not math.isfinite(timeout) or timeout<=0:raise ValueError('Invalid frame-audit timeout')
     display = TerminalProgress(label=guard.phase, machine=False)
     fields = ('side_data_type,red_x,red_y,green_x,green_y,blue_x,blue_y,'
               'white_point_x,white_point_y,min_luminance,max_luminance,max_content,max_average')
-    command = [ffprobe, '-v', 'error', '-threads', '0', '-select_streams', 'v:0',
+    command = [ffprobe, '-v', 'error', '-threads', '2', '-select_streams', 'v:0',
                '-show_frames', '-show_entries',
-               'frame=best_effort_timestamp_time,interlaced_frame,repeat_pict:frame_side_data=' + fields,
+               'frame=best_effort_timestamp_time,interlaced_frame,repeat_pict,width,height,pix_fmt,sample_aspect_ratio,color_range,color_space,color_transfer,color_primaries,chroma_location:frame_side_data=' + fields,
                '-of', 'compact', str(source)]
+    if getattr(guard,'allow_hdr10plus',False):
+        command=[ffprobe,'-v','error','-threads','2','-select_streams','v:0',
+                 '-show_frames','-of','json',str(source)]
     started = last = time.monotonic()
     with Path(output).open('xb') as out, Path(str(output)+'.log').open('xb') as err:
         process = subprocess.Popen(command, stdout=out, stderr=err)
@@ -88,12 +101,22 @@ def frame_evidence(ffprobe, source, output, guard, timeout=3600):
                 time.sleep(.5)
             if process.returncode:
                 raise RuntimeError(f'Frame decode failed; see {output}.log')
+            if Path(str(output)+'.log').stat().st_size:
+                raise ValueError(f'Frame decoder reported errors; see {output}.log')
         finally:
             if process.poll() is None:
                 process.kill(); process.wait()
     return command
 
-def frames(path):
+def frames(path, allow_hdr10plus=False):
+    if allow_hdr10plus:
+        from hdr10plus_preserve import frame_records
+        for frame in frame_records(path):
+            dv.require_nvidia_frames([frame],allow_hdr10plus=True)
+            if not any(s.get('side_data_type')=='Dolby Vision RPU Data' for s in frame.get('side_data_list',[])):
+                raise ValueError('A decoded frame lacks Dolby Vision RPU data')
+            yield frame
+        return
     with Path(path).open(encoding='utf-8') as stream:
         for line in stream:
             if not line.strip():
@@ -120,29 +143,83 @@ def frames(path):
 
 def validate_source_frames(path, expected_pts, guard=lambda: None):
     count = 0
-    for frame, timestamp in itertools.zip_longest(frames(path), expected_pts):
+    for frame, timestamp in itertools.zip_longest(frames(path,getattr(guard,'allow_hdr10plus',False)), expected_pts):
         guard()
         if frame is None or timestamp is None or abs(float(frame['best_effort_timestamp_time'])-timestamp) > .002:
             raise ValueError('Source decoded-frame and packet timelines differ')
         count += 1
     return count
 
+def frame_picture_signature(frame):
+    """Compare source-derived geometry/color, not an allowlist of resolutions."""
+    try:
+        width, height = int(frame['width']), int(frame['height'])
+        pixel_format = frame['pix_fmt']
+        if width <= 0 or height <= 0 or not pixel_format:
+            raise ValueError()
+    except (KeyError, TypeError, ValueError):
+        raise ValueError('Incomplete decoded-frame geometry; refresh frame evidence') from None
+    sar = frame.get('sample_aspect_ratio')
+    if sar not in (None, '', 'N/A', '0:1'):
+        try:
+            sar = Fraction(str(sar).replace(':', '/'))
+            if sar <= 0:raise ValueError()
+        except (ValueError, ZeroDivisionError):
+            raise ValueError('Invalid decoded-frame aspect ratio') from None
+    else:
+        sar = None
+    color = tuple(frame.get(key) or 'unknown' for key in (
+        'color_range', 'color_space', 'color_transfer', 'color_primaries', 'chroma_location'))
+    return width, height, pixel_format, sar, color
+
+
+def picture_evidence_complete(path, guard=lambda: None):
+    count = 0
+    for frame in frames(path, getattr(guard, 'allow_hdr10plus', False)):
+        guard()
+        if any(key not in frame for key in ('width', 'height', 'pix_fmt')):
+            return False
+        frame_picture_signature(frame)
+        count += 1
+    return count > 0
+
+
 def compare_frames(source, output, guard=lambda: None):
     count, rounded = 0, 0
-    for before, after in itertools.zip_longest(frames(source), frames(output)):
+    combined=getattr(guard,'allow_hdr10plus',False)
+    for before, after in itertools.zip_longest(frames(source,combined), frames(output,combined)):
         guard()
         if before is None or after is None:
             raise ValueError('Decoded frame count changed')
         if abs(float(before['best_effort_timestamp_time'])-float(after['best_effort_timestamp_time'])) > .002:
             raise ValueError('Decoded frame timing changed')
+        if frame_picture_signature(before) != frame_picture_signature(after):
+            raise ValueError('Decoded frame geometry, aspect ratio or color signaling changed')
         if dv.compare_static_hdr([before], [after]):
             rounded += 1
+        if combined and dv.hdr10plus_metadata(before)!=dv.hdr10plus_metadata(after):
+            raise ValueError('Full HDR10+ content or decoded-frame alignment changed')
         count += 1
     if not count:
         raise ValueError('No decoded frames')
     return dict(frames=count, static_hdr_rounding_frames=rounded,
-                timing_preserved=True, static_hdr_preserved=True,
-                progressive=True, rpu_present_every_frame=True)
+                timing_preserved=True, static_hdr_preserved=True, frame_picture_preserved=True,
+                progressive=True, rpu_present_every_frame=True,
+                hdr10plus_preserved=combined)
+
+
+def final_decode_maps(streams, frame_checks, expected_frames):
+    """Reuse only a complete, strict, source-matched video frame audit.
+
+    Called with the in-memory result immediately after frame_evidence and
+    compare_frames, never with a historical status file as authorization.
+    Audio still needs a complete strict decode even when its packets match.
+    """
+    required=('timing_preserved','static_hdr_preserved','frame_picture_preserved',
+              'progressive','rpu_present_every_frame')
+    reuse=bool(expected_frames and frame_checks.get('frames')==expected_frames
+               and all(frame_checks.get(key) is True for key in required))
+    return np.decode_maps_after_frame_audit(streams,expected_frames if reuse else None)
 
 def rpu_digest(path, guard=lambda: None):
     """Read a top-level JSON array incrementally; memory bounded per RPU."""
@@ -240,6 +317,9 @@ def nvidia_savings_preflight(args, duration=None):
     sample_args = argparse.Namespace(source=args.source, execute=True,
         overall_offset=0, overall_span=10,
         experimental_nvidia=not getattr(args,'experimental_intel',False), experimental_intel=getattr(args,'experimental_intel',False), seconds=30, start=start, work_dir=root,
+        nvenc_cq=getattr(args,'nvenc_cq',None), measure_quality=True,
+        minimum_savings_percent=getattr(args,'min_savings',5.0),
+        experimental_hdr10plus=getattr(args,'experimental_hdr10plus',False),
         ffmpeg=args.ffmpeg, ffprobe=args.ffprobe, dovi_tool=args.dovi_tool)
     result = dv.run(sample_args)
     reports = list(root.glob('dv81-*/validation.json'))
@@ -250,6 +330,8 @@ def nvidia_savings_preflight(args, duration=None):
         raise ValueError('Sample preservation failed; full-file encode not started')
     decision = savings_decision(sample['original_video_bytes'],sample['output_video_bytes'],
                                 getattr(args,'min_savings',5.0))
+    if sample.get('quality',{}).get('candidate',{}).get('passed') is not True:
+        decision.update(eligible=False,reason='Bounded DV sample did not meet the shared quality floor')
     sample['optimization_decision'] = dict(decision, basis='selected sample video payload; whole-file container savings checked separately')
     if not decision['eligible']:
         sample.update(structural_status=sample['status'],status='skipped',
@@ -268,7 +350,12 @@ def run(args):
     nvidia = getattr(args, 'experimental_nvidia', False)
     intel = getattr(args, 'experimental_intel', False)
     experimental = nvidia or intel
-    options = dv.sample_encoder_options(info, nvidia, intel) if experimental else dv.experimental_encoder_options(info, args.qp_i, args.qp_p)
+    combined=getattr(args,'experimental_hdr10plus',False)
+    if combined and (not nvidia or not shutil.which('hdr10plus_tool')):
+        raise ValueError('Combined DV/HDR10+ full research requires NVIDIA and hdr10plus_tool')
+    options = dv.sample_encoder_options(info, nvidia, intel, getattr(args,'nvenc_cq',None)) if experimental else dv.experimental_encoder_options(info, args.qp_i, args.qp_p)
+    if getattr(args,'nvenc_cq',None) is not None and not nvidia:
+        raise ValueError('NVENC CQ requires explicit NVIDIA research')
     encoder = 'hevc_qsv' if intel else 'hevc_nvenc' if nvidia else 'hevc_amf'
     for tool in (args.ffmpeg, args.ffprobe, args.dovi_tool):
         if not shutil.which(tool):
@@ -294,6 +381,7 @@ def run(args):
     directory = args.work_dir / ('dv-full-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
     directory.mkdir(exist_ok=False)
     guard = (dv.NvidiaSampleGuard if experimental else RunGuard)(directory, reserve=2 * 1024**3)
+    guard.allow_hdr10plus=combined
     if experimental:
         guard.detail = 'Full-file DV preservation; integrated opt-in supports AMD/Intel Profile 8.1. Playback review follows automated checks.'
         guard.duration = info.duration_seconds
@@ -310,7 +398,7 @@ def run(args):
         sys.stdout = Tee(terminal, log)
         try:
             print(f'RUN DIRECTORY: {directory.resolve()}', flush=True)
-            def stage(command, phase, offset, span, timeout=14400):
+            def stage(command, phase, offset, span, timeout=14400, strict_decode=False):
                 guard.phase = phase
                 guard.status(offset)
                 guard()
@@ -318,7 +406,7 @@ def run(args):
                 print(f'PHASE: {phase}', flush=True)
                 started = time.monotonic()
                 result = np.stage([str(c) for c in command], info.duration_seconds, offset, span,
-                                  timeout=timeout, stall=0, guard=guard)
+                                  timeout=timeout, stall=0, guard=guard, strict_decode=strict_decode)
                 report.setdefault('stage_seconds', {})[phase] = time.monotonic()-started
                 return result
             ff = [args.ffmpeg, '-hide_banner', '-loglevel', 'warning', '-nostdin', '-n']
@@ -349,11 +437,18 @@ def run(args):
                 final.parent.mkdir(exist_ok=False)
             stage(ff + ['-i', args.source, '-map', '0:v:0', '-c', 'copy', '-bsf:v', 'hevc_mp4toannexb', '-f', 'hevc', *progress, raw], 'extract source bitstream', 0, 8)
             stage([args.dovi_tool, 'extract-rpu', '-i', raw, '-o', rpu], 'extract full RPU', 8, 2)
-            stage(ff + ['-threads', '0' if experimental else '2', '-i', args.source, '-map', '0:v:0', *options,
+            stage(ff + ['-xerror','-threads', '2', '-i', args.source, '-map', '0:v:0', *options,
                   '-profile:v', 'main10', '-fps_mode', 'passthrough', '-f', 'hevc', *progress, encoded], f'{encoder} full encode', 10, 55)
             if experimental and shutil.disk_usage(directory).free < 4*encoded.stat().st_size + 3*1024**3:
                 raise ValueError('Insufficient room for injection, final mux and retained verification copy')
-            stage([args.dovi_tool, 'inject-rpu', '-i', encoded, '--rpu-in', rpu, '-o', injected], 'inject full RPU', 65, 5)
+            injection_source=encoded
+            if combined:
+                metadata=directory/'original-hdr10plus.json'
+                stage(['hdr10plus_tool','extract',raw,'-o',metadata],'extract full HDR10+',65,0)
+                injection_source=directory/'encoded-hdr10plus.hevc'
+                stage(['hdr10plus_tool','inject','-i',encoded,'-j',metadata,'-o',injection_source],
+                      'inject full HDR10+',65,0)
+            stage([args.dovi_tool, 'inject-rpu', '-i', injection_source, '--rpu-in', rpu, '-o', injected], 'inject full RPU', 65, 5)
             mux = mux_command(args.ffmpeg, args.source, injected, final, rate)
             if experimental:
                 timestamped = directory/'timestamped-dv-video.mkv'
@@ -434,8 +529,14 @@ def run(args):
                 output_frames = directory/'output-frames.compact'
                 report['commands'].append(audit.frame_evidence(args.ffprobe, final, output_frames, guard))
                 report['decoded_frame_checks'] = audit.compare_frames(source_frames, output_frames, guard)
-            stage(ff + ['-v', 'error', '-xerror', '-threads', '0' if experimental else '2', '-i', final, '-map', '0:v:0',
-                        *(['-map', '0:a?'] if experimental else []), '-f', 'null', '-', *progress], 'complete output decode', 80, 20)
+            maps,reused=final_decode_maps(final_streams if experimental else streams,
+                report.get('decoded_frame_checks',{}),len(output_pts))
+            report['final_decode_evidence']=dict(video_audit_reused=reused,audio_maps=maps if reused else 'all',
+                video='strict full-frame audit' if reused else 'final full decode')
+            if maps:
+                stage(ff + ['-v', 'error', '-xerror', '-threads', '2', '-i', final,
+                            *[item for mapping in maps for item in ('-map',mapping)], '-f', 'null', '-', *progress],
+                      'complete output audio decode' if reused else 'complete output decode', 80, 20, strict_decode=True)
             report.update(status='verified-full-file-awaiting-playback', output=str(final.resolve()), frames=len(source_pts),
                 rpu_content_digest=digests[0][1], rpu_byte_identical=dv.sha256(rpu)==dv.sha256(check_rpu),
                 audio_subtitle_packets_unchanged=True, chapters_unchanged=True,
@@ -517,39 +618,47 @@ def run_integrated(args, source):
         return 4
 
 
-def verify_existing(parent):
+def verify_existing(parent, *, output=None, ffmpeg='ffmpeg', ffprobe='ffprobe',
+                    dovi_tool=None, min_savings=5.0):
     full = sys.modules[__name__]
     audit = sys.modules[__name__]
     parent = parent.resolve(strict=True)
     previous = json.loads((parent/'validation.json').read_text(encoding='utf-8'))
     if previous.get('encoder_settings',{}).get('encoder') != 'hevc_nvenc' or not previous.get('original_stat_unchanged'):
         raise ValueError('Requires a retained NVIDIA run with unchanged-source evidence')
-    source, output = Path(previous['source']), parent/'episode-dolby-vision.mkv'
+    source = Path(previous['source'])
+    output = Path(output) if output is not None else parent/'episode-dolby-vision.mkv'
+    if output.is_symlink() or not output.resolve(strict=True).is_relative_to(parent) or output.resolve()==source.resolve():
+        raise ValueError('Retained verification requires an output inside its research run, never the source')
+    dovi_tool=dovi_tool or str(Path(__file__).parent.parent/'tools/dovi_tool-2.3.3/dovi_tool.exe')
+    for tool in (ffmpeg,ffprobe,dovi_tool):
+        if not tool or not shutil.which(tool):raise ValueError(f'Missing verification tool: {tool}')
     directory = parent/('verification-'+time.strftime('%H%M%S')+'-'+uuid.uuid4().hex[:8])
     directory.mkdir()
     guard = dv.NvidiaSampleGuard(directory, reserve=2*1024**3)
     initial = (source.stat().st_size, source.stat().st_mtime_ns)
     report = dict(status='running',source=str(source),output=str(output),parent_run=str(parent),commands=[],
+                  min_savings=min_savings,publication_authorized=False,
                   scope='Full NVIDIA Profile 8.1 preservation verification; playback review separate')
-    ffmpeg, ffprobe = nv.find_tool('ffmpeg'), nv.find_tool('ffprobe')
-    dovi = str(Path('tools/dovi_tool-2.3.3/dovi_tool.exe').resolve())
+    dovi = dovi_tool
     duration = 0.0
     ff = [ffmpeg,'-hide_banner','-nostdin','-n']
-    def stage(command,label,percent):
+    def stage(command,label,percent,strict_decode=False):
         guard.phase=label; guard.status(percent); guard()
         report['commands'].append([str(c) for c in command])
         print(label,flush=True)
-        return np.stage([str(c) for c in command],duration,timeout=3600,stall=0,guard=guard)
+        return np.stage([str(c) for c in command],duration,timeout=3600,stall=0,guard=guard,strict_decode=strict_decode)
     try:
-        decision=savings_decision(source.stat().st_size,output.stat().st_size)
+        decision=savings_decision(source.stat().st_size,output.stat().st_size,min_savings)
         report['optimization_decision']=decision
         if not decision['eligible']:
             report.update(status='skipped',error=decision['reason'],publication_allowed=False)
-            print('SKIPPED: output does not reduce size; no acceptance or publication.',flush=True)
+            print(f"SKIPPED: {decision['reason']}; no acceptance or publication.",flush=True)
             return 0
         guard.phase='Verify original tracks and timestamps'; guard.status(0)
         before, after = mm.probe(source,ffprobe), mm.probe(output,ffprobe)
         duration = before.duration_seconds
+        guard.duration = duration
         dv.require_candidate(before); dv.require_candidate(after)
         for field in ('width','height','bit_depth','pixel_format','color_primaries','color_transfer','color_space','color_range'):
             if getattr(before,field) != getattr(after,field): raise ValueError(f'Changed {field}')
@@ -578,10 +687,19 @@ def verify_existing(parent):
         passed,detail=verify_startup_interleaving(output,ffprobe)
         if not passed: raise ValueError(detail)
         report['startup_interleaving']=detail
+        passed,checks=verify_seek_interleaving(output,ffprobe,[duration*f for f in (0,.1,.25,.5,.75,.9)])
+        report['seek_interleaving']=checks
+        if not passed:raise ValueError('Audio/video packet ordering failed seek-point validation')
         fresh=directory/'current-source.hevc'
         stage(ff+['-v','error','-i',source,'-map','0:v:0','-c','copy','-bsf:v','hevc_mp4toannexb','-f','hevc',fresh],'Confirm current source bitstream matches audited frames',25)
         if dv.sha256(fresh)!=dv.sha256(parent/'original.hevc'): raise ValueError('Source bitstream changed since frame audit')
-        audit.validate_source_frames(parent/'source-frames.compact',source_pts,guard)
+        source_frames=parent/'source-frames.compact'
+        if not full.picture_evidence_complete(source_frames,guard):
+            guard.phase='Refresh source frame geometry and color evidence'; guard.status(30)
+            source_frames=directory/'source-frames.compact'
+            report['commands'].append(full.frame_evidence(ffprobe,source,source_frames,guard))
+            report['legacy_source_evidence_refreshed']=True
+        audit.validate_source_frames(source_frames,source_pts,guard)
         check_raw, check_rpu = directory/'final-check.hevc', directory/'final-rpu.bin'
         stage(ff+['-v','error','-i',output,'-map','0:v:0','-c','copy','-bsf:v','hevc_mp4toannexb','-f','hevc',check_raw],'Extract final DV bitstream',35)
         stage([dovi,'extract-rpu','-i',check_raw,'-o',check_rpu],'Extract final DV metadata',40)
@@ -595,8 +713,14 @@ def verify_existing(parent):
         guard.phase='Compare every decoded frame and HDR value'; guard.status(60)
         frames=directory/'output-frames.compact'
         report['commands'].append(audit.frame_evidence(ffprobe,output,frames,guard))
-        report['decoded_frame_checks']=audit.compare_frames(parent/'source-frames.compact',frames,guard)
-        stage(ff+['-v','error','-xerror','-threads','0','-i',output,'-map','0:v:0','-map','0:a?','-f','null','-','-progress','pipe:1','-nostats'],'Full output video/audio decode',80)
+        report['decoded_frame_checks']=audit.compare_frames(source_frames,frames,guard)
+        maps,reused=final_decode_maps(final_streams,report['decoded_frame_checks'],len(final_pts))
+        report['final_decode_evidence']=dict(video_audit_reused=reused,audio_maps=maps if reused else 'all',
+            video='strict full-frame audit' if reused else 'final full decode')
+        if maps:
+            stage(ff+['-v','error','-xerror','-threads','2','-i',output,
+                  *[item for mapping in maps for item in ('-map',mapping)],'-f','null','-','-progress','pipe:1','-nostats'],
+                  'Full output audio decode' if reused else 'Full output video/audio decode',80,strict_decode=True)
         if initial!=(source.stat().st_size,source.stat().st_mtime_ns): raise ValueError('Source stat changed during verification')
         report.update(status='verified-full-file-awaiting-playback',frames=len(source_pts),
                       source_bytes=source.stat().st_size,output_bytes=output.stat().st_size,
@@ -621,12 +745,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source', type=Path, nargs='?')
     parser.add_argument('--verify-existing', type=Path, help='Verify a retained run without encoding')
+    parser.add_argument('--verify-output', type=Path, help='Explicit retained output inside --verify-existing run')
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--video-only-folder', action='store_true', help='Place accepted video alone in the run media folder; omit artwork and external subtitles, retain embedded tracks and sources')
     hardware = parser.add_mutually_exclusive_group()
     hardware.add_argument('--experimental-intel', action='store_true', help='Explicit Intel Profile 8.1 full-file research; bounded preflight and all preservation checks required')
     hardware.add_argument('--experimental-nvidia', action='store_true', help='Explicit NVIDIA research run; integrated opt-in supports AMD/Intel')
     parser.add_argument('--min-savings', type=float, default=5.0, help='Minimum percentage reduction; larger/equal outputs are always rejected')
+    parser.add_argument('--nvenc-cq',type=int,choices=range(18,33),help='Explicit NVIDIA research CQ; the same setting is used for preflight and full encoding')
+    parser.add_argument('--experimental-hdr10plus',action='store_true',help='Explicit combined DV Profile 8.1/HDR10+ full research; production guard unchanged')
     parser.add_argument('--qp-i',type=int,default=21)
     parser.add_argument('--qp-p',type=int,default=23)
     parser.add_argument('--work-dir',type=Path,default=Path('reports'))
@@ -637,7 +764,9 @@ def main():
     if args.verify_existing:
         if args.source or args.execute:
             parser.error('--verify-existing cannot be combined with source/execute')
-        return verify_existing(args.verify_existing)
+        return verify_existing(args.verify_existing,output=args.verify_output,ffmpeg=args.ffmpeg,
+                               ffprobe=args.ffprobe,dovi_tool=args.dovi_tool,min_savings=args.min_savings)
+    if args.verify_output:parser.error('--verify-output requires --verify-existing')
     if args.source is None:
         parser.error('source is required unless --verify-existing is used')
     return run(args)

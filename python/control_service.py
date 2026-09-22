@@ -16,6 +16,7 @@ from urllib.parse import urlparse, parse_qs
 from autonomous_queue import EXTENSIONS, read, write, signature
 from workspace_history import WorkspaceHistory, decision_evidence
 from app_version import VERSION
+from codec_selection import EVALUATION_POLICY
 
 
 def handler(base, controls):
@@ -139,7 +140,7 @@ class Controls(WorkspaceHistory):
                     entries=entries[offset:offset+100],next_offset=offset+100 if len(entries)>offset+100 else None)
 
     def settings(self, data):
-        if not isinstance(data,dict) or set(data)-{'path','mode','codec','hardware','quality','minimum_savings','recursive','recheck','legacy_color','history_mode'}:
+        if not isinstance(data,dict) or set(data)-{'path','mode','codec','hardware','quality','minimum_savings','recursive','recheck','legacy_color','history_mode','age_unit','age_value'}:
             raise ValueError('Unknown setting')
         mode=data.get('mode','analyze');codec=data.get('codec','auto')
         hardware=data.get('hardware','auto');quality=data.get('quality','auto')
@@ -147,8 +148,8 @@ class Controls(WorkspaceHistory):
             raise ValueError('Unsupported operation or codec')
         if hardware not in ('auto','nvidia','amd','intel') or quality not in ('auto','transparent','balanced','compact'):
             raise ValueError('Unsupported hardware or quality preset')
-        savings=data.get('minimum_savings',10)
-        if type(savings) not in (int,float) or not 10<=savings<=90: raise ValueError('Savings must be 10–90 percent')
+        savings=data.get('minimum_savings',0)
+        if type(savings) not in (int,float) or not 0<=savings<=90: raise ValueError('Savings must be 0–90 percent; outputs must always be smaller')
         recursive=data.get('recursive',True)
         if type(recursive) is not bool: raise ValueError('Invalid recursion setting')
         recheck=data.get('recheck',False)
@@ -164,14 +165,25 @@ class Controls(WorkspaceHistory):
         if mode=='replace' and self.replacement_root is None:raise ValueError('Replacement is not enabled in app settings')
         if mode in ('test','encode','replace') and (not codecs or any(c not in self.codecs for c in codecs)):
             raise ValueError('Selected codec must be playback-verified in app settings')
-        return dict(mode=mode,codec=codec,hardware=hardware,quality=quality,
+        from media_workflow import file_age_settings
+        age=file_age_settings(data.get('age_unit','all'),data.get('age_value'))
+        return dict(mode=mode,codec=codec,hardware=hardware,quality=quality,**age,
                     minimum_savings=savings,recursive=recursive,codecs=codecs,recheck=history_mode=='all',
                     history_mode=history_mode,legacy_color=legacy_color)
 
-    def history_match(self, path, fingerprint, settings, exclude=None):
+    def history_index(self):
+        """Transient per-operation index; durable matching rules remain below."""
+        index={}
+        for job in self.state['jobs']:
+            for path in {job['source'],job.get('published_path')} - {None}:
+                index.setdefault(path,[]).append(job)
+        return index
+
+    def history_match(self, path, fingerprint, settings, exclude=None, candidates=None):
         """Durable requests are the ledger; never infer success from a failed run."""
+        records=self.state['jobs'] if candidates is None else candidates
         if settings.get('history_mode')=='retry':
-            related=[j for j in self.state['jobs'] if j['id']!=exclude and
+            related=[j for j in records if j['id']!=exclude and
                      path in (j['source'],j.get('published_path'))]
             # Active claims and successful conversion/explicit keep decisions win
             # over failures from later redundant runs, including manual publication.
@@ -182,19 +194,27 @@ class Controls(WorkspaceHistory):
             if latest and latest['state'] in ('skipped','failed','interrupted'):
                 return None
             return dict(id=None,state='not-selected',reason='Retry only: no skipped, failed or interrupted result for this file version')
-        for previous in reversed(self.state['jobs']):
+        for previous in reversed(records):
             if previous['id']==exclude: continue
             state=previous['state']
             current=previous.get('published_path') if state=='replaced' else previous['source']
             stamp=previous.get('published_signature') if state=='replaced' else previous['signature']
             if current!=path or stamp!=fingerprint: continue
-            if previous.get('decision_code')=='already_efficient_for_settings':
-                # An efficient result applies to the tested policy, not every
-                # future codec/device/quality configuration.
-                keys=('codec','hardware','quality','minimum_savings','codecs','legacy_color')
-                if any(previous['settings'].get(k)!=settings.get(k) for k in keys):continue
             if state in ('pending','running'):
                 return previous
+            if state=='skipped' and (previous.get('history_decision') or
+                    previous.get('decision_code')=='already_efficient_for_settings' or
+                    previous.get('reason','').startswith(('Unsupported input:','Full output did not save enough space'))):
+                # Automatic conclusions apply to their measured policy/settings,
+                # unlike an explicit keep or a completed replacement.
+                if previous.get('evaluation_policy')!=EVALUATION_POLICY:continue
+                keys=('codec','hardware','quality','minimum_savings','codecs','legacy_color')
+                if any(previous['settings'].get(k)!=settings.get(k) for k in keys):continue
+            if (state=='skipped' and previous.get('reason','').startswith('Unsupported input:')
+                    and previous.get('execution_version',previous.get('app_version'))!=VERSION):
+                # Old admission failures are not evidence against a newly
+                # implemented route. Successful copies/replacements stay protected.
+                continue
             if settings.get('recheck'): continue
             if state in ('kept-original','replaced'): return previous
             if state=='awaiting-playback' and settings['mode']!='replace': return previous
@@ -210,29 +230,43 @@ class Controls(WorkspaceHistory):
                         if not report.resolve().is_relative_to(self.root):continue
                         result=read(report)
                         decision=result.get('decision',{})
-                        if result.get('state')=='trials-completed' and decision.get('cacheable',True) and decision.get('action') and decision['action']!='encode_copy':
+                        policy=read(report.parent/'plan.json').get('evaluation_policy')
+                        keys=('codec','hardware','quality','minimum_savings','codecs','legacy_color')
+                        same_settings=all(previous['settings'].get(k)==settings.get(k) for k in keys)
+                        if (result.get('state')=='trials-completed' and decision.get('cacheable') is True
+                                and decision.get('action')=='keep_original' and policy==EVALUATION_POLICY and same_settings):
                             return previous
             if state in ('analyzed','tested') and settings['mode']==previous['settings']['mode']:
                 return previous
         return None
 
     def preview(self, data):
+        from media_workflow import file_age_match
         settings=self.settings(data)
         source=self.resolve(data.get('path',''))
         self.check_media_access(settings['mode'])
         files=[]
+        age_counts=dict(outside_age_window=0,creation_date_unavailable=0)
+        age_checked_at=time.time()
+        with self.mutex:index=self.history_index()
         candidates=source.rglob('*') if source.is_dir() and settings['recursive'] else source.iterdir() if source.is_dir() else [source]
         for candidate in candidates:
             if candidate.suffix.lower() not in EXTENSIONS or not candidate.is_file(): continue
             path=self.resolve(str(candidate))
+            selected,reason=file_age_match(path,settings,age_checked_at)
+            if not selected:
+                age_counts[reason]+=1
+                continue
             if settings['mode']=='replace':
                 from validated_replace import target_for
                 target_for(path,self.media,self.replacement_root)
             stamp=signature(path)
-            with self.mutex: previous=self.history_match(str(path),stamp,settings)
+            with self.mutex: previous=self.history_match(str(path),stamp,settings,candidates=index.get(str(path),[]))
             files.append(dict(path=str(path),signature=stamp,
                               history_reason=('Already recorded: '+previous['state']+'. '+previous.get('reason','')) if previous else None))
-        if not files: raise ValueError('No supported video files found')
+        if not files:
+            raise ValueError('No supported video files match this selection. '+
+                f"{age_counts['outside_age_window']} outside age window; {age_counts['creation_date_unavailable']} with unavailable creation date.")
         files.sort(key=lambda row:row['path'])
         now=time.time()
         with self.mutex:
@@ -242,8 +276,9 @@ class Controls(WorkspaceHistory):
             draft=dict(settings=settings,files=files,expires=now+600,folder=str(source if source.is_dir() else source.parent))
             self.drafts[token]=draft
         return dict(preview_id=token,files=files,settings=settings,expires=draft['expires'],
+                    age_filter=dict(**age_counts,checked_at=age_checked_at),
                     original_policy='Replace originals after full validation. Old originals are permanently removed.' if settings['mode']=='replace' else 'Keep originals. No replacement or deletion.',
-                    note='Preview lists files only. Compatibility is checked during analysis/testing; unsupported HDR/Dolby Vision is blocked.')
+                    note='Preview lists files only. Analysis tests encoders against source geometry and metadata. HDR uses native preservation plus a common rendered-view quality metric. Dolby Vision, including combined Dolby Vision + HDR10+, is temporarily skipped; originals are retained.')
 
     def save(self):
         write(self.file,self.state)
@@ -262,8 +297,9 @@ class Controls(WorkspaceHistory):
             for row in draft['files']:
                 if signature(self.resolve(row['path']))!=row['signature']: raise ValueError('Source changed; preview again')
             ids=[];skipped=[];batch_id=uuid.uuid4().hex
+            index=self.history_index()
             for row in draft['files']:
-                previous=self.history_match(row['path'],row['signature'],draft['settings'])
+                previous=self.history_match(row['path'],row['signature'],draft['settings'],candidates=index.get(row['path'],[]))
                 if previous:
                     skipped.append(dict(path=row['path'],job_id=previous['id'],state=previous['state'],reason=previous.get('reason','')))
                     continue
@@ -272,6 +308,7 @@ class Controls(WorkspaceHistory):
                     settings=draft['settings'],state='kept-original' if draft['settings']['mode']=='keep' else 'pending',created=time.time(),
                     batch_id=batch_id,batch_folder=draft.get('folder'),app_version=VERSION,
                     **({'finished':time.time()} if draft['settings']['mode']=='keep' else {})))
+                index.setdefault(row['path'],[]).append(self.state['jobs'][-1])
                 ids.append(identifier)
             self.save()
             del self.drafts[token]
@@ -293,8 +330,18 @@ class Controls(WorkspaceHistory):
                         log=tail(path)
                         if 'ValueError: Only progressive 8-bit 4:2:0 SDR is supported by measured auto mode' in log:
                             job['reason']='Unsupported input: this workflow requires progressive 8-bit SDR video. Original retained.'
-            pause_reason=('Queue paused after repeated processing failures. Review the failed videos before resuming.' if self.state.get('failures',0)>=2 else 'Queue paused. Resume when ready.') if self.state['paused'] else None
+            pause_reason='Queue paused. Resume when ready.' if self.state['paused'] else None
+            wait_reason=pause_reason or self.error
+            if counts.get('pending') and not wait_reason:
+                if not self.ready:wait_reason='Waiting for the queue worker to become ready'
+                else:
+                    blocker=self.busy()
+                    if blocker:wait_reason=blocker if isinstance(blocker,str) else 'Waiting for standalone work to finish'
+                    else:
+                        resource_reason=self.governor.status.get('reason')
+                        wait_reason=resource_reason if resource_reason and resource_reason!='Resources available' else 'Waiting for the next worker slot and admission check'
             return dict(enabled=True,ready=self.ready,csrf_token=self.token,paused=self.state['paused'],pause_reason=pause_reason,error=self.error,
+                        wait_reason=wait_reason,
                         counts=counts,playback_codecs=self.codecs,replacement_enabled=self.replacement_root is not None and not self.readonly(self.media),
                         total_replaced_saved_bytes=sum(j.get('saved_bytes',0) for j in self.state['jobs'] if j['state']=='replaced'),
                         lifetime_savings=self.lifetime_savings(),resources=dict(self.governor.status),
@@ -343,16 +390,10 @@ class Controls(WorkspaceHistory):
         return dict(message='Paused after current job' if action=='pause' else 'Queue resumed')
 
     def build_command(self, job, folder):
-        settings=job['settings']
-        cmd=[sys.executable,'-B','-m','auto_optimize',job['source'],'--output-dir',str(folder),
-             '--hardware',settings['hardware'],'--minimum-savings-percent',str(settings['minimum_savings']),
-             '--min-free-gib','12']
-        if settings['codecs']: cmd+=['--playback-verified-codecs',*settings['codecs']]
-        if settings['quality']!='auto':cmd+=['--qualities',settings['quality']]
-        if settings.get('legacy_color','inspect')!='inspect':cmd+=['--legacy-color',settings['legacy_color']]
-        if settings['mode'] in ('test','encode','replace'):cmd+=['--execute']
-        if settings['mode'] in ('encode','replace'):cmd+=['--encode-best']
-        return cmd
+        from media_workflow import automatic_arguments
+        return [sys.executable,'-B','-m','auto_optimize',
+                *automatic_arguments(job['source'],folder,job['settings'],
+                                     capability_cache_dir=self.output/'.gpu-capabilities')]
 
     def step(self):
         with self.mutex:
@@ -369,8 +410,9 @@ class Controls(WorkspaceHistory):
             source=self.resolve(job['source'])
             # Serialize jobs which could publish to the same path, even when
             # source containers differ. This claim covers encoding + publication.
-            target_key=str(source.with_suffix('.mkv')).casefold()
-            if any(str(Path(j['source']).with_suffix('.mkv')).casefold()==target_key for j in running):return
+            from validated_replace import readable_destination
+            target_key=str(readable_destination(source)).casefold()
+            if any(str(readable_destination(Path(j['source']))).casefold()==target_key for j in running):return
             self.check_media_access(job['settings']['mode'])
             if signature(source)!=job['signature']:
                 raise ValueError('Source changed; preview again')
@@ -386,7 +428,8 @@ class Controls(WorkspaceHistory):
                     self.state['failures']=0;self.save();return
             folder=self.root/('request-'+job['id'])
             folder.mkdir(exist_ok=False)
-            job.update(state='running',output=str(folder),started=time.time());self.save()
+            job.update(state='running',output=str(folder),started=time.time(),execution_version=VERSION,
+                       evaluation_policy=EVALUATION_POLICY);self.save()
             self.assignments[threading.get_ident()]=job
         with (folder/'worker.log').open('xb') as log:
             with self.mutex:
@@ -407,7 +450,8 @@ class Controls(WorkspaceHistory):
         eligibility=read(folder/'eligibility.json')
         if code==0:
             if eligibility.get('state')=='unsupported':
-                state,reason='skipped','Unsupported input: '+eligibility['reason']
+                prefix='' if eligibility.get('reason_code')=='dolby_vision_temporarily_disabled' else 'Unsupported input: '
+                state,reason='skipped',prefix+eligibility['reason']
                 job['history_decision']=True
             elif job['settings']['mode']=='analyze':state,reason='analyzed','Read-only analysis complete; see worker.log for plan'
             else:
@@ -440,6 +484,10 @@ class Controls(WorkspaceHistory):
                     elif stage=='full-output-rejected-insufficient-savings':
                         state,reason='skipped','Full output did not save enough space'
                         job['history_decision']=True
+                        job['decision_code']='full_output_insufficient_savings'
+                        job['evidence']['full_size']={key:result[key] for key in
+                            ('saved_percent','source_bytes','output_bytes','minimum_savings_percent','full_validation_performed')
+                            if key in result}
         if state=='awaiting-playback' and job['settings']['mode']=='replace':
             from validated_replace import replace_validated, DestinationConflict
             try:
@@ -471,7 +519,7 @@ class Controls(WorkspaceHistory):
                 state,reason='interrupted','Service stopped; review retained outputs/recovery journal before retrying'
             job.update(state=state,reason=reason,finished=time.time())
             self.state['failures']=self.state['failures']+1 if state=='failed' else 0
-            if self.state['failures']>=2:self.state['paused']=True
+            # A failed video is terminal for that request, not for the queue.
             self.save()
 
     def worker_step(self):
@@ -482,7 +530,6 @@ class Controls(WorkspaceHistory):
                 if job and job['state'] in ('pending','running'):
                     job.update(state='interrupted' if self.stop_event.is_set() else 'failed',reason=str(exc),finished=time.time())
                     self.state['failures']+=1
-                    if self.state['failures']>=2:self.state['paused']=True
                 else:self.state['paused']=True
                 self.error=str(exc);self.save()
         finally:

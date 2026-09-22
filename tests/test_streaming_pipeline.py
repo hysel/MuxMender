@@ -85,6 +85,14 @@ class StreamingTests(unittest.TestCase):
             pipe_encode([sys.executable, '-c', 'raise SystemExit(9)'],
                         [sys.executable, '-c', 'import sys; sys.stdin.buffer.read()'], 1, 5, 3)
 
+    def test_success_message_cannot_override_failed_exit(self):
+        producer=[sys.executable,'-u','-c',
+            'import sys; print(\'MUXMENDER_DV_PREVIEW={"ok":true,"frames":24}\',file=sys.stderr,flush=True); raise SystemExit(9)']
+        consumer=[sys.executable,'-c','import sys; sys.stdin.buffer.read()']
+        for _ in range(5):
+            with self.assertRaisesRegex(RuntimeError,'producer exited 9'):
+                pipe_encode(producer,consumer,1,5,3)
+
     def test_pipeline_stall_is_bounded(self):
         with self.assertRaisesRegex(RuntimeError, 'timed out'):
             pipe_encode([sys.executable, '-c', 'import time; time.sleep(30)'],

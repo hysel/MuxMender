@@ -54,7 +54,17 @@ def guard_ordered_mux_memory(process, command, limit=1024**3):
         return
     used = process_memory_bytes(process)
     if used is None and process.poll() is None:
-        raise RuntimeError('Ordered mux memory monitoring unavailable; partial retained')
+        # Linux can tear down /proc memory fields just before waitpid observes
+        # process exit. Resolve that short race without treating a live,
+        # unmonitorable mux as safe. The caller still checks the exit code.
+        try:
+            process.wait(timeout=0.1)
+        except subprocess.TimeoutExpired:
+            pass
+        if process.poll() is None:
+            used = process_memory_bytes(process)
+            if used is None:
+                raise RuntimeError('Ordered mux memory monitoring unavailable; partial retained')
     if used is not None and used > limit:
         raise RuntimeError('Ordered mux exceeded 1 GiB memory guard; partial retained')
 

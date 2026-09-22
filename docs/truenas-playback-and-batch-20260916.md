@@ -13,7 +13,7 @@ This is user-reported playback evidence, not automated Plex telemetry.
 
 Next approved scope: S01E06 Episode B, S01E08 Episode C, S01E10 Episode D. All passed
 read-only eligibility probes. No expected savings are asserted in advance.
-`tools/EXAMPLE_BATCH_HELPER.py` runs them serially through the standard measured
+The historical title-specific batch helper ran them serially through the standard measured
 codec-selection flow. Each eligible output is a separate full validated copy;
 full-resolution, color, timing, track and source-integrity checks are unchanged.
 No source replacement, deletion, or automatic media-library publication.
@@ -28,7 +28,7 @@ Launch once from the TrueNAS administrator shell (worker runs as UID/GID 3005):
 
 ```bash
 sudo docker exec -d --user 3005:3005 ix-muxmender-muxmender-1 \
-  python3 -B /output/EXAMPLE_BATCH_HELPER_20260916.py --execute
+  python3 -B /output/EXAMPLE_BATCH_HELPER.py --execute
 ```
 
 No image rebuild or app restart is needed. Do not restart the container while

@@ -14,6 +14,30 @@ from autonomous_queue import write
 
 
 class ControlTests(unittest.TestCase):
+    def test_creation_age_filters_nested_files_without_changing_existing_queue(self):
+        self.controls.submit(self.draft(mode='analyze')['preview_id'])
+        nested=self.media/'nested';nested.mkdir()
+        recent=nested/'recent.mp4';recent.write_bytes(b'new')
+        unknown=nested/'unknown.avi';unknown.write_bytes(b'unknown')
+        import time
+        now=time.time()
+        def birth(path):
+            return now-60 if Path(path)==recent else None if Path(path)==unknown else now-90000
+        with patch('media_workflow.creation_time',side_effect=birth):
+            result=self.controls.preview(dict(path=str(self.media),age_unit='days',age_value=1))
+        self.assertEqual([r['path'] for r in result['files']],[str(recent)])
+        self.assertEqual(result['age_filter']['outside_age_window'],1)
+        self.assertEqual(result['age_filter']['creation_date_unavailable'],1)
+        self.assertEqual(len(self.controls.state['jobs']),1)
+        self.assertEqual(result['settings']['age_unit'],'days')
+
+    def test_browser_extensions_match_shared_media_inventory(self):
+        from media_naming import MEDIA_EXTENSIONS
+        self.assertEqual(cs.EXTENSIONS,MEDIA_EXTENSIONS)
+        (self.media/'older.wmv').write_bytes(b'fixture')
+        preview=self.controls.preview(dict(path=str(self.media),mode='analyze'))
+        self.assertEqual({Path(r['path']).suffix for r in preview['files']},{'.mkv','.wmv'})
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.media=self.root/'media';self.output=self.root/'output'
@@ -25,6 +49,23 @@ class ControlTests(unittest.TestCase):
     def draft(self,**settings):
         return self.controls.preview(dict(path='test.mkv',**settings))
 
+    def test_wait_reason_explains_standalone_block_without_changing_queue(self):
+        self.controls.submit(self.draft(mode='test')['preview_id'])
+        self.controls.busy=lambda:'Waiting for standalone Dolby Vision test'
+        before=self.controls.state['jobs'][0]['state']
+        self.assertIn('Dolby Vision',self.controls.snapshot()['wait_reason'])
+        self.assertEqual(self.controls.state['jobs'][0]['state'],before)
+        self.controls.state['paused']=True
+        self.assertEqual(self.controls.snapshot()['wait_reason'],'Queue paused. Resume when ready.')
+
+    def test_wait_reason_distinguishes_resources_and_admission(self):
+        self.controls.submit(self.draft(mode='test')['preview_id'])
+        self.controls.governor.status={'reason':'Waiting for CPU headroom'}
+        self.assertEqual(self.controls.snapshot()['wait_reason'],'Waiting for CPU headroom')
+        self.controls.governor.status={'reason':'Resources available'}
+        self.assertIn('admission check',self.controls.snapshot()['wait_reason'])
+
+
     def test_preview_and_keep_never_encode_or_modify_media(self):
         draft=self.draft(mode='keep')
         self.assertEqual(len(draft['files']),1)
@@ -32,6 +73,43 @@ class ControlTests(unittest.TestCase):
             self.controls.submit(draft['preview_id']);self.controls.step();process.assert_not_called()
         self.assertEqual(self.controls.state['jobs'][0]['state'],'kept-original')
         self.assertEqual(self.source.read_bytes(),b'original')
+
+    def test_old_hdr_admission_failure_can_retry_but_success_stays_protected(self):
+        self.controls.submit(self.draft(mode='test')['preview_id'])
+        job=self.controls.state['jobs'][0]
+        job.update(state='skipped',reason='Unsupported input: HDR10+ preservation required',
+                   history_decision=True,app_version='20260919-v30')
+        self.assertIsNone(self.controls.history_match(job['source'],job['signature'],job['settings']))
+        job['execution_version']=cs.VERSION
+        job['evaluation_policy']=cs.EVALUATION_POLICY
+        self.assertIsNotNone(self.controls.history_match(job['source'],job['signature'],job['settings']))
+        job.update(state='kept-original',execution_version='old')
+        self.assertIsNotNone(self.controls.history_match(job['source'],job['signature'],job['settings']))
+
+    def test_indexed_history_matches_normal_history_and_aliases(self):
+        self.controls.submit(self.draft(mode='test')['preview_id'])
+        job=self.controls.state['jobs'][0]
+        index=self.controls.history_index()
+        for mode in ('default','retry'):
+            settings=dict(job['settings'],history_mode=mode)
+            self.assertEqual(self.controls.history_match(job['source'],job['signature'],settings),
+                self.controls.history_match(job['source'],job['signature'],settings,candidates=index[job['source']]))
+        job.update(state='replaced',published_path=str(self.media/'renamed.mkv'),published_signature=[4,12])
+        index=self.controls.history_index()
+        self.assertIn(job,index[job['published_path']])
+        self.assertIs(self.controls.history_match(job['published_path'],[4,12],job['settings'],
+                      candidates=index[job['published_path']]),job)
+
+    def test_old_non_hdr_admission_failure_can_retry_new_code(self):
+        self.controls.submit(self.draft(mode='test')['preview_id'])
+        job=self.controls.state['jobs'][0]
+        job.update(state='skipped',reason='Unsupported input: Missing color metadata after frame inspection',
+                   history_decision=True,evaluation_policy=cs.EVALUATION_POLICY,execution_version='old')
+        self.assertIsNone(self.controls.history_match(job['source'],job['signature'],job['settings']))
+        job['execution_version']=cs.VERSION
+        self.assertIs(self.controls.history_match(job['source'],job['signature'],job['settings']),job)
+        job.update(state='kept-original',execution_version='old')
+        self.assertIsNotNone(self.controls.history_match(job['source'],job['signature'],job['settings']))
 
     def test_modes_and_manual_options_map_to_safe_commands(self):
         for mode in ('analyze','test','encode'):
@@ -43,9 +121,13 @@ class ControlTests(unittest.TestCase):
             self.assertIn('transparent',command)
             self.assertNotIn('--vmaf-mean',command)
             self.assertNotIn('--vmaf-p5',command)
+            self.assertNotIn('--adaptive',command)
+        settings=self.controls.settings(dict(mode='test',quality='auto'))
+        command=self.controls.build_command(dict(source=str(self.source),settings=settings),self.output)
+        self.assertIn('--adaptive',command)
 
     def test_reject_unknown_unsafe_or_unverified_settings(self):
-        for data in [dict(codec='h264'),dict(hardware='cpu'),dict(quality='bad'),dict(minimum_savings=0),
+        for data in [dict(codec='h264'),dict(hardware='cpu'),dict(quality='bad'),dict(minimum_savings=-1),
                      dict(minimum_savings=float('nan')),dict(delete_original=True),dict(recursive='yes')]:
             with self.assertRaises(ValueError):self.controls.settings(data)
         self.controls.codecs=['hevc']
@@ -120,14 +202,24 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(resumed.state['jobs'][0]['state'],'awaiting-playback')
         self.assertEqual(self.source.read_bytes(),b'original')
 
-    def test_twice_failed_pauses_queue(self):
-        for name in ('test.mkv','second.mkv'):
+    def test_failed_files_do_not_pause_remaining_queue(self):
+        for name in ('test.mkv','second.mkv','third.mkv'):
             (self.media/name).write_bytes(b'video')
             draft=self.controls.preview(dict(path=name,mode='test'));self.controls.submit(draft['preview_id'])
         with patch.object(cs.subprocess,'Popen',return_value=Mock(wait=lambda:1)):
-            self.controls.step();self.controls.step()
-        self.assertTrue(self.controls.state['paused'])
-        self.assertIn('repeated processing failures',self.controls.snapshot()['pause_reason'])
+            self.controls.step();self.controls.step();self.controls.step()
+        self.assertFalse(self.controls.state['paused'])
+        self.assertIsNone(self.controls.snapshot()['pause_reason'])
+        self.assertEqual([j['state'] for j in self.controls.state['jobs']],['failed']*3)
+        self.assertEqual((self.media/'third.mkv').read_bytes(),b'video')
+
+    def test_assigned_worker_exception_does_not_pause_queue(self):
+        self.controls.submit(self.draft(mode='test')['preview_id'])
+        with patch.object(cs.subprocess,'Popen',side_effect=OSError('Encoder launch failed')):
+            self.controls.worker_step()
+        self.assertEqual(self.controls.state['jobs'][0]['state'],'failed')
+        self.assertFalse(self.controls.state['paused'])
+        self.assertEqual(self.source.read_bytes(),b'original')
 
     def test_efficiency_decision_is_saved_but_inconclusive_is_failure(self):
         for code,expected in [('already_efficient_for_settings','skipped'),('evaluation_inconclusive','failed')]:
