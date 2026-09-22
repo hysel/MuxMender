@@ -64,7 +64,7 @@ muxmender-auto /media/episode.mkv --output-dir /output --hardware nvidia \
 Without `--encode-best`, execution stops after trials and selection. This explicit
 workflow does not change the older main CLI `--codec auto` HEVC default.
 
-Current scope is progressive 8-bit 4:2:0 BT.709 SDR with known range/aspect ratio
+Current scope is progressive 8/10-bit 4:2:0 SDR with supported or faithfully preserved unspecified color metadata and known range/aspect ratio
 and one video track. Unknown metadata, HDR/DV, interlaced/repeated frames and
 unexpected geometry are rejected; no resizing or automatic tone mapping occurs.
 AMD, NVIDIA and Intel candidates must pass a runtime encoder probe. There is no
@@ -79,7 +79,7 @@ produce up to 12 trials per GPU. `--qualities transparent balanced compact` can
 expand the bounded search. The winner is the smallest passing tested setting,
 not a globally optimal encoder setting.
 
-FFmpeg must include libvmaf. Each sample must meet mean VMAF >=95 and fifth
+FFmpeg must include libvmaf. Each sample must meet mean VMAF >=90 and fifth
 percentile >=90 (configurable screening thresholds, not transparency claims).
 Incomplete/nonfinite scores, missing frames, changed dimensions/SAR/timing/color,
 changed track metadata, changed copied packet bytes/timestamps, and decode errors

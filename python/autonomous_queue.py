@@ -10,9 +10,10 @@ import sys
 import threading
 import time
 import uuid
+from media_naming import MEDIA_EXTENSIONS
 
 SCOPE = Path('TV/Series/Season 1')
-EXTENSIONS = {'.mkv', '.mp4', '.m4v', '.avi', '.ts', '.mov'}
+EXTENSIONS = MEDIA_EXTENSIONS
 
 
 def read(path):
@@ -52,6 +53,9 @@ def command(source, output, codecs):
 
 
 def outcome(folder, returncode):
+    eligibility=read(folder/'eligibility.json')
+    if returncode==0 and eligibility.get('state')=='unsupported':
+        return 'skipped',eligibility.get('reason','Original retained by admission policy')
     states = list(folder.glob('auto-*/status.json'))
     if returncode or len(states) != 1:
         return 'failed', 'Worker failed or did not produce exactly one result'
@@ -193,8 +197,7 @@ class Queue:
             state, reason = outcome(folder, code)
             entry.update(state=state, reason=reason, finished=time.time())
             self.state['failures'] = self.state.get('failures', 0) + 1 if state == 'failed' else 0
-            if self.state['failures'] >= 2:
-                self.pause.touch(exist_ok=True)
+            # Record failed files without preventing unrelated files from running.
             self.save('idle', 'Last result: ' + reason)
             return  # One worker per tick, never parallel.
         self.save('idle', 'Scan complete; waiting for new or changed media')

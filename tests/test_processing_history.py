@@ -5,6 +5,7 @@ import unittest
 
 from autonomous_queue import signature, write
 from control_service import Controls
+from codec_selection import EVALUATION_POLICY
 
 
 class HistoryTests(unittest.TestCase):
@@ -41,15 +42,25 @@ class HistoryTests(unittest.TestCase):
 
     def test_efficient_decision_reused_after_restart_for_same_policy(self):
         self.record('skipped',history_decision=True,decision_code='already_efficient_for_settings',
-                    reason='Already efficient for current settings')
+                    reason='Already efficient for current settings',evaluation_policy=EVALUATION_POLICY)
         self.controls=self.open()
         self.assertEqual(self.submit()['queued'],0)
+
+    def test_obsolete_evaluation_does_not_block_new_search_policy(self):
+        for policy in (None,'old-search'):
+            self.controls.state['jobs']=[]
+            self.record('skipped',history_decision=True,decision_code='already_efficient_for_settings',evaluation_policy=policy)
+            self.assertEqual(self.submit()['queued'],1)
+
+    def test_active_claim_wins_even_with_obsolete_decision_fields(self):
+        self.record('running',decision_code='already_efficient_for_settings',evaluation_policy='old-search')
+        self.assertEqual(self.submit(codec='hevc')['queued'],0)
 
     def test_efficient_decision_retested_for_changed_policy_or_file(self):
         for settings in (dict(codec='hevc'),dict(hardware='nvidia'),dict(quality='compact'),
                          dict(minimum_savings=20),dict(recheck=True),dict(history_mode='retry')):
             self.controls.state['jobs']=[]
-            self.record('skipped',history_decision=True,decision_code='already_efficient_for_settings')
+            self.record('skipped',history_decision=True,decision_code='already_efficient_for_settings',evaluation_policy=EVALUATION_POLICY)
             self.assertEqual(self.submit(**settings)['queued'],1,settings)
         self.controls.state['jobs']=[]
         self.record('skipped',history_decision=True,decision_code='already_efficient_for_settings')
@@ -79,7 +90,7 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(self.submit()['queued'],1)
 
     def test_decisions_skip_but_conflicts_can_be_retried(self):
-        self.record('skipped',history_decision=True,reason='Quality threshold not met')
+        self.record('skipped',history_decision=True,reason='Quality threshold not met',evaluation_policy=EVALUATION_POLICY)
         self.assertEqual(self.submit()['queued'],0)
         self.controls.state['jobs']=[]
         self.record('skipped',reason='Destination already exists')
@@ -102,8 +113,20 @@ class HistoryTests(unittest.TestCase):
     def test_legacy_trial_decision_is_recognized(self):
         self.record('skipped')
         folder=self.controls.root/'request-old'/'auto-old';folder.mkdir(parents=True)
-        write(folder/'status.json',dict(state='trials-completed',decision=dict(action='keep_original')))
+        write(folder/'status.json',dict(state='trials-completed',decision=dict(action='keep_original',cacheable=True)))
+        write(folder/'plan.json',dict(evaluation_policy=EVALUATION_POLICY))
         self.assertEqual(self.submit()['queued'],0)
+
+    def test_full_size_rejection_retries_after_settings_change(self):
+        self.record('skipped',history_decision=True,reason='Full output did not save enough space',evaluation_policy=EVALUATION_POLICY)
+        self.assertEqual(self.submit()['queued'],0)
+        self.assertEqual(self.submit(codec='hevc')['queued'],1)
+
+    def test_unversioned_legacy_trial_is_not_a_current_policy_decision(self):
+        self.record('skipped')
+        folder=self.controls.root/'request-old'/'auto-old';folder.mkdir(parents=True)
+        write(folder/'status.json',dict(state='trials-completed',decision=dict(action='keep_original',cacheable=True)))
+        self.assertEqual(self.submit()['queued'],1)
 
     def test_preview_explains_skip_and_recheck_is_typed(self):
         self.record('kept-original',reason='User chose to keep')

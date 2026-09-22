@@ -33,6 +33,33 @@ class CodecSelectionTests(unittest.TestCase):
             sample['bytes'] = 400
         self.assertEqual(select_candidate(report)['selected']['codec'], 'hevc')
 
+    def test_early_quality_rejection_explains_unexecuted_checks(self):
+        report = evidence()
+        report['trials'] = report['trials'][:1]
+        samples = report['trials'][0]['samples']
+        samples[0].update(quality_pass=False, quality={'passed': False, 'p5': 85})
+        for sample in samples[1:]:
+            sample.update(quality_pass=False, preservation_pass=False, decode_pass=False)
+        before = copy.deepcopy(report)
+        row = select_candidate(report)['candidates'][0]
+        self.assertEqual(row['assessment'], 'quality_rejected')
+        self.assertEqual(row['rejected_reasons'], ['measured_quality_below_threshold'])
+        self.assertEqual(row['quality_failed_reference_ids'], ['0'])
+        self.assertEqual(row['unevaluated_reference_ids'], ['1', '2'])
+        self.assertIn('decode_pass_missing_or_failed', row['evidence_reasons'])
+        self.assertEqual(report, before)
+
+    def test_processing_error_not_hidden_by_quality_rejection(self):
+        report = evidence()
+        report['trials'] = report['trials'][:1]
+        samples = report['trials'][0]['samples']
+        samples[0].update(quality_pass=False, quality={'passed': False})
+        samples[1]['error'] = 'Decoder failed'
+        result = select_candidate(report)
+        self.assertEqual(result['candidates'][0]['assessment'], 'inconclusive')
+        self.assertIn('sample_processing_error', result['candidates'][0]['rejected_reasons'])
+        self.assertFalse(result['cacheable'])
+
     def test_reject_failed_or_missing_evidence(self):
         for field in ['quality_pass', 'preservation_pass', 'decode_pass', 'quality_method']:
             report = evidence()

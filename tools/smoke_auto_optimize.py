@@ -21,19 +21,26 @@ def main():
     parser.add_argument('--ffprobe', required=True)
     parser.add_argument('--output-root', required=True, type=Path)
     parser.add_argument('--early-screen-only', action='store_true', help='Prove an impossible size budget skips remaining clips and full encoding')
+    parser.add_argument('--hdr',action='store_true',help='Exercise the real automatic PQ preservation route with generated HDR-tagged media')
+    parser.add_argument('--hevc-only',action='store_true')
+    parser.add_argument('--hlg',action='store_true',help='Use HLG instead of PQ in the generated HDR fixture')
     args = parser.parse_args()
+    args.hdr=args.hdr or args.hlg
     args.output_root.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix='auto-smoke-', dir=args.output_root))
     inputs = root/'input'; inputs.mkdir()
     source = inputs/'generated.mkv'
+    colors=('bt2020','arib-std-b67' if args.hlg else 'smpte2084','bt2020nc') if args.hdr else ('bt709','bt709','bt709')
+    source_encoder=(['-c:v','libx265','-preset','ultrafast','-x265-params',
+        f'pools=1:frame-threads=1:log-level=error:lossless=1:keyint=12:bframes=0:colorprim=bt2020:transfer={colors[1]}:colormatrix=bt2020nc'] if args.hdr else
+        ['-c:v','libx264','-preset','ultrafast','-crf','0','-x264-params','colorprim=bt709:transfer=bt709:colormatrix=bt709'])
     subprocess.run([args.ffmpeg, '-hide_banner', '-nostdin', '-n', '-v', 'error',
         '-f', 'lavfi', '-i', 'testsrc2=size=256x144:rate=24:duration=12',
         '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=12',
-        '-vf', 'setfield=prog,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=limited',
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '0',
-        '-g', '24', '-threads', '2', '-x264-params', 'colorprim=bt709:transfer=bt709:colormatrix=bt709',
-        '-pix_fmt', 'yuv420p', '-colorspace', 'bt709',
-        '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv',
+        '-vf', f'setfield=prog,setparams=colorspace={colors[2]}:color_primaries={colors[0]}:color_trc={colors[1]}:range=limited',
+        *source_encoder,'-g','24','-threads','2',
+        '-pix_fmt', 'yuv420p10le' if args.hdr else 'yuv420p', '-colorspace', colors[2],
+        '-color_primaries', colors[0], '-color_trc', colors[1], '-color_range', 'tv',
         '-c:a', 'ac3', str(source)], check=True, timeout=60)
     original_hash = ao.digest(source)
     original_encode = ao.encode_command
@@ -51,7 +58,7 @@ def main():
          patch.object(ao, 'probe_encoder', return_value={'status': 'working', 'scope': 'MOCK FOR CPU SMOKE ONLY'}), \
          patch.object(ao, 'encode_command', side_effect=test_encode):
         code = ao.main([str(source), '--output-dir', str(root/'output'), '--execute', '--encode-best',
-            '--hardware', 'nvidia', '--playback-verified-codecs', 'hevc', 'av1', '--qualities', 'balanced',
+            '--hardware', 'nvidia', '--playback-verified-codecs', *(['hevc'] if args.hevc_only else ['hevc','av1']), '--qualities', 'balanced',
             '--seconds', '1', '--vmaf-mean', '0', '--vmaf-p5', '0', '--minimum-savings-percent', '99.9' if args.early_screen_only else '0',
             '--min-free-gib', '1', '--timeout', '180', '--ffmpeg', args.ffmpeg, '--ffprobe', args.ffprobe])
     assert code == 0
@@ -69,10 +76,11 @@ def main():
         return
     assert state['state']=='validated-copy-awaiting-playback', state
     trials = json.loads((runs[0]/'trials.json').read_text())
+    if args.hdr:assert trials['color_mode']==('hlg' if args.hlg else 'pq'),trials
     assert all(s['quality_pass'] and s['decode_pass'] and s['preservation_pass']
                for t in trials['trials'] for s in t['samples']), trials
     assert ao.digest(source) == original_hash
-    print('PASS: six trials, measured selection, full copy, validation, source unchanged:', root)
+    print('PASS:',sum(len(t['samples']) for t in trials['trials']),'scene trials, measured selection, full copy, validation, source unchanged:', root)
 
 
 if __name__ == '__main__':

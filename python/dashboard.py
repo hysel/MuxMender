@@ -311,6 +311,7 @@ class Catalog:
                     stage_eta=stage_eta if state == 'running' else None,
                     stage_percent=stage_percent,
                     stage_started=job.get('stage_started'),
+                    workflow_stage=job.get('workflow_stage'),
                     performance_seconds=job.get('performance_seconds',{}),
                     performance_scope=job.get('performance_scope'),
                     progress_kind=job.get('progress_kind', 'legacy'),

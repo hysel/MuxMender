@@ -32,6 +32,10 @@ class Job:
             self.last_timing=now
             if 'phase' in changes and changes['phase'] != self.data.get('phase'):
                 changes['stage_started']=time.time()
+                # Legacy phase updates must not inherit the previous step's
+                # 100%/ETA/detail while new evidence is still being collected.
+                for field in ('stage_percent','stage_eta','stage_updated','detail'):
+                    changes.setdefault(field,None)
             self.data.update(changes, updated=time.time())
             temporary = self.directory / 'job.json.tmp'
             temporary.write_text(json.dumps(self.data), encoding='utf-8')
@@ -65,14 +69,25 @@ def progress(label, completed=0, total=None, stage_percent=None, stage_eta=None,
         pass
 
 
-def stage_progress(percent, eta):
+def stage_progress(percent, eta, detail=None):
     """Update current-stage telemetry without resetting completed-work progress."""
     if _active:
         try:
-            _active.save(stage_percent=percent, stage_eta=eta, stage_updated=time.time(),
-                         eta_scope='Current stage only; later muxing/verification time is not included')
+            values=dict(stage_percent=percent, stage_eta=eta, stage_updated=time.time(),
+                        eta_scope='Current stage only; later muxing/verification time is not included')
+            if detail is not None:values['detail']=detail
+            _active.save(**values)
         except OSError:
             pass
+
+
+def workflow_stage(name):
+    """Stable top-level stage, independent of repeatable check percentages."""
+    if name not in ('inspect','compare','encode','validate','publish','cleanup'):
+        raise ValueError('Unknown workflow stage')
+    if _active:
+        try:_active.save(workflow_stage=name,stage_percent=None,stage_eta=None)
+        except OSError:pass
 
 
 def tracked_call(function, title, folder=None):
@@ -113,7 +128,11 @@ def tracked_call(function, title, folder=None):
     except KeyboardInterrupt:
         code = 130
         raise
-    except Exception:
+    except Exception as exc:
+        try:
+            job.save(error=str(exc),detail=str(exc))
+        except OSError:
+            pass  # A report-write failure must not hide the processing error.
         traceback.print_exc()
         raise
     finally:

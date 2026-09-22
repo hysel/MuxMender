@@ -165,7 +165,8 @@ def decision_evidence(folder, selection):
         for sample in trial.get('samples', []):
             scores = sample.get('quality', {})
             if all(type(scores.get(k)) in (float,int) and math.isfinite(scores[k]) for k in ('mean','p5')):
-                samples.append(dict(mean=scores['mean'],p5=scores['p5'],passed=scores.get('passed') is True))
+                samples.append(dict(mean=scores['mean'],p5=scores['p5'],passed=scores.get('passed') is True,
+                                    domain=scores.get('domain','sdr')))
         if samples:quality.append(dict(id=trial.get('id','Unknown trial'),samples=samples))
     if quality:result['quality']=quality
     return result

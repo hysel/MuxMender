@@ -93,6 +93,14 @@ def worker_command(env,media,output):
     return command
 
 
+def standalone_wait_reason(catalog):
+    active=[j for j in catalog.snapshot() if j.get('state')=='running'
+            and not str(j.get('directory','')).startswith('ui-requests/')]
+    if not active:return False
+    names=list(dict.fromkeys(str(j.get('title') or 'standalone test') for j in active))
+    return 'Waiting for standalone work reported active: '+', '.join(names[:3])+'. If it was stopped, its saved status may need recovery.'
+
+
 def main():
     env=os.environ
     media,output,bind,port,hosts,password=config(env)
@@ -124,7 +132,7 @@ def main():
         if controls_enabled:
             codecs=[c.strip() for c in env.get('MUXMENDER_PLAYBACK_CODECS','').split(',') if c.strip()]
             controls=Controls(media,output,is_read_only,codecs,
-                              busy=lambda:any(j.get('state')=='running' and not str(j.get('directory','')).startswith('ui-requests/') for j in catalog.snapshot()),
+                              busy=lambda:standalone_wait_reason(catalog),
                               replacement_root=media)
             server.RequestHandlerClass=control_handler(server.RequestHandlerClass,controls)
             controls.start()

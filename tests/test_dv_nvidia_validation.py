@@ -7,12 +7,22 @@ from dv_full_file import compare_frames, validate_source_frames, grouped_packets
 
 def record(pts, red='35400/50000', extra=''):
     return (f'frame|best_effort_timestamp_time={pts}|interlaced_frame=0|repeat_pict=0'
+            '|width=3840|height=1608|pix_fmt=yuv420p10le|sample_aspect_ratio=1:1'
             '|side_datum/dolby_vision_rpu_data:side_data_type=Dolby Vision RPU Data'
             '|side_datum/mastering_display_metadata:side_data_type=Mastering display metadata'
             f'|side_datum/mastering_display_metadata:red_x={red}{extra}\n')
 
 
 class NvidiaDVFrameTests(unittest.TestCase):
+    def test_legacy_evidence_needs_refresh_not_a_media_rejection(self):
+        from dv_full_file import picture_evidence_complete
+        with tempfile.TemporaryDirectory() as folder:
+            p=Path(folder)/'evidence'
+            p.write_text(record(0))
+            self.assertTrue(picture_evidence_complete(p))
+            p.write_text(record(0)+record(.042).replace('|width=3840',''))
+            self.assertFalse(picture_evidence_complete(p))
+
     def test_aac_rounding_requires_exact_pts_bytes_order_and_pcm_followup(self):
         streams=[dict(index=1,codec_type='audio',codec_name='aac',time_base='1/1000')]
         a=dict(stream_index=1,pts_time='0.065',duration_time='0.043',data_hash='same')

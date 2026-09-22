@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from autonomous_queue import write
 from task_progress import digest
-from job_tracking import progress
+from job_tracking import progress, workflow_stage
 
 
 def target_for(source, media, writable):
@@ -31,14 +31,18 @@ class DestinationConflict(ValueError):
     pass
 
 
+from media_naming import readable_destination
+
+
 def destination_for(original):
-    destination=original if original.suffix.lower()=='.mkv' else original.with_suffix('.mkv')
+    destination=readable_destination(original)
     if destination!=original and any(p.name.casefold()==destination.name.casefold() for p in original.parent.iterdir()):
         raise DestinationConflict('Original kept: destination filename already exists: '+destination.name)
     return destination
 
 
 def replace_validated(source, media, writable, result_dir, minimum_savings, job_id, stopped=lambda:False):
+    workflow_stage('publish')
     if not math.isfinite(minimum_savings) or not 0<=minimum_savings<100:
         raise ValueError('Replacement savings threshold must be finite and in [0,100)')
     if not isinstance(job_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}',job_id):
@@ -63,7 +67,7 @@ def replace_validated(source, media, writable, result_dir, minimum_savings, job_
     if before.st_size<=0 or output.stat().st_size<=0:
         raise ValueError('Empty source/output cannot be published')
     saving=100*(1-output.stat().st_size/before.st_size)
-    if saving<minimum_savings:raise ValueError('Full output does not meet minimum savings')
+    if output.stat().st_size>=before.st_size or saving<minimum_savings:raise ValueError('Full output does not meet minimum savings')
     if digest(original)!=status.get('source_sha256') or digest(output)!=status.get('output_sha256'):
         raise ValueError('Source or output changed since validation')
     if stopped():raise RuntimeError('Replacement cancelled before publication')
@@ -93,7 +97,8 @@ def replace_validated(source, media, writable, result_dir, minimum_savings, job_
     if digest(stage)!=status['output_sha256']:raise ValueError('Staged copy failed verification; original retained')
     target_for(source,media,writable)
     if digest(original)!=status['source_sha256'] or stopped():raise ValueError('Source changed or shutdown requested; original retained')
-    destination_for(original)
+    if destination_for(original)!=target:
+        raise DestinationConflict('Folder contents changed during encoding/publication; original retained')
     record['state']='ready';write(journal,record)
     os.link(original,backup)  # Exclusive creation; unsupported hard links fail safely.
     if target==original:
@@ -116,4 +121,14 @@ def replace_validated(source, media, writable, result_dir, minimum_savings, job_
         original.unlink()
     backup.unlink()
     record['state']='replaced';write(journal,record)
+    # Cleanup failure must not relabel a successfully published replacement as a
+    # failed encode or invite a duplicate replacement. Preserve a retryable note.
+    try:
+        from replacement_cleanup import cleanup_replaced
+        workflow_stage('cleanup')
+        progress('Cleaning completed replacement artifacts',detail='Rechecking published file before removing redundant work files')
+        record['artifact_cleanup']=cleanup_replaced(result_dir,execute=True)
+    except Exception as exc:
+        record['artifact_cleanup']=dict(state='needs-attention',error=str(exc))
+    write(journal,record)
     return record

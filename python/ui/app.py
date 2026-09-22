@@ -23,14 +23,23 @@ for old,new in [
     ('id="folder-path" placeholder=','id="folder-path" aria-describedby="path-help" placeholder=')]:
     controls=controls.replace(old,new)
 
+# Native disclosure preserves keyboard/screen-reader behavior and hides only
+# setup, never progress or results. Form values survive closing/reopening.
+controls=controls.replace('<section class="panel" id="workflow"><div class="panel-head">',
+    '<details class="panel" id="workflow" open><summary class="panel-head" id="setup-toggle">')
+controls=controls.replace('</span></div><div class="guide-content">',
+    '</span><span id="setup-submission" role="status" aria-live="polite"></span></summary><div class="guide-content">',1)
+controls=controls.removesuffix('</section>')+'</details>'
+
 HTML = '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>MuxMender · Media workspace</title>'''+STYLE+'''</head><body>
 <a class="skip-link" href="#main">Skip to workspace</a>
 <header class="masthead"><a class="brand" href="#main">MuxMender</a><nav aria-label="Main"><a href="#workflow">Set up</a><a href="#activity">Progress</a><a href="#results">Results</a></nav><div class="theme-control"><label for="theme">Appearance</label><select id="theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div></header>
 <main id="main" tabindex="-1"><div class="page-heading"><h1>Media workspace</h1><p class="safety-note">Keep originals by default. Replacement requires an explicit choice and confirmation.</p></div>
 <section class="panel savings-hero" aria-labelledby="savings-title"><div><p class="eyebrow" id="savings-title">Lifetime library space saved</p><p class="savings-number" id="lifetime-saved">—</p><p id="lifetime-detail">Loading confirmed replacement history…</p><p class="control-note">Confirmed replacements only. Retained output copies and snapshots still occupy disk space. Older work without a receipt is not included.</p></div><div class="savings-symbol" aria-hidden="true">↓</div></section>
-<section class="panel" id="activity" aria-labelledby="activity-title"><div class="panel-head"><h2 id="activity-title">Progress</h2><span id="connection-state" role="status">Connecting…</span></div><div class="panel-body">
-<p id="control-state">Checking queue…</p><div class="control-actions"><button id="pause-selected" type="button" disabled>Pause after current job</button><button id="resume-selected" type="button" disabled>Resume queue</button><button id="toggle-updates" type="button" aria-pressed="false">Pause live updates</button></div>
-<div class="control-actions"><div><label for="resource-profile">Shared-server resource use</label><select id="resource-profile"><option value="quiet">Quiet · one file</option><option value="shared" selected>Shared host · up to two files</option><option value="faster">Faster · up to four files</option></select></div><button id="save-resource-profile" type="button">Apply resource profile</button></div><p id="resource-status" class="control-note">Collecting resource measurements…</p><p class="control-note">New workers start only with sustained headroom. Busy-server backoff stops new starts; running jobs finish at lower CPU priority. This is not a hard CPU/GPU limit. Unknown GPU telemetry restricts processing to one file.</p>
+<section class="panel" id="live-resources" aria-labelledby="live-resources-title"><div class="panel-head"><h2 id="live-resources-title">Server resources</h2></div><div class="panel-body"><p id="resource-status" class="control-note">Collecting CPU, GPU and available RAM measurements…</p></div></section>
+<section class="panel" id="activity" aria-labelledby="activity-title"><div class="panel-head"><h2 id="activity-title">Processing dashboard</h2><span id="connection-state" role="status">Connecting…</span></div><div class="panel-body">
+<p id="control-state">Checking queue…</p><p class="control-note">Follow the highlighted step. Percentages describe the current check—not the whole video.</p><div class="control-actions"><button id="pause-selected" type="button" disabled>Pause after current job</button><button id="resume-selected" type="button" disabled>Resume queue</button><button id="toggle-updates" type="button" aria-pressed="false">Pause live updates</button></div>
+<details><summary>Resource settings</summary><div class="control-actions"><div><label for="resource-profile">Shared-server resource use</label><select id="resource-profile"><option value="quiet">Quiet · one file</option><option value="shared" selected>Shared host · up to two files</option><option value="faster">Faster · up to four files</option></select></div><button id="save-resource-profile" type="button">Apply resource profile</button></div><p class="control-note">New workers start only with sustained headroom. Busy-server backoff stops new starts; running jobs finish at lower CPU priority. This is not a hard CPU/GPU limit. Unknown GPU telemetry restricts processing to one file.</p></details>
 <p class="control-note">Pausing the queue lets its current job finish. Pausing live updates only freezes this display.</p><div id="current-work">No running job reported yet.</div><p id="activity-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
 </div></section>
 '''+controls+'''
@@ -46,3 +55,7 @@ HTML = '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name=
 <footer>MuxMender <span id="app-version">'''+VERSION+'''</span> · Replacement is opt-in · History and preferences are stored on the /output mount.</footer></main>
 '''+HISTORY_SCRIPT+RESULTS_SCRIPT+SCRIPT+'''</body></html>'''
 HTML=HTML.replace('No source file is deleted.','Replacement failures may leave a recovery backup; inspect details before retrying.')
+HTML=HTML.replace('<div class="control-grid"><div><label for="result-search">',
+                  '<details id="result-tools" open><summary>Search, filter and sort results</summary><div class="control-grid"><div><label for="result-search">')
+HTML=HTML.replace('<div class="control-actions"><button id="archive-results"',
+                  '</details><div class="control-actions"><button id="archive-results"')

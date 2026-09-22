@@ -11,6 +11,42 @@ from tests.test_muxmender import sample
 
 
 class NativePipelineTests(unittest.TestCase):
+    def test_timestamp_recovery_clears_unavailable_detail(self):
+        code='print("frame=50"); print("out_time_us=5000000")'
+        with patch('job_tracking.stage_progress') as update:
+            stage([sys.executable,'-c',code],10,timeout=5)
+        measured=[c for c in update.call_args_list if c.args[0]==50]
+        self.assertEqual(measured[0].kwargs['detail'],'50 frames processed')
+
+    def test_stage_only_progress_and_duplicate_notifications(self):
+        import io
+        from contextlib import redirect_stdout
+        output=io.StringIO()
+        code='for i in range(100): print("frame=50")'
+        with patch('job_tracking.stage_progress') as update,redirect_stdout(output):
+            stage([sys.executable,'-c',code],100,timeout=10,expected_frames=100)
+        self.assertEqual(update.call_args_list[0].args[0],50)
+        self.assertEqual(update.call_args_list[-1].args[0],100)
+        self.assertLessEqual(update.call_count,3)
+        self.assertNotIn('MUXMENDER_PROGRESS=',output.getvalue())
+
+    def test_advancing_frames_prevent_false_missing_timestamp_stall(self):
+        code='import time\nfor i in range(1,9):\n print("frame="+str(i),flush=True)\n print("out_time_us=N/A",flush=True)\n time.sleep(.1)'
+        with patch('job_tracking.stage_progress') as update:
+            stage([sys.executable,'-u','-c',code],100,timeout=5,stall=.5)
+        self.assertIn('8 frames',update.call_args.kwargs['detail'])
+        self.assertIsNone(update.call_args.args[0])
+
+    def test_repeated_frames_do_not_disable_stall_protection(self):
+        code='import time\nfor i in range(30):\n print("frame=1",flush=True)\n print("out_time_us=N/A",flush=True)\n time.sleep(.1)'
+        with self.assertRaisesRegex(RuntimeError,'no advancing'):
+            stage([sys.executable,'-u','-c',code],100,timeout=5,stall=.5)
+
+    def test_advancing_frames_still_obey_total_runtime_cap(self):
+        code='import time\nfor i in range(30):\n print("frame="+str(i),flush=True)\n time.sleep(.1)'
+        with self.assertRaisesRegex(RuntimeError,'total runtime'):
+            stage([sys.executable,'-u','-c',code],100,timeout=.7,stall=2)
+
     def test_frame_progress_ignores_stuck_mux_timestamps(self):
         self.assertEqual(frame_progress('frame= 50',100),50)
         self.assertIsNone(frame_progress('out_time_us=17375000',100))

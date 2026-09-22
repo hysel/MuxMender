@@ -8,6 +8,9 @@ import json
 import math
 from fractions import Fraction
 
+# Bump when the measured search/evaluation policy changes, not for every UI release.
+EVALUATION_POLICY = 'source-driven-adaptive-size-quality-2'
+
 
 def impossible_size_bound(references, samples, minimum_savings_percent):
     """Rejection-only proof: even zero bytes for remaining clips cannot pass.
@@ -38,7 +41,7 @@ def select_candidate(report, minimum_savings_percent=10.0):
 
     source_id should be a source content hash, not just a filename. This function
     validates evidence structure, not the truth of a caller's quality assertions.
-    Trials for HDR/DV are deferred until a dedicated evaluator is integrated.
+    HDR trials require separate native-preservation and rendered-quality evidence.
     """
     if not math.isfinite(minimum_savings_percent) or not 0 <= minimum_savings_percent < 100:
         raise ValueError('Savings threshold must be finite and between 0 and 100')
@@ -52,7 +55,7 @@ def select_candidate(report, minimum_savings_percent=10.0):
                   reason_code='evaluation_inconclusive', cacheable=False,
                   estimate_only=True, full_output_validation_required=True,
                   source_replacement_authorized=False)
-    if report.get('color_mode') != 'sdr':
+    if report.get('color_mode') not in ('sdr','pq','hlg'):
         result.update(action='specialized_review', reason='HDR/Dolby Vision requires a dedicated preservation evaluator')
         return result
     refs = report.get('references', [])
@@ -99,12 +102,17 @@ def select_candidate(report, minimum_savings_percent=10.0):
         if not structural_reasons and valid_sizes and encode_evidence and trial.get('size_screen',{}).get('rejected') is True:
             output_bytes=sum(s['bytes'] for s in samples)
             savings=100*(1-output_bytes/reference_bytes)
-            if savings < minimum_savings_percent:
+            if output_bytes>=reference_bytes or savings < minimum_savings_percent:
                 result['candidates'].append(dict(id=trial_id,codec=trial.get('codec'),
                     output_bytes=output_bytes,savings_percent=savings,
                     rejected_reasons=['insufficient_savings'],assessment='size_screened',quality_evaluated=False))
                 continue
         for sample in samples:
+            if report.get('color_mode') in ('pq','hlg'):
+                if sample.get('hdr_preservation_pass') is not True:
+                    reasons.append('hdr_preservation_missing_or_failed')
+                if sample.get('quality',{}).get('domain')!='hdr-common-render-v1':
+                    reasons.append('hdr_quality_domain_missing')
             if sample.get('error'):
                 reasons.append('sample_processing_error')
             for check in ('quality_pass', 'preservation_pass', 'decode_pass'):
@@ -120,11 +128,21 @@ def select_candidate(report, minimum_savings_percent=10.0):
                 and any(s.get('quality_pass') is False and s.get('quality',{}).get('passed') is False
                         and s.get('preservation_pass') is True and s.get('decode_pass') is True for s in samples)):
             row['assessment']='quality_rejected'
+            # Keep the evidence failures available for diagnostics, but distinguish
+            # a measured rejection from unexecuted follow-up scene checks.
+            row['quality_failed_reference_ids']=[s.get('reference_id') for s in samples
+                if s.get('quality_pass') is False and s.get('quality',{}).get('passed') is False
+                and s.get('preservation_pass') is True and s.get('decode_pass') is True]
+            row['unevaluated_reference_ids']=[s.get('reference_id') for s in samples
+                if not s.get('quality')]
+            row['evidence_reasons']=row['rejected_reasons']
+            row['rejected_reasons']=['measured_quality_below_threshold']
+            row['detail']='A measured scene failed quality; untested scenes are not decoder or metadata failures.'
         if not reasons:
             output_bytes = sum(s['bytes'] for s in samples)
             savings = 100 * (1 - output_bytes / reference_bytes)
             row.update(output_bytes=output_bytes, savings_percent=savings)
-            if savings < minimum_savings_percent:
+            if output_bytes>=reference_bytes or savings < minimum_savings_percent:
                 row['rejected_reasons'].append('insufficient_savings')
                 row['assessment']='insufficient_savings'
             else:
@@ -136,7 +154,7 @@ def select_candidate(report, minimum_savings_percent=10.0):
         result['reason'] = ('No eligible trial: ' + ', '.join(sorted(reasons)))
         if all(r['assessment'] in ('size_screened','insufficient_savings','quality_rejected') for r in result['candidates']):
             result.update(reason_code='already_efficient_for_settings',cacheable=True,
-                reason='Already efficient for current settings: short tests found no worthwhile size reduction within the quality limits. Original retained.')
+                reason='No worthwhile savings found with current settings: short tests found no eligible size reduction within the quality limits. Original retained.')
         else:
             result['reason']='Evaluation incomplete: one or more encoders or validation checks failed or lacked evidence. Original retained; retry after resolving the issue.'
     if eligible:

@@ -9,6 +9,32 @@ from test_auto_optimize import source_data
 
 
 class AdaptiveTests(unittest.TestCase):
+    def test_size_only_failure_searches_compression_without_quality_approval(self):
+        report={'trials':[dict(encoder='hevc_nvenc',codec='hevc',runtime_supported=True,
+            playback_compatible=True,size_screen={'rejected':True},samples=[{'encode_completed':True}])]}
+        candidates=ao.adaptive_candidates(report,4)
+        self.assertEqual([x['nvenc_cq'] for x in candidates],[28,26,27,30])
+        report['trials'][0]['samples'][0]['error']='decoder failure'
+        self.assertEqual(ao.adaptive_candidates(report,1)[0]['nvenc_cq'],23)
+
+    def test_quality_failure_prioritizes_higher_quality_within_shared_budget(self):
+        report={'trials':[dict(encoder=e,codec=e.split('_')[0],runtime_supported=True,
+            playback_compatible=True,samples=[{'quality':{'passed':False,'p5':79}}])
+            for e in ('hevc_nvenc','av1_nvenc')]}
+        rows=ao.adaptive_candidates(report,4)
+        for encoder in ('hevc_nvenc','av1_nvenc'):
+            self.assertEqual([r['nvenc_cq'] for r in rows if r['encoder']==encoder],[20,18])
+
+    def test_verified_amd_intel_get_bounded_higher_quality_retry(self):
+        for encoder in ('hevc_amf','av1_amf','hevc_qsv','av1_qsv'):
+            trial=dict(encoder=encoder,codec=encoder.split('_')[0],runtime_supported=True,
+                       playback_compatible=True,settings={'quality':'balanced'},samples=[])
+            candidates=ao.adaptive_candidates({'trials':[trial]},8)
+            self.assertEqual(len(candidates),1)
+            self.assertEqual(candidates[0]['quality'],'transparent')
+            trial['settings']['quality']='transparent'
+            self.assertEqual(ao.adaptive_candidates({'trials':[trial]},8),[])
+
     def test_bounded_verified_encoders_and_hardest_scene(self):
         report={'trials':[dict(encoder='av1_nvenc',codec='av1',runtime_supported=True,
             playback_compatible=True,samples=[dict(reference_id='0',quality={'p5':94}),
@@ -24,7 +50,7 @@ class AdaptiveTests(unittest.TestCase):
         for encoder,codec in [('av1_nvenc','av1'),('hevc_nvenc','hevc')]:
             with patch.object(ao.mm,'encoder_options',return_value=['-c:v',encoder,'-cq','21','-preset','p6']):
                 command=ao.encode_command('ffmpeg',Path('in'),Path('out'),dict(codec=codec,
-                    encoder=encoder,quality='balanced',nvenc_cq=23,nvenc_preset='p7'),None,[])
+                    encoder=encoder,quality='balanced',nvenc_cq=23,nvenc_preset='p7'),None,source_data()['streams'])
             self.assertEqual(command[command.index('-cq')+1],'23')
             self.assertEqual(command[command.index('-preset')+1],'p7')
             self.assertIn('-n',command)
@@ -36,13 +62,21 @@ class AdaptiveTests(unittest.TestCase):
     def test_failed_screen_stops_each_candidate_and_exhausts_budget(self):
         self.exercise_workflow(False)
 
-    def exercise_workflow(self, adaptive_passes):
+    def test_full_output_missing_size_target_skips_expensive_validation(self):
+        self.exercise_workflow(True, full_output_bytes=7600)
+
+    def test_smaller_full_output_still_requires_validation(self):
+        self.exercise_workflow(True, full_output_bytes=4000)
+
+    def exercise_workflow(self, adaptive_passes, full_output_bytes=None):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);(root/'input').mkdir();source=root/'input/source.mkv';source.write_bytes(b'original'*1000)
             output=root/'output'
             calls=[]
             def execute(workflow,command,label,duration):
-                Path(command[-1]).write_bytes(b'x'*(1000 if label.startswith('reference-') else 100))
+                size=(full_output_bytes if label=='full-encode' and full_output_bytes is not None
+                      else 1000 if label.startswith('reference-') else 100)
+                Path(command[-1]).write_bytes(b'x'*size)
             def probe(workflow,path):
                 data=source_data()
                 if Path(path)!=source:data['format']['duration']='10'
@@ -56,7 +90,7 @@ class AdaptiveTests(unittest.TestCase):
             with patch.object(ao.Workflow,'probe',probe), \
                  patch.object(ao.Workflow,'execute',execute), \
                  patch.object(ao.Workflow,'frame_file',return_value=root/'frames'), \
-                 patch.object(ao.Workflow,'validate'), \
+                 patch.object(ao.Workflow,'validate') as validate, \
                  patch.object(ao.Workflow,'quality',quality), \
                  patch.object(ao,'compare_frames',return_value=1), \
                  patch.object(ao.subprocess,'check_output',return_value='libvmaf'), \
@@ -65,12 +99,23 @@ class AdaptiveTests(unittest.TestCase):
                  patch.object(ao.mm,'probe',return_value=None), \
                  patch.object(ao.mm,'encoder_options',return_value=['-c:v','av1_nvenc','-cq','21','-preset','p6']):
                 self.assertEqual(ao.main([str(source),'--output-dir',str(output),'--hardware','nvidia',
-                    '--playback-verified-codecs','av1','--execute','--adaptive']),0)
+                    '--playback-verified-codecs','av1','--execute','--adaptive',
+                    *(['--encode-best','--minimum-savings-percent','10'] if full_output_bytes is not None else [])]),0)
             run=next(output.glob('auto-*'))
             state=json.loads((run/'status.json').read_text())
-            self.assertEqual(state['decision']['action'],'encode_copy' if adaptive_passes else 'keep_original')
-            self.assertEqual(len([c for c in calls if '-p7-' in c]),3 if adaptive_passes else 4)
+            if full_output_bytes is not None:
+                full_calls=[c for c in validate.call_args_list if c.args[4]=='full']
+                if full_output_bytes==7600:
+                    self.assertEqual(state['state'],'full-output-rejected-insufficient-savings')
+                    self.assertFalse(state['full_validation_performed'])
+                    self.assertEqual(full_calls,[])
+                else:
+                    self.assertEqual(state['state'],'validated-copy-awaiting-playback')
+                    self.assertEqual(len(full_calls),1)
+            else:
+                self.assertEqual(state['decision']['action'],'encode_copy' if adaptive_passes else 'keep_original')
+            self.assertEqual(len([c for c in calls if '-p7-' in c]),3 if adaptive_passes else 6)
             search=json.loads((run/'adaptive-search.json').read_text())
-            self.assertEqual(search['extra_trials'],1 if adaptive_passes else 4)
+            self.assertEqual(search['extra_trials'],1 if adaptive_passes else 6)
             self.assertEqual(search['cpu_fallback'],'not_run_requires_explicit_opt_in')
             self.assertEqual(source.read_bytes(),b'original'*1000)

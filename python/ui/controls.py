@@ -18,16 +18,18 @@ PANEL = '''<section class="panel" id="workflow"><div class="panel-head"><h2>New 
 <select id="operation"><option value="analyze">Analyze only — no encoding</option><option value="test">Test short samples — keep originals</option><option value="encode">Encode full safe copies if tests pass</option><option value="replace">Convert and replace originals — only after all checks pass</option><option value="keep">Keep originals — record, do not convert</option></select>
 <p id="replacement-availability" class="control-note"></p>
 </div></div>
+<div class="control-grid"><div><label for="file-age-unit">File creation age</label><select id="file-age-unit" aria-describedby="file-age-help"><option value="all">All files — any creation date</option><option value="hours">Created within the last… hours</option><option value="days">Created within the last… days</option><option value="weeks">Created within the last… weeks</option></select></div><div id="file-age-value-wrap" hidden><label for="file-age-value">Number of hours, days or weeks</label><input id="file-age-value" type="number" min="1" max="100000" step="1" value="1" disabled aria-describedby="file-age-help"></div></div>
+<p id="file-age-help" class="control-note">Applies to this new request, including subfolders. Uses the filesystem creation date, not the movie release date or last modified date. Files with unavailable creation dates are excluded when filtering. Preview shows matching files; existing queue entries are unchanged.</p>
 <details class="control-advanced"><summary>Encoding options · Automatic by default</summary><div class="control-grid"><div>
 <label for="codec-choice">Encoding format</label><select id="codec-choice"><option value="auto">Automatic — compare verified HEVC / AV1</option><option value="hevc">HEVC / H.265 only</option><option value="av1">AV1 only</option></select>
 <label for="hardware-choice">Hardware preference</label><select id="hardware-choice"><option value="auto">Auto-detect supported GPU</option><option value="nvidia">NVIDIA</option><option value="amd">AMD</option><option value="intel">Intel</option></select>
 </div><div>
 <label for="quality-choice">Encoder quality preset</label><select id="quality-choice"><option value="auto">Automatic — compare balanced / compact</option><option value="transparent">Transparent</option><option value="balanced">Balanced</option><option value="compact">Compact</option></select>
-<label for="minimum-savings">Minimum size reduction (%)</label><input id="minimum-savings" type="number" min="10" max="90" value="10">
-<label for="legacy-color">Missing color information</label><select id="legacy-color"><option value="inspect">Inspect declared metadata; never guess</option><option value="bt709-limited">Sample test only: assume BT.709 limited range</option></select><p class="control-note">An assumption is not proof of correct color. Select Test samples and Retry skipped/failed files only for previously skipped files. Full conversion and replacement are blocked for this assumption.</p>
+<label for="minimum-savings">Minimum size reduction (%) — 0 accepts any smaller result</label><input id="minimum-savings" type="number" min="0" max="90" step="0.1" value="0">
+<label for="legacy-color">Missing color information</label><select id="legacy-color"><option value="inspect">Inspect and preserve source color; never guess</option><option value="bt709-limited">Sample test only: assume BT.709 limited range</option></select><p class="control-note">Inspection uses declared metadata and verified codec defaults, preserving unspecified color tags where supported. Choose Retry skipped/failed files to reconsider earlier skips. The BT.709 assumption is sample-only and cannot authorize full conversion or replacement.</p>
 <label for="recheck-history">Previously processed files</label><select id="recheck-history"><option value="reuse">Use saved history (default)</option><option value="retry">Retry skipped/failed files only</option><option value="all">Recheck everything, including successful conversions</option></select>
 <p class="control-note">Retry only includes unchanged skipped, failed or interrupted files. It excludes successful conversions, deliberate Keep original decisions, new/changed files and active jobs. Recheck everything can re-encode successful outputs.</p>
-<p class="control-note">All presets must pass the same quality checks. Resolution, frame rate, color, audio and subtitles are protected. No CPU fallback. HDR/Dolby Vision remains blocked in this measured SDR workflow.</p>
+<p class="control-note">All presets must pass the same quality checks. Resolution, frame rate, color, audio and subtitles are protected. No CPU fallback. PQ/HDR10/HDR10+ and HLG use checked preservation routes. Dolby Vision requires the separate opt-in preservation workflow and is not yet integrated here.</p>
 </div></div></details>
 <div class="control-actions"><button id="preview-job" class="primary" type="button" disabled>Preview request</button></div>
 <div id="request-preview" class="control-preview" hidden><h3>3 · Review before submitting</h3><p id="preview-description"></p><ul id="preview-files"></ul><p class="control-note">Original files will never be replaced or deleted. A folder request is limited to 100 videos. Passing full copies still need playback review.</p><div class="control-actions"><button id="submit-job" class="primary" type="button" disabled>Confirm and queue</button></div></div>
@@ -42,6 +44,18 @@ const controlElement=id=>document.querySelector('#'+id);
 function controlMessage(text){if(controlElement('control-feedback').textContent!==text)controlElement('control-feedback').textContent=text}
 let previewReplaces=false;
 function invalidatePreview(){previewVersion++;previewId=null;previewReplaces=false;controlElement('submit-job').disabled=true;controlElement('request-preview').hidden=true;const box=controlElement('confirm-replacement');if(box)box.checked=false}
+function collapseSubmittedSetup(body){
+ const section=controlElement('workflow');
+ if(section?.tagName!=='DETAILS'||!(body.queued>0))return;
+ const message=controlElement('setup-submission');
+ if(message)message.textContent=body.queued+' job(s) queued · Open to set up more';
+ section.open=false;
+ controlElement('setup-toggle')?.focus({preventScroll:true});
+ section.scrollIntoView?.({block:'start',behavior:'instant'});
+}
+document.querySelectorAll('a[href="#workflow"]').forEach(link=>link.addEventListener('click',()=>{
+ const section=controlElement('workflow');if(section?.tagName==='DETAILS')section.open=true;
+}));
 async function controlCall(action,extra={}){
  const response=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json','X-MuxMender-CSRF':controlToken||''},body:JSON.stringify({action,...extra})});
  const body=await response.json();if(!response.ok)throw Error(body.error||'Request failed');return body;
@@ -89,20 +103,25 @@ controlElement('video-choice').addEventListener('change',()=>{const file=control
  if(file&&!folderFiles.some(row=>row.path===file))return;controlElement('source-path').value=file||activeFolder;invalidatePreview()});
 for(const id of ['source-path','operation','codec-choice','hardware-choice','quality-choice','minimum-savings','recheck-history','legacy-color'])controlElement(id).addEventListener('change',invalidatePreview);
 controlElement('source-path').addEventListener('input',invalidatePreview);
+controlElement('file-age-unit').addEventListener('change',()=>{const all=controlElement('file-age-unit').value==='all';controlElement('file-age-value-wrap').hidden=all;controlElement('file-age-value').disabled=all;invalidatePreview()});
+controlElement('file-age-value').addEventListener('input',invalidatePreview);
 controlElement('preview-job').addEventListener('click',async()=>{invalidatePreview();const version=previewVersion;try{
  if(activeFolder===null||!workspaceReady)throw Error('Select a folder and wait for its video list');
  const settings={path:controlElement('source-path').value,recursive:!controlElement('video-choice').value&&controlElement('source-depth').value!=='top',mode:controlElement('operation').value,codec:controlElement('codec-choice').value,hardware:controlElement('hardware-choice').value,quality:controlElement('quality-choice').value,minimum_savings:Number(controlElement('minimum-savings').value),history_mode:controlElement('recheck-history').value||'reuse'};
  settings.legacy_color=controlElement('legacy-color').value||'inspect';
+ settings.age_unit=controlElement('file-age-unit').value||'all';settings.age_value=settings.age_unit==='all'?null:Number(controlElement('file-age-value').value);
+ if(settings.age_unit!=='all'&&(!Number.isInteger(settings.age_value)||settings.age_value<1||settings.age_value>100000))throw Error('Enter a whole number from 1 to 100000 for file age.');
  const body=await controlCall('preview',{settings});if(version!==previewVersion)return;previewId=body.preview_id;
  previewReplaces=body.settings.mode==='replace';
  controlElement('replacement-confirmation').hidden=!previewReplaces;
  const actionName={analyze:'Inspect only',test:'Test samples',encode:'Create smaller copies',replace:'Convert and permanently replace originals',keep:'Keep originals'}[body.settings.mode];
  controlElement('preview-description').textContent=body.files.length+' video(s) · '+actionName+' · Format: '+body.settings.codec+' · Hardware: '+body.settings.hardware+' · Preset: '+body.settings.quality+' · Minimum size reduction: '+body.settings.minimum_savings+'%. '+body.note;
+ const age=body.age_filter||{};controlElement('preview-description').textContent+=' Creation age: '+(body.settings.age_unit==='all'?'All files':'Within the last '+body.settings.age_value+' '+body.settings.age_unit)+'. '+(age.outside_age_window||0)+' outside the age window; '+(age.creation_date_unavailable||0)+' excluded because creation date is unavailable. Selection is fixed at preview time.';
  const list=controlElement('preview-files');list.replaceChildren();for(const row of body.files){const li=document.createElement('li');li.textContent=row.path+' ('+(row.signature[0]/1e9).toFixed(2)+' GB)'+(row.history_reason?' — Will skip. '+row.history_reason:'');list.append(li)}
  controlElement('request-preview').hidden=false;controlElement('submit-job').disabled=previewReplaces;controlMessage('Review the file list and settings. Preview expires in 10 minutes.');controlElement('preview-description').focus?.();
  }catch(error){controlMessage(error.message)}});
 controlElement('confirm-replacement').addEventListener('change',()=>{controlElement('submit-job').disabled=!previewId||(previewReplaces&&!controlElement('confirm-replacement').checked)});
-controlElement('submit-job').addEventListener('click',async()=>{if(!previewId||(previewReplaces&&!controlElement('confirm-replacement').checked))return;controlElement('submit-job').disabled=true;try{const body=await controlCall('submit',{preview_id:previewId,confirm_replace:previewReplaces&&controlElement('confirm-replacement').checked});invalidatePreview();controlMessage(body.queued+' new job(s) recorded. '+(body.history_skipped||[]).length+' skipped using saved history or active jobs.');refreshControls()}catch(error){controlMessage(error.message)}});
+controlElement('submit-job').addEventListener('click',async()=>{if(!previewId||(previewReplaces&&!controlElement('confirm-replacement').checked))return;controlElement('submit-job').disabled=true;try{const body=await controlCall('submit',{preview_id:previewId,confirm_replace:previewReplaces&&controlElement('confirm-replacement').checked});invalidatePreview();controlMessage(body.queued+' new job(s) recorded. '+(body.history_skipped||[]).length+' skipped using saved history or active jobs.');collapseSubmittedSetup(body);refreshControls()}catch(error){controlMessage(error.message);controlElement('submit-job').disabled=!previewId}});
 for(const [id,action] of [['pause-selected','pause'],['resume-selected','resume']])controlElement(id).addEventListener('click',async()=>{try{const body=await controlCall(action);controlMessage(body.message);refreshControls()}catch(error){controlMessage(error.message)}});
 controlElement('save-resource-profile').addEventListener('click',async()=>{try{const body=await controlCall('resource-profile',{profile:controlElement('resource-profile').value});controlMessage(body.message);refreshControls()}catch(error){controlMessage(error.message)}});
 async function refreshControls(){try{
@@ -110,11 +129,12 @@ async function refreshControls(){try{
  const response=await fetch('/api/controls',{signal:AbortSignal.timeout(8000)});if(!response.ok)throw Error('Job controls are unavailable. Check the app connection or ask your administrator to enable them.');const body=await response.json();controlToken=body.csrf_token;
  if(!controlElement('resource-profile').initialized){controlElement('resource-profile').value=body.resource_profile||'shared';controlElement('resource-profile').initialized=true}
  const resource=body.resources||{},metrics=resource.telemetry||{};
- controlElement('resource-status').textContent='Profile: '+(body.resource_profile||'shared')+' · '+(resource.active||0)+' workers · '+(resource.reason||'Collecting measurements')+(Number.isFinite(metrics.cpu_percent)?' · CPU '+metrics.cpu_percent.toFixed(0)+'%':'')+(Number.isFinite(metrics.available_gib)?' · Available RAM '+metrics.available_gib.toFixed(1)+' GiB':'')+(Number.isFinite(metrics.gpu_percent)?' · GPU/encoder '+metrics.gpu_percent.toFixed(0)+'%':' · GPU telemetry unavailable');
+ const metric=(key,suffix,digits=0)=>Number.isFinite(metrics[key])?metrics[key].toFixed(digits)+suffix:'Unavailable';
+ controlElement('resource-status').textContent='Host CPU '+metric('cpu_percent','%')+(Number.isFinite(metrics.container_cpu_percent)?' · App CPU allocation '+metric('container_cpu_percent','%'):'')+' · Available RAM '+metric('available_gib',' GiB',1)+' · GPU compute '+metric('gpu_compute_percent','%')+' · GPU encode '+metric('gpu_encode_percent','%')+' · GPU decode '+metric('gpu_decode_percent','%')+' · Free VRAM '+metric('vram_free_gib',' GiB',1)+' · '+(resource.active||0)+' workers · '+(resource.reason||'Collecting measurements');
  controlElement('control-availability').textContent=body.ready?'Ready · choose your action below':'Worker unavailable: '+(body.error||'starting');
  controlReady=body.ready;controlElement('preview-job').disabled=!body.ready||!workspaceReady;controlElement('pause-selected').disabled=!body.ready||body.paused;controlElement('resume-selected').disabled=!body.ready||!body.paused;
  controlElement('replacement-availability').textContent=body.replacement_enabled?'Replacement available. Choose it explicitly and confirm to remove originals after verification.':'Copy-only storage: make /media writable in TrueNAS to use replacement. No replacement environment variable is needed.';
- controlElement('control-state').textContent=(body.paused?(body.pause_reason||'Queue paused'):'Queue ready')+' · '+(body.counts.pending||0)+' waiting · '+(body.counts.running||0)+' running'+(body.error?' · '+body.error:'');
+ controlElement('control-state').textContent=(body.wait_reason||(body.paused?(body.pause_reason||'Queue paused'):'Queue ready'))+' · '+(body.counts.pending||0)+' waiting · '+(body.counts.running||0)+' running';
  if(typeof receiveControls==='function')receiveControls(body);
  }catch(error){controlElement('control-availability').textContent=error.message;controlElement('preview-job').disabled=true;if(typeof connectionUpdate==='function')connectionUpdate('controls',false)}
  finally{clearTimeout(controlTimer);controlTimer=setTimeout(refreshControls,10000)}}refreshControls();

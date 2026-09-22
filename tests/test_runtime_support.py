@@ -49,6 +49,37 @@ class RuntimeTests(unittest.TestCase):
             stop.assert_called_once()
             self.assertIsNotNone(stop.call_args.args[0].poll())
 
+    @patch('runtime_support.process_memory_bytes',return_value=None)
+    def test_ordered_mux_memory_exit_race_is_not_a_monitor_failure(self,memory):
+        for exit_code in (0,7):
+            process=Mock();process.poll.side_effect=[None,exit_code]
+            guard_ordered_mux_memory(process,['ffmpeg','-max_interleave_delta','0'])
+            process.wait.assert_called_once_with(timeout=0.1)
+            # This guard does not approve nonzero exit: the execution loop does.
+            self.assertEqual(memory.call_count,1 if exit_code==0 else 2)
+
+    @patch('runtime_support.process_memory_bytes',side_effect=[None,None])
+    def test_live_mux_without_memory_evidence_still_fails(self,memory):
+        process=Mock();process.poll.return_value=None
+        process.wait.side_effect=subprocess.TimeoutExpired('mux',0.1)
+        with self.assertRaisesRegex(RuntimeError,'unavailable'):
+            guard_ordered_mux_memory(process,['ffmpeg','-max_interleave_delta','0'])
+        self.assertEqual(memory.call_count,2)
+
+    @patch('runtime_support.process_memory_bytes',side_effect=[None,1024**3+1])
+    def test_recovered_memory_probe_still_enforces_limit(self,memory):
+        process=Mock();process.poll.return_value=None
+        process.wait.side_effect=subprocess.TimeoutExpired('mux',0.1)
+        with self.assertRaisesRegex(RuntimeError,'memory guard'):
+            guard_ordered_mux_memory(process,['ffmpeg','-max_interleave_delta','0'])
+
+    def test_exit_race_does_not_hide_nonzero_stage_exit(self):
+        from native_pipeline import stage
+        command=[sys.executable,'-c','import sys;sys.exit(7)','-max_interleave_delta','0']
+        with patch('runtime_support.process_memory_bytes',return_value=None):
+            with self.assertRaisesRegex(RuntimeError,'Stage failed \\(7\\)'):
+                stage(command,1,timeout=5,stall=0)
+
     def test_eta_uses_recent_rate_and_resets_on_new_stage(self):
         with patch('runtime_support.time.monotonic') as clock:
             clock.return_value = 0
