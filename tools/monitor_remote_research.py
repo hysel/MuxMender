@@ -22,7 +22,7 @@ for root_text in ROOTS:
  jobs=[]
  outcomes=[]
  for p in root.glob('*/auto-*/status.json'):
-  try:outcomes.append(json.loads(p.read_text()).get('state'))
+  try:outcomes.append(json.loads(p.read_text()))
   except (OSError,ValueError):pass
  for p in root.rglob('job.json'):
   try:
@@ -32,8 +32,9 @@ for root_text in ROOTS:
  active=max(jobs,key=lambda j:j.get('updated',0),default={})
  steps=b.get('steps',[])
  result.append(dict(state=b.get('state'),started=b.get('started'),
-  validated=outcomes.count('validated-copy-awaiting-playback'),
-  retained=sum(s in ('trials-completed','full-output-rejected-insufficient-savings') for s in outcomes),
+  validated=sum(s.get('state')=='validated-copy-awaiting-playback' for s in outcomes),
+  evaluation_errors=sum(s.get('decision',{}).get('reason_code')=='evaluation_inconclusive' for s in outcomes),
+  retained=sum(s.get('state') in ('trials-completed','full-output-rejected-insufficient-savings') and s.get('decision',{}).get('reason_code')!='evaluation_inconclusive' for s in outcomes),
   finished=b.get('finished'),updated=b.get('updated'),total=b.get('total',0),
   completed=sum(s.get('state') in ('passed','failed') for s in steps),
   failures=sum(s.get('state')=='failed' for s in steps),current=b.get('current'),
@@ -59,7 +60,7 @@ for root_text in ROOTS:
   try:jobs.append(json.loads(p.read_text()))
   except (OSError,ValueError):pass
  for p in root.rglob('auto-*/status.json'):
-  try:outcomes.append(json.loads(p.read_text()).get('state'))
+  try:outcomes.append(json.loads(p.read_text()))
   except (OSError,ValueError):pass
 if not jobs:raise RuntimeError('Tracked development job has not registered')
 j=max(jobs,key=lambda x:x.get('started',0))
@@ -74,8 +75,9 @@ if not done:
 result=[dict(state=('completed-with-failures' if state!='completed' else 'completed') if done else 'running',
  started=j.get('started'),finished=j.get('finished'),updated=j.get('updated') if alive else 0,
  total=1,completed=int(done),failures=int(done and state!='completed'),
- validated=outcomes.count('validated-copy-awaiting-playback'),
- retained=sum(s in ('trials-completed','full-output-rejected-insufficient-savings') for s in outcomes),
+ validated=sum(s.get('state')=='validated-copy-awaiting-playback' for s in outcomes),
+ evaluation_errors=sum(s.get('decision',{}).get('reason_code')=='evaluation_inconclusive' for s in outcomes),
+ retained=sum(s.get('state') in ('trials-completed','full-output-rejected-insufficient-savings') and s.get('decision',{}).get('reason_code')!='evaluation_inconclusive' for s in outcomes),
  current=1,phase=j.get('phase'),stage_percent=j.get('stage_percent'),stage_eta=j.get('stage_eta'),
  stage_updated=j.get('stage_updated'),detail=j.get('detail'),workflow_stage=j.get('workflow_stage'))]
 print(json.dumps(result))
@@ -127,19 +129,23 @@ def main():
                 total = sum(b['total'] for b in batches)
                 completed = sum(b['completed'] for b in batches)
                 failures = sum(b['failures'] for b in batches)
+                evaluation_errors = sum(b.get('evaluation_errors',0) for b in batches)
                 validated = sum(b['validated'] for b in batches)
                 retained = sum(b['retained'] for b in batches)
                 active = next((b for b in batches if b['state'] not in
                                ('completed','completed-with-failures')), None)
                 done = active is None
                 fresh = done or time.time()-float(active.get('updated') or 0) < 90
-                state = ('failed' if failures else 'completed') if done else ('running' if fresh else 'stale')
+                state = ('failed' if failures or evaluation_errors else 'completed') if done else ('running' if fresh else 'stale')
                 phase = 'Research batch finished' if done else (active.get('phase') or 'Remote test '+str(completed+1)+' of '+str(total))
-                detail = f'{completed}/{total} commands finished; {validated} validated copies; {retained} size/quality keeps; {failures} command failures. Other completed commands may be unsupported-input skips. Originals retained.'
+                detail = f'{completed}/{total} commands finished; {validated} validated copies; {retained} size/quality keeps; {evaluation_errors} incomplete evaluations; {failures} command failures. Other completed commands may be unsupported-input skips. Originals retained.'
+                if done and evaluation_errors:phase='Evaluation incomplete — investigation required'
+                if done and entry.get('completion_note'):
+                    detail += ' '+str(entry['completion_note'])
                 if active and active.get('detail'):detail += ' '+str(active['detail'])
                 if not fresh:detail += ' Remote heartbeat is stale; current progress is unconfirmed.'
                 stage_fresh = active and time.time()-float(active.get('stage_updated') or 0) < 60
-                job.save(state=state, started=min(b['started'] for b in batches),
+                job.save(title=entry['title'],state=state, started=min(b['started'] for b in batches),
                     finished=max((b.get('finished') or 0 for b in batches)) if done else None,
                     phase=phase, progress_kind='structured', completed=completed, total=total,
                     unit='tests', percent=100*completed/total if total else None,

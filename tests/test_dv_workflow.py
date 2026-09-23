@@ -89,6 +89,31 @@ class DVWorkflowTests(unittest.TestCase):
             changed=copy.deepcopy(report);changed['decoded_frame_checks'][key]=False
             with self.subTest(key=key),self.assertRaises(ValueError):flow.verified_full(changed,Path('fixture.mkv'),True)
 
+    def test_interruption_retains_source_and_never_starts_full_encode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);source=root/'fixture.mkv';source.write_bytes(b'original'*100)
+            output=root/'work'
+            args=SimpleNamespace(hardware='nvidia',playback_verified_codecs=['hevc'],ffmpeg='ffmpeg',ffprobe='ffprobe',
+                seconds=10,hevc_nvenc_cq=[24],minimum_savings_percent=25,vmaf_mean=90,vmaf_p5=90,
+                execute=True,encode_best=True,min_free_gib=1)
+            metadata=dict(streams=[dict(codec_type='video')])
+            def stop(options):
+                (output/'STOP').write_text('stop')
+                options.source_guard()
+                self.fail('STOP must interrupt before sample encoding')
+            with patch.object(flow.mm,'probe',return_value=SimpleNamespace(duration_seconds=600)), \
+                 patch.object(flow.dv,'require_candidate'),patch.object(flow.shutil,'which',side_effect=lambda x:x), \
+                 patch('hdr_inspection.inspect',return_value={'side_data_types':[]}), \
+                 patch('auto_optimize.Workflow.preflight_source'),patch.object(flow.dv,'run',side_effect=stop), \
+                 patch.object(flow.full,'run') as full:
+                with self.assertRaises(KeyboardInterrupt):flow.run(args,source,output,metadata,fingerprint(source))
+                full.assert_not_called()
+            state=json.loads(next(output.glob('auto-*/status.json')).read_text())
+            self.assertEqual(state['state'],'stopped-original-retained')
+            self.assertFalse(state['publication_authorized'])
+            self.assertEqual(source.read_bytes(),b'original'*100)
+            self.assertFalse(list(output.rglob('full-hevc.mkv')))
+
     def test_orchestrator_keeps_copy_and_shared_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);source=root/'fixture.mkv';source.write_bytes(b'original'*100)

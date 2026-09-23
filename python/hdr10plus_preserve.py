@@ -12,6 +12,7 @@ import time
 import uuid
 from pathlib import Path
 from fractions import Fraction
+from decimal import Decimal
 
 from hdr10plus_validation import preserve_json_pairs, validate_frames
 from job_tracking import tracked_call, progress
@@ -52,6 +53,30 @@ def frame_records(path):
                 buffer=buffer[end:];need_value=False;seen=True
             if not block:raise ValueError('Truncated frame evidence')
             if len(buffer)>4*1024*1024:raise ValueError('Frame evidence exceeds bounded record size')
+
+
+def write_decoded_timestamps(frames, destination, guard=lambda: None):
+    """Assign presentation timestamps to decoded pictures, not encoded packets.
+
+    Cut GOPs may retain non-output/preroll packets. Container timestamp extraction
+    includes those packets; applying that list to a fresh encode shifts pictures.
+    Full decoded timing validation remains mandatory after muxing.
+    """
+    previous=None
+    count=0
+    with Path(destination).open('x',encoding='utf-8') as stream:
+        stream.write('# timestamp format v2\n')
+        for frame in frames:
+            if count%4096==0:guard()
+            try:value=Fraction(str(frame['pts_time']))
+            except (KeyError,ValueError,ZeroDivisionError) as exc:
+                raise ValueError('Decoded frame requires a finite presentation timestamp') from exc
+            if previous is not None and value<=previous:
+                raise ValueError('Decoded presentation timestamps must increase')
+            stream.write(format(Decimal(value.numerator)*1000/Decimal(value.denominator),'.9f')+'\n')
+            previous=value;count+=1
+        if not count:raise ValueError('No decoded presentation timestamps')
+    return count
 
 
 def preservation_mux_command(mkvmerge, output, track_order, rate, timestamps, options, injected, source):
@@ -169,13 +194,8 @@ def finalize(args):
             command([args.hdr10plus_tool,'inject','-i',raw,'-j',run/'hdr10plus.json','-o',injected],'Restoring HDR10Plus')
         else:
             injected=raw  # Static metadata must already survive encoding; full validation proves it.
-        timestamp_source=source
-        if source.suffix.lower()!='.mkv':
-            timestamp_source=run/'timestamp-reference.mkv'
-            command([args.ffmpeg,'-v','error','-nostdin','-n','-copyts','-i',source,'-map','0','-c','copy',
-                     '-map_metadata','0','-map_chapters','0','-avoid_negative_ts','disabled',timestamp_source],
-                    'Preparing container-independent timestamp reference')
-        command([args.mkvextract,timestamp_source,'timestamps_v2',str(video['index'])+':'+str(run/'timestamps.txt')],'Extracting source timestamps')
+        progress('Restoring decoded presentation timestamps',directory=run)
+        write_decoded_timestamps(frame_records(source_frames),run/'timestamps.txt',guard)
         from media_metadata import canonical_tags
         tags=canonical_tags(video.get('tags',{}));disposition=video.get('disposition',{})
         options=['--language','0:'+tags.get('language','und'),'--track-name','0:'+tags.get('title',''),
@@ -203,7 +223,6 @@ def finalize(args):
         after=probe(output);metadata_check(before,after,'hevc')
         if getattr(args,'repair_only',False):
             intermediates={raw,injected,packaged,*cover_files}
-            if timestamp_source!=source:intermediates.add(timestamp_source)
             result_holder.update(output=str(output),reference_frames=str(source_frames),validated=False,
                                  intermediates=[str(path) for path in sorted(intermediates)])
             return

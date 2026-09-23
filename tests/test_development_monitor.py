@@ -52,6 +52,16 @@ class DevelopmentMonitorTests(unittest.TestCase):
             (folder/'status.json').write_text(json.dumps(dict(state='validated-copy-awaiting-playback')))
             self.assertEqual(self.snapshot(root)['validated'],1)
 
+    def test_incomplete_evaluation_is_not_quality_keep(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            (root/'job.json').write_text(json.dumps(dict(state='completed',started=1,finished=2)))
+            folder=root/'auto-fixture';folder.mkdir()
+            (folder/'status.json').write_text(json.dumps(dict(state='trials-completed',decision=dict(reason_code='evaluation_inconclusive'))))
+            result=self.snapshot(root)
+            self.assertEqual(result['retained'],0)
+            self.assertEqual(result['evaluation_errors'],1)
+
     def test_dead_remote_process_is_stale_not_success(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
