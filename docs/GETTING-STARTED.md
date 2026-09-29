@@ -12,9 +12,10 @@ is still needed for work in progress and job records, even in replacement mode.
 
 1. **Select a folder or video.** Subfolders are included by default. Choose one
    level if you only want files directly inside the selected folder.
-2. **Choose an action.** Analyze to inspect files, test to try short clips, encode
-   to keep a separate converted copy, or replace to swap the original after
-   successful validation. Replacement permanently removes the original.
+2. **Choose an action.** Inspect files, test short clips, create smaller copies,
+   or replace originals after successful validation. These are different jobs;
+   inspection does not automatically lead to conversion. Replacement permanently
+   removes the original.
 3. **Set your preferences.** Choose automatic or supported manual encoding
    settings, your quality target and minimum size reduction. Select output
    codecs you know your players can use.
@@ -27,6 +28,26 @@ is still needed for work in progress and job records, even in replacement mode.
 Resolution stays unchanged unless you explicitly request another workflow.
 HDR, audio and subtitles need their own checks; a playable picture alone does
 not prove that all information survived.
+
+## Choose the right action
+
+| Action | What happens | What happens to the original? |
+| --- | --- | --- |
+| **Inspect videos — no conversion** | Reads the video's properties and checks the processing plan. **Inspection complete** means this inspection finished, not that a smaller video was created. | Unchanged; no encoding or disk savings. |
+| **Test quality and size — samples only** | Tries short encoded samples to compare quality and size. It does not create a full converted video. | Unchanged. |
+| **Create smaller copies — only if checks pass** | Tests candidates, then converts and validates the full video if a candidate qualifies. | Kept alongside the new copy; this does not free library space. |
+| **Convert and replace originals — only after all checks pass** | Converts, validates and verifies the new file at its destination before replacing the original. Requires explicit confirmation. | Permanently removed only after successful checks and verified copying. |
+| **Keep originals — do not convert** | Records your decision not to convert. | Unchanged; no encoding. |
+
+If you see **Inspection complete** and want a smaller video, submit a new request
+for the same selection with **Create smaller copies** or **Convert and replace
+originals**. Review the selection before queuing it. Resuming an existing queue
+keeps its saved action; it does not turn an inspection job into a conversion job.
+
+A completed inspection is not a verdict that the file cannot be made smaller.
+Likewise, passing sample tests does not guarantee the full output will pass every
+check. Read the final result to see whether a copy was created, the original was
+replaced, or the original was kept—and why.
 
 ## Understand progress and savings
 

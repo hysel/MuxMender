@@ -18,6 +18,11 @@ It works with files you already have. It does not find, download or share videos
 3. Set your quality and savings targets, or use automatic encoding selection.
 4. Follow the current step and read the result: converted, kept, or needs attention.
 
+**“Inspection complete” means the file was inspected, not converted.** Inspection
+does not save disk space. Sample testing also stops before full conversion.
+Choose **Create smaller copies** or **Convert and replace originals** to request
+full conversion. See [what each action does](docs/GETTING-STARTED.md#choose-the-right-action).
+
 The app compares supported HEVC/H.265 and AV1 options. It preserves the original
 resolution by default and checks audio, subtitles, chapters and HDR information
 where supported. Not every video will get smaller, and lossy encoding cannot
