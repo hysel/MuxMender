@@ -1,12 +1,19 @@
 import tempfile
 import unittest
 from pathlib import Path
-from hdr10plus_preserve import frame_records
+from hdr10plus_preserve import frame_records, attached_artifacts
 from hdr10plus_preserve import preservation_mux_command, preserved_tracks_command
 from fractions import Fraction
 
 
 class FrameRecordsTests(unittest.TestCase):
+    def test_artifact_registry_uses_actual_attachment_paths(self):
+        command=['ffmpeg','-i','input.mkv','-attach','owned-cover-4.bin',
+                 '-metadata:s:4','filename=cover.jpg','-attach','owned-cover-5.bin','out.mkv']
+        self.assertEqual(attached_artifacts(command),
+                         [Path('owned-cover-4.bin'),Path('owned-cover-5.bin')])
+        self.assertEqual(attached_artifacts(['ffmpeg','-i','input.mkv','out.mkv']),[])
+
     def test_cover_is_copied_from_source_not_replaced_with_movie(self):
         streams=[dict(index=0,codec_type='video'), dict(index=1,codec_type='audio'),
                  dict(index=2,codec_type='video',disposition={'attached_pic':1})]

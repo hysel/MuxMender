@@ -1,0 +1,2 @@
+# Qualified Linux x86-64 CPython 3.11+ ABI3 wheel; package includes its notices.
+av==18.1.0 --hash=sha256:8a032e8d8ebc73dec079364b9b4a6837638a2d106e8472314e685ffbf163e700

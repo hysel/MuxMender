@@ -15,8 +15,8 @@ SDR_MATRIX={'bt709','smpte170m','bt470bg','smpte240m','bt2020nc'}
 def inspect_frames(ffprobe,source,duration):
     if not math.isfinite(duration) or duration<=0:raise ValueError('Invalid duration for color inspection')
     intervals=','.join(f'{duration*f:.3f}%+#24' for f in (.1,.5,.9))
-    command=[ffprobe,'-v','error','-select_streams','v:0','-read_intervals',intervals,'-show_frames',
-             '-show_entries','frame=color_primaries,color_transfer,color_space,color_range,interlaced_frame,repeat_pict:frame_side_data',
+    command=[ffprobe,'-v','error','-select_streams','V:0','-read_intervals',intervals,'-show_frames',
+             '-show_entries','frame=color_primaries,color_transfer,color_space,color_range,interlaced_frame,top_field_first,repeat_pict:frame_side_data',
              '-of','json',str(source)]
     return json.loads(subprocess.check_output(command,text=True,timeout=60)).get('frames',[])
 
@@ -24,6 +24,12 @@ def inspect_frames(ffprobe,source,duration):
 def confirm_progressive(frames):
     """Bounded admission evidence only; output/reference full-frame checks still apply."""
     return len(frames)>=24 and all(f.get('interlaced_frame')==0 and f.get('repeat_pict')==0 for f in frames)
+
+
+def confirm_interlaced(frames):
+    if len(frames)<24 or any(f.get('interlaced_frame')!=1 or f.get('repeat_pict')!=0 for f in frames):return None
+    orders={f.get('top_field_first') for f in frames}
+    return 'tt' if orders=={1} else 'bb' if orders=={0} else None
 
 
 def can_preserve_unspecified_transfer(video):
@@ -34,10 +40,11 @@ def can_preserve_unspecified_transfer(video):
 
 
 def can_preserve_unspecified_color(video):
+    def declared(value):
+        return value in UNKNOWN or (isinstance(value,str) and re.fullmatch(r'[a-z][a-z0-9_-]{0,31}',value) is not None)
     return (video.get('color_range') in ('tv','pc')
-            and video.get('color_primaries') in SDR_PRIMARIES | set(UNKNOWN)
-            and video.get('color_transfer') in SDR_TRANSFER | set(UNKNOWN)
-            and video.get('color_space') in SDR_MATRIX | set(UNKNOWN))
+            and video.get('color_transfer') not in ('smpte2084','arib-std-b67')
+            and all(declared(video.get(key)) for key in ('color_primaries','color_transfer','color_space')))
 
 
 def inspect_h264_default_range(ffmpeg, source, duration):
@@ -47,7 +54,7 @@ def inspect_h264_default_range(ffmpeg, source, duration):
     for fraction in (.1,.5,.9):
         try:
             result=subprocess.run([ffmpeg,'-hide_banner','-nostdin','-loglevel','info',
-                '-ss',str(duration*fraction),'-i',str(source),'-map','0:v:0','-c:v','copy',
+                '-ss',str(duration*fraction),'-i',str(source),'-map','0:V:0','-c:v','copy',
                 '-bsf:v','trace_headers','-frames:v','1','-f','null','-'],
                 capture_output=True,text=True,timeout=30)
         except (OSError,subprocess.SubprocessError):
@@ -93,7 +100,7 @@ def inspect_mpeg4_default_range(ffmpeg,source,duration):
     for fraction in (.1,.5,.9):
         try:
             result=subprocess.run([ffmpeg,'-v','error','-nostdin','-ss',str(duration*fraction),
-                '-i',str(source),'-map','0:v:0','-c:v','copy','-frames:v','1','-f','m4v','pipe:1'],
+                '-i',str(source),'-map','0:V:0','-c:v','copy','-frames:v','1','-f','m4v','pipe:1'],
                 capture_output=True,timeout=30)
         except (OSError,subprocess.SubprocessError):return None
         count=mpeg4_absent_signal_headers(result.stdout) if result.returncode==0 else None
@@ -106,7 +113,8 @@ def inspect_mpeg4_default_range(ffmpeg,source,duration):
 
 def resolve(data,frames,assumption='inspect'):
     effective=copy.deepcopy(data)
-    video=next(s for s in effective['streams'] if s['codec_type']=='video')
+    from auto_optimize import main_video
+    video=main_video(effective)
     evidence=dict(original={k:video.get(k) for k in FIELDS},decoded_frames=len(frames),assumed=[],recovered=[])
     for frame in frames:
         for item in frame.get('side_data_list',[]):

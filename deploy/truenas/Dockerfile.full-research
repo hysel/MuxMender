@@ -1,0 +1,10 @@
+# Build on the locally installed app image: reuses its pinned media dependencies.
+ARG BASE_IMAGE=muxmender-research-base:local
+FROM ${BASE_IMAGE}
+USER root
+COPY python/ /opt/muxmender/
+ENV PYTHONPATH=/opt/muxmender PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,video,utility,graphics
+USER 3005:3005
+EXPOSE 8765
+ENTRYPOINT ["python3", "-B", "-m", "full_research_app"]

@@ -38,21 +38,33 @@ def finalize(workflow, source, encoded, output, before, tracks, label, duration)
     # to the source. Audio packet bytes are copied, not decoded/re-encoded here.
     if output.resolve() in (source.resolve(),encoded.resolve()) or output.exists():
         raise ValueError('AAC finalization requires a new, separate output')
+    from auto_optimize import paired_streams,is_cover
+    encoded_data=workflow.probe(encoded)
+    pairs=paired_streams(before,encoded_data)
+    mapped={a['index']:b['index'] for a,b in pairs}
     command=[workflow.args.ffmpeg,'-v','error','-nostdin','-n','-copyts','-i',str(encoded)]
     inputs={}
     for index,t in tracks.items():
         inputs[index]=len(inputs)+1
-        command+=['-itsoffset',format(float(t['seconds']),'.12f'),'-i',str(source)]
-    for s in before['streams']:
-        index=s['index'];command+=['-map',f'{inputs[index]}:{index}' if index in inputs else f'0:{index}']
+        # MP4 carries skip-sample/edit-list semantics natively. Applying the
+        # Matroska CodecDelay compensation here would move the audio clock.
+        if output.suffix.lower() not in ('.mp4','.mov'):
+            command+=['-itsoffset',format(float(t['seconds']),'.12f')]
+        command+=['-i',str(source)]
+    for s,_ in pairs:
+        index=s['index'];command+=['-map',f'{inputs[index]}:{index}' if index in inputs else f'0:{mapped[index]}']
     command+=['-c','copy','-map_metadata','0','-map_chapters','0','-avoid_negative_ts','disabled']
-    for i,s in enumerate(before['streams']):
-        command += [f'-map_metadata:s:{i}',f'0:s:{i}',f'-disposition:{i}',
+    for i,(s,_) in enumerate(pairs):
+        command += [f'-map_metadata:s:{i}',f"0:s:{mapped[s['index']]}",f'-disposition:{i}',
                     '+'.join(k for k,v in s.get('disposition',{}).items() if v) or '0']
     command+=['-progress','pipe:1','-nostats',str(output)]
+    if output.suffix.lower() in ('.mp4','.mov'):
+        from media_metadata import mp4_clock_options
+        command[-1:-1]=mp4_clock_options(before['streams'])
     if any(s.get('disposition',{}).get('attached_pic') for s in before['streams']):
-        command=workflow.preserve_covers(command,encoded,workflow.probe(encoded),label+'-aac')
+        command=workflow.preserve_covers(command,encoded,encoded_data,label+'-aac')
     workflow.execute(command,label+'-aac-copy',duration)
+    if output.suffix.lower() in ('.mp4','.mov'):return
     edit=['mkvpropedit',str(output)];audio=0
     for s in before['streams']:
         if s['codec_type']=='audio':audio+=1

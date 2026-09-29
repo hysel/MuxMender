@@ -16,7 +16,7 @@ class WorkspaceAccessibilityTests(unittest.TestCase):
         self.assertIn('Number.isFinite(metrics.container_cpu_percent)',SCRIPT)
 
     def test_result_tools_disclosure_keeps_results_visible(self):
-        start=HTML.index('<details id="result-tools" open>')
+        start=HTML.index('<details id="result-tools">')
         end=HTML.index('</details>',start)
         for field in ('result-search','result-filter','result-sort','result-batch','show-archived'):
             self.assertIn('id="'+field+'"',HTML[start:end])
@@ -80,7 +80,8 @@ elements.workflow.open=true;if(!elements.workflow.open)throw Error('Cannot reope
         self.assertTrue(set(parser.labels)<=set(parser.ids))
         self.assertIn('<html lang="en">',HTML)
         self.assertIn('aria-live="polite"',HTML)
-        self.assertEqual(HTML.count('<option value="replaced">'),1)
+        result_filter=HTML.split('id="result-filter"',1)[1].split('</select>',1)[0]
+        self.assertEqual(result_filter.count('<option value="replaced">'),1)
         self.assertIn('label for="result-sort"',HTML)
 
     def test_both_theme_text_and_control_contrast(self):

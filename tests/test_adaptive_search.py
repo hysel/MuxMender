@@ -68,7 +68,14 @@ class AdaptiveTests(unittest.TestCase):
     def test_smaller_full_output_still_requires_validation(self):
         self.exercise_workflow(True, full_output_bytes=4000)
 
-    def exercise_workflow(self, adaptive_passes, full_output_bytes=None):
+    def test_rate_retry_winner_requires_all_scenes_and_full_validation(self):
+        self.exercise_workflow(True,full_output_bytes=4000,encoder='hevc_nvenc',rate_retry_passes=True)
+
+    def test_failed_rate_probe_exhausts_one_trial_budget_without_cacheable_skip(self):
+        self.exercise_workflow(False,encoder='hevc_nvenc',rate_runtime='failed',max_extra_trials=1)
+
+    def exercise_workflow(self, adaptive_passes, full_output_bytes=None,encoder='av1_nvenc',rate_retry_passes=False,
+                          rate_runtime='working',max_extra_trials=8):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);(root/'input').mkdir();source=root/'input/source.mkv';source.write_bytes(b'original'*1000)
             output=root/'output'
@@ -83,7 +90,8 @@ class AdaptiveTests(unittest.TestCase):
                 return data
             def quality(workflow,reference,encoded,label,count,duration):
                 calls.append(label)
-                passed=label.startswith('self-') or ('-p7-' in label and adaptive_passes)
+                passed=(label.startswith('self-') or ('-p7-' in label and adaptive_passes) or
+                        ('-peak' in label and rate_retry_passes))
                 return dict(mean=99 if label.startswith('self-') else 96,
                             p5=99 if label.startswith('self-') else 92 if passed else 85,
                             passed=passed)
@@ -94,12 +102,14 @@ class AdaptiveTests(unittest.TestCase):
                  patch.object(ao.Workflow,'quality',quality), \
                  patch.object(ao,'compare_frames',return_value=1), \
                  patch.object(ao.subprocess,'check_output',return_value='libvmaf'), \
-                 patch.object(ao.mm,'ffmpeg_encoder_names',return_value={'av1_nvenc'}), \
+                 patch.object(ao.mm,'ffmpeg_encoder_names',return_value={encoder}), \
+                 patch.object(ao,'probe_rate_retry',return_value={'status':rate_runtime}) as rate_probe, \
                  patch.object(ao,'probe_encoder',return_value={'status':'working'}), \
                  patch.object(ao.mm,'probe',return_value=None), \
-                 patch.object(ao.mm,'encoder_options',return_value=['-c:v','av1_nvenc','-cq','21','-preset','p6']):
+                 patch.object(ao.mm,'encoder_options',return_value=['-c:v',encoder,'-cq','21','-preset','p6']):
                 self.assertEqual(ao.main([str(source),'--output-dir',str(output),'--hardware','nvidia',
-                    '--playback-verified-codecs','av1','--execute','--adaptive',
+                    '--playback-verified-codecs',encoder.split('_')[0],'--execute','--adaptive','--savings-mode','fixed',
+                    '--max-extra-trials',str(max_extra_trials),
                     *(['--encode-best','--minimum-savings-percent','10'] if full_output_bytes is not None else [])]),0)
             run=next(output.glob('auto-*'))
             state=json.loads((run/'status.json').read_text())
@@ -114,8 +124,17 @@ class AdaptiveTests(unittest.TestCase):
                     self.assertEqual(len(full_calls),1)
             else:
                 self.assertEqual(state['decision']['action'],'encode_copy' if adaptive_passes else 'keep_original')
-            self.assertEqual(len([c for c in calls if '-p7-' in c]),3 if adaptive_passes else 6)
+            self.assertEqual(len([c for c in calls if '-p7-' in c]),0 if rate_retry_passes or rate_runtime=='failed' else 3 if adaptive_passes else 6)
+            if rate_retry_passes:
+                self.assertEqual(len([c for c in calls if '-peak' in c]),3)
+                rate_probe.assert_called_once()
+                selection=json.loads((run/'selection.json').read_text())
+                self.assertIn('nvenc_maxrate_mbps',selection['selected']['settings'])
             search=json.loads((run/'adaptive-search.json').read_text())
-            self.assertEqual(search['extra_trials'],1 if adaptive_passes else 6)
+            self.assertEqual(search['extra_trials'],1 if adaptive_passes or rate_runtime=='failed' else 6)
+            self.assertEqual(search['budget'],max_extra_trials)
+            if rate_runtime=='failed':
+                self.assertFalse(state['decision']['cacheable'])
+                self.assertEqual(state['decision']['outcome_category'],'error')
             self.assertEqual(search['cpu_fallback'],'not_run_requires_explicit_opt_in')
             self.assertEqual(source.read_bytes(),b'original'*1000)

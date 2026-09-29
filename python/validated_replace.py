@@ -1,4 +1,4 @@
-"""Explicitly selected, journaled replacement of a fully validated MKV output."""
+"""Explicitly selected, journaled replacement of a fully validated media output."""
 import json
 import math
 import os
@@ -34,14 +34,14 @@ class DestinationConflict(ValueError):
 from media_naming import readable_destination
 
 
-def destination_for(original):
-    destination=readable_destination(original)
+def destination_for(original, output_suffix='.mkv'):
+    destination=readable_destination(original,output_suffix=output_suffix)
     if destination!=original and any(p.name.casefold()==destination.name.casefold() for p in original.parent.iterdir()):
         raise DestinationConflict('Original kept: destination filename already exists: '+destination.name)
     return destination
 
 
-def replace_validated(source, media, writable, result_dir, minimum_savings, job_id, stopped=lambda:False):
+def replace_validated(source, media, writable, result_dir, minimum_savings, job_id, stopped=lambda:False, *, savings_mode='fixed'):
     workflow_stage('publish')
     if not math.isfinite(minimum_savings) or not 0<=minimum_savings<100:
         raise ValueError('Replacement savings threshold must be finite and in [0,100)')
@@ -61,15 +61,21 @@ def replace_validated(source, media, writable, result_dir, minimum_savings, job_
     if selection.get('action')!='encode_copy' or not any(c.get('id')==chosen.get('id') and c.get('rejected_reasons')==[] for c in selection.get('candidates',[])):
         raise ValueError('Selected candidate did not pass quality checks')
     output=Path(status['output'])
-    if output.is_symlink() or output.resolve(strict=True).parent!=result_dir or output.suffix!='.mkv':
+    from media_workflow import validated_output_container
+    if output.is_symlink() or output.resolve(strict=True).parent!=result_dir:
         raise ValueError('Invalid validated output path')
+    if not validated_output_container(status,output):
+        raise ValueError('Native-container publication requires explicit validated container evidence')
     original=target_for(source,media,writable)
-    target=destination_for(original)
+    target=destination_for(original,output.suffix)
     before=original.stat()
     if before.st_size<=0 or output.stat().st_size<=0:
         raise ValueError('Empty source/output cannot be published')
     saving=100*(1-output.stat().st_size/before.st_size)
-    if output.stat().st_size>=before.st_size or saving<minimum_savings:raise ValueError('Full output does not meet minimum savings')
+    from savings_policy import requirement
+    needed=requirement(before.st_size,savings_mode,minimum_savings)
+    if output.stat().st_size>=before.st_size or before.st_size-output.stat().st_size<needed['required_bytes']:
+        raise ValueError('Full output does not meet minimum savings')
     if digest(original)!=status.get('source_sha256') or digest(output)!=status.get('output_sha256'):
         raise ValueError('Source or output changed since validation')
     if stopped():raise RuntimeError('Replacement cancelled before publication')
@@ -99,7 +105,7 @@ def replace_validated(source, media, writable, result_dir, minimum_savings, job_
     if digest(stage)!=status['output_sha256']:raise ValueError('Staged copy failed verification; original retained')
     target_for(source,media,writable)
     if digest(original)!=status['source_sha256'] or stopped():raise ValueError('Source changed or shutdown requested; original retained')
-    if destination_for(original)!=target:
+    if destination_for(original,output.suffix)!=target:
         raise DestinationConflict('Folder contents changed during encoding/publication; original retained')
     record['state']='ready';write(journal,record)
     os.link(original,backup)  # Exclusive creation; unsupported hard links fail safely.
@@ -118,10 +124,17 @@ def replace_validated(source, media, writable, result_dir, minimum_savings, job_
         fd=os.open(target.parent,os.O_RDONLY)
         try:os.fsync(fd)
         finally:os.close(fd)
+    # Persist the verified state before removing original links. Recovery can
+    # distinguish an interrupted finalization from an unverified publication.
+    record['state']='published-verified';write(journal,record)
     if target!=original:
         if digest(original)!=status['source_sha256']:raise ValueError('Original changed after publication; original and recovery backup retained')
         original.unlink()
     backup.unlink()
+    if os.name=='posix':
+        fd=os.open(target.parent,os.O_RDONLY)
+        try:os.fsync(fd)
+        finally:os.close(fd)
     record['state']='replaced';write(journal,record)
     # Cleanup failure must not relabel a successfully published replacement as a
     # failed encode or invite a duplicate replacement. Preserve a retryable note.

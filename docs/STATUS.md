@@ -1,5 +1,20 @@
 # Project status
 
+## Current checkpoint: 28 September 2026
+
+The working tree and observed production execution identify v41. See
+[supported use cases](SUPPORTED-USE-CASES.md) and the
+[v41 release notes](../deploy/truenas/RELEASE-20260927-v41.md).
+The latest inspected v41 batch had five replacements, five skips and eleven
+failures. TrueHD decoding, AV1/MP4 timestamps, validation-resource waits and
+DV/HDR10+ static metadata require follow-up. This is a recorded snapshot, not
+live queue telemetry. Local changes are not a published commit or deployment.
+
+## Historical checkpoint: 22 September 2026
+
+The remainder records that earlier checkpoint. Its version, queue totals and
+automatic-DV restrictions are not the current support policy.
+
 Updated 22 September 2026. This is a repository and recorded-results update,
 not a live reading of the TrueNAS queue.
 

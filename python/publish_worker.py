@@ -9,9 +9,10 @@ def main():
     parser=argparse.ArgumentParser()
     for name in ('source','media','writable','result','folder'):parser.add_argument('--'+name,type=Path,required=True)
     parser.add_argument('--minimum',type=float,required=True);parser.add_argument('--job',required=True)
+    parser.add_argument('--savings-mode',choices=('fixed','size-aware'),default='fixed')
     args=parser.parse_args()
     def run():
-        replace_validated(args.source,args.media,args.writable,args.result,args.minimum,args.job)
+        replace_validated(args.source,args.media,args.writable,args.result,args.minimum,args.job,savings_mode=args.savings_mode)
         return 0
     return tracked_call(run,'Publishing validated replacement',folder=args.folder)
 

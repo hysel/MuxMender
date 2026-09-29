@@ -125,19 +125,22 @@ class ReleaseReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)/'repo';root.mkdir();archive=Path(folder)/'release.tar'
             for name in ['python/ui/app.py','python/__pycache__/bad.pyc','tests/test.py',
-                         'deploy/truenas/Dockerfile.app','docs/note.md',
+                         'deploy/truenas/Dockerfile.app','deploy/truenas/requirements-av1-runtime.txt','docs/note.md','docs/av1-hdr-metadata.md','docs/dv-aac-duration-validation.md',
                          'docs/per-video-codec-selection.md','tools/build_app_release.py',
-                         'tools/compare_encoders.py','tools/run_truenas_sample_batch.py',
+                         'tools/compare_encoders.py','tools/run_truenas_sample_batch.py','tools/dv_fel_research.py','tools/install_fel_runtime.py',
+                         'tools/monitor_remote_research.py','tools/probe_dv_renderer.py','tools/inspect_hevc_layers.py',
                          'tools/publish_reviewed_research.py','docs/research-checkpoint-20260922.md','tools/research_coverage.py',
                          'tools/benchmark_hdr_reader.py','docs/artifact-retention.md',
                          'docs/source-audio-preflight.md','docs/aac-priming-preservation.md',
+                         'docs/changing-hdr-brightness.md','docs/post-task-cleanup.md','docs/activity-reports.md',
+                         'docs/conversion-reliability.md','docs/input-diagnostics.md',
                          'docs/validation-performance-20260922.md',
                          'tools/smoke_auto_optimize.py','tools/smoke_hdr_auto.py','tools/smoke_hdr_dynamic.py','tools/smoke_timestamp.py','tools/monitor_queue.py','tools/qualify_frame_reader.py',
                          'tools/benchmark_frame_threads.py','tools/benchmark_packet_validation.py',
                          'tools/benchmark_validation_pipeline.py','tools/benchmark_gpu_decode.py']:
                 path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('fixture')
             result=create_release(root,archive,'docs/note.md')
-            self.assertEqual(len(result['files']),26)
+            self.assertEqual(len(result['files']),39)
             with tarfile.open(archive) as tar:
                 for member in tar:
                     self.assertEqual(member.mode,0o755 if member.isdir() else 0o644)
@@ -150,6 +153,10 @@ class ReleaseReviewTests(unittest.TestCase):
             wrong_vendor=Path(folder)/'unverified.tar.gz';wrong_vendor.write_bytes(b'unverified tool')
             with self.assertRaisesRegex(ValueError,'checksum mismatch'):
                 create_release(root,new_archive,'docs/note.md',dovi_tool_archive=wrong_vendor)
+            self.assertFalse(new_archive.exists())
+            (root/'deploy/truenas/Dockerfile.app').write_text('COPY vendor/fel-runtime-archives /tmp/runtime')
+            with self.assertRaisesRegex(ValueError,'fel-runtime-archives'):
+                create_release(root,new_archive,'docs/note.md')
             self.assertFalse(new_archive.exists())
 
 

@@ -18,6 +18,11 @@ class ReplacementTests(unittest.TestCase):
         (self.run/'selection.json').write_text(json.dumps(dict(action='encode_copy',selected=dict(id='winner'),candidates=[dict(id='winner',rejected_reasons=[])])))
     def save(self):(self.run/'status.json').write_text(json.dumps(self.status))
     def run_replace(self):return vr.replace_validated(self.source,self.media,self.media,self.run,10,'test')
+    def test_size_aware_publication_rechecks_absolute_floor(self):
+        with self.assertRaisesRegex(ValueError,'minimum savings'):
+            vr.replace_validated(self.source,self.media,self.media,self.run,25,'test',savings_mode='size-aware')
+        self.assertEqual(self.source.read_bytes(),b'original'*100)
+        self.assertFalse((self.run/'replacement.json').exists())
     def test_verified_replacement(self):
         result=self.run_replace()
         self.assertEqual(result['state'],'replaced')
@@ -26,6 +31,27 @@ class ReplacementTests(unittest.TestCase):
         self.assertFalse(Path(result['backup']).exists())
         self.assertFalse(self.output.exists())
         self.assertEqual(result['artifact_cleanup']['state'],'cleaned')
+
+    def test_interruption_at_each_journal_step_leaves_a_verified_recoverable_copy(self):
+        for point in ('staging','ready','published-verifying','published-verified','replaced'):
+            with self.subTest(point=point),tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);media=root/'media';media.mkdir();run=root/'run';run.mkdir()
+                source=media/'video.mkv';source.write_bytes(b'original'*100)
+                output=run/'full.mkv';output.write_bytes(b'copy'*50)
+                status=dict(self.status,source=str(source),output=str(output))
+                (run/'status.json').write_text(json.dumps(status))
+                (run/'selection.json').write_bytes((self.run/'selection.json').read_bytes())
+                real_write=vr.write
+                def interrupted(path,record):
+                    real_write(path,record)
+                    if record.get('state')==point:raise OSError('simulated interruption')
+                with patch.object(vr,'write',side_effect=interrupted):
+                    with self.assertRaises(OSError):vr.replace_validated(source,media,media,run,10,'test')
+                hashes={vr.digest(p) for p in media.iterdir() if p.is_file()}
+                self.assertTrue(hashes.intersection({status['source_sha256'],status['output_sha256']}))
+                if point!='replaced':self.assertIn(status['source_sha256'],hashes)
+                else:self.assertIn(status['output_sha256'],hashes)
+                self.assertTrue(output.exists(),'Interrupted publication must not clean deliverable')
     def test_cryptic_movie_is_named_after_folder_after_verified_publication(self):
         folder=self.media/'Example Film';folder.mkdir()
         new=folder/'sample-ab1.1080p.mkv';self.source.rename(new);self.source=new
@@ -86,11 +112,65 @@ class ReplacementTests(unittest.TestCase):
     def change_extension(self, extension):
         renamed=self.source.with_suffix(extension);self.source.rename(renamed);self.source=renamed
         self.status['source']=str(renamed);self.save()
+    def test_native_mov_publication_requires_container_evidence(self):
+        self.change_extension('.mov')
+        output=self.output.with_suffix('.mov');self.output.rename(output);self.output=output
+        self.status['output']=str(output);self.save()
+        with self.assertRaisesRegex(ValueError,'container evidence'):self.run_replace()
+        self.status['output_container']='mov';self.save()
+        result=self.run_replace()
+        self.assertEqual(Path(result['target']),self.source)
+        self.assertEqual(vr.digest(self.source),self.status['output_sha256'])
     def test_mp4_replacement_has_mkv_extension(self):
         self.change_extension('.mp4');result=self.run_replace()
         self.assertFalse(self.source.exists())
         self.assertEqual(Path(result['target']).suffix,'.mkv')
         self.assertEqual(vr.digest(Path(result['target'])),self.status['output_sha256'])
+
+    def use_mp4_output(self):
+        target=self.output.with_suffix('.mp4');self.output.rename(target);self.output=target
+        self.status.update(output=str(target),output_container='mp4');self.save()
+
+    def test_validated_mp4_replaces_mp4_without_extension_change(self):
+        self.change_extension('.mp4');self.use_mp4_output()
+        result=self.run_replace()
+        self.assertEqual(Path(result['target']),self.source)
+        self.assertEqual(vr.digest(self.source),self.status['output_sha256'])
+
+    def test_mp4_output_requires_explicit_container_evidence(self):
+        self.use_mp4_output();del self.status['output_container'];self.save()
+        with self.assertRaisesRegex(ValueError,'container evidence'):self.run_replace()
+        self.assertEqual(vr.digest(self.source),self.status['source_sha256'])
+
+    def test_mp4_target_conflict_does_not_touch_sources(self):
+        self.change_extension('.mov');self.use_mp4_output()
+        other=self.source.with_suffix('.MP4');other.write_bytes(b'existing')
+        with self.assertRaises(vr.DestinationConflict):self.run_replace()
+        self.assertEqual(other.read_bytes(),b'existing')
+        self.assertEqual(vr.digest(self.source),self.status['source_sha256'])
+
+    def test_mp4_output_to_new_destination_uses_matching_extension(self):
+        self.change_extension('.mov');self.use_mp4_output()
+        result=self.run_replace()
+        self.assertEqual(Path(result['target']).suffix,'.mp4')
+        self.assertFalse(self.source.exists())
+        self.assertEqual(vr.digest(Path(result['target'])),self.status['output_sha256'])
+
+    def test_mp4_interruption_preserves_original_and_backup(self):
+        self.change_extension('.mp4');self.use_mp4_output()
+        self.test_publication_failure_keeps_original()
+        backup=self.source.with_name(self.source.name+'.muxmender-test.original')
+        self.assertEqual(vr.digest(backup),self.status['source_sha256'])
+
+    def test_mp4_late_conflict_never_clobbered(self):
+        self.change_extension('.mov');self.use_mp4_output();original_link=vr.os.link
+        def race(src,dst):
+            if str(src).endswith('.staging'):Path(dst).write_bytes(b'concurrent')
+            return original_link(src,dst)
+        with patch.object(vr.os,'link',side_effect=race):
+            with self.assertRaises(vr.DestinationConflict):self.run_replace()
+        self.assertEqual(self.source.with_suffix('.mp4').read_bytes(),b'concurrent')
+        self.assertEqual(vr.digest(self.source),self.status['source_sha256'])
     def test_avi_replacement_has_mkv_extension(self):
         self.change_extension('.AVI');result=self.run_replace()
         self.assertFalse(self.source.exists())

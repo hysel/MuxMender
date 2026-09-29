@@ -45,7 +45,7 @@ class DecodeEvidenceTests(unittest.TestCase):
 
     def test_shared_decode_reuse_never_accepts_header_or_boolean_counts(self):
         for count in (None,0,-1,True,'120',120.0):
-            self.assertEqual(decode_maps_after_frame_audit({'streams':[]},count),(['0:v:0','0:a?'],False))
+            self.assertEqual(decode_maps_after_frame_audit({'streams':[]},count),(['0:V:0','0:a?'],False))
 
     def test_audio_only_requires_complete_current_video_evidence(self):
         streams={'streams':[dict(index=0,codec_type='video'),dict(index=1,codec_type='audio'),
@@ -57,7 +57,7 @@ class DecodeEvidenceTests(unittest.TestCase):
         for key in checks:
             incomplete=dict(checks);incomplete.pop(key)
             with self.subTest(key=key):
-                self.assertEqual(final_decode_maps(streams,incomplete,120),(['0:v:0','0:a?'],False))
+                self.assertEqual(final_decode_maps(streams,incomplete,120),(['0:V:0','0:a?'],False))
         self.assertFalse(final_decode_maps(streams,checks,119)[1])
         self.assertFalse(final_decode_maps(streams,dict(checks,frames=0),0)[1])
 

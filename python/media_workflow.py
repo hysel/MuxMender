@@ -11,6 +11,14 @@ import time
 from pathlib import Path
 
 
+def validated_output_container(status, path):
+    """Shared result contract; native containers need explicit preservation evidence."""
+    suffix=Path(path).suffix
+    if suffix=='.mkv':
+        return status.get('output_container') in (None,'mkv')
+    return suffix in ('.mp4','.mov') and status.get('output_container')==suffix[1:]
+
+
 def file_age_settings(unit='all', value=None):
     if unit == 'all':
         return dict(age_unit='all', age_value=None)
@@ -64,6 +72,7 @@ def automatic_arguments(source, output, settings, *, min_free_gib=12, capability
           '--minimum-savings-percent',format(float(settings['minimum_savings']),'.15g'),
           '--min-free-gib',str(min_free_gib)]
     if capability_cache_dir is not None:args+=['--capability-cache-dir',str(capability_cache_dir)]
+    args+=['--savings-mode',settings.get('savings_mode','fixed')]
     if settings.get('experimental_dv81'):
         if mode=='replace':raise ValueError('DV integration testing cannot replace originals')
         args+=['--experimental-dv81']
@@ -93,8 +102,9 @@ def main(argv=None):
     parser.add_argument('--quality',choices=('auto','transparent','balanced','compact'),default='auto')
     parser.add_argument('--nvenc-maxrate-mbps',type=int,help='Optional measured NVENC peak-rate ceiling, 1..1000 Mbps')
     parser.add_argument('--experimental-dv81',action='store_true',help='Separate-copy DV integration qualification only')
-    parser.add_argument('--playback-verified-codecs',nargs='+',choices=('hevc','av1'),default=[])
+    parser.add_argument('--playback-verified-codecs',nargs='+',choices=('hevc','av1','h264'),default=[])
     parser.add_argument('--minimum-savings-percent',type=float,default=25)
+    parser.add_argument('--savings-mode',choices=('size-aware','fixed'),default='size-aware')
     parser.add_argument('--legacy-color',choices=('inspect','bt709-limited'),default='inspect')
     parser.add_argument('--age-unit', choices=('all','hours','days','weeks'), default='all')
     parser.add_argument('--age-value', type=int)
@@ -112,7 +122,7 @@ def main(argv=None):
     from auto_optimize import main as execute
     return execute(automatic_arguments(args.source,args.output_dir,dict(mode=args.mode,
         hardware=args.hardware,quality=args.quality,codecs=args.playback_verified_codecs,
-        minimum_savings=args.minimum_savings_percent,legacy_color=args.legacy_color,
+        minimum_savings=args.minimum_savings_percent,savings_mode=args.savings_mode,legacy_color=args.legacy_color,
         nvenc_maxrate_mbps=args.nvenc_maxrate_mbps,experimental_dv81=args.experimental_dv81),
         capability_cache_dir=args.capability_cache_dir))
 

@@ -79,7 +79,7 @@ class AppServiceTests(unittest.TestCase):
             self.assertIsNone(file_savings(outcome))
 
     def test_page_reuses_theme_and_has_no_write_actions(self):
-        self.assertIn('<h1>Media workspace</h1>',HTML)
+        self.assertIn('<h1 id="workspace-title" tabindex="-1">Overview</h1>',HTML)
         self.assertLess(HTML.index('id="activity"'),HTML.index('id="workflow"'))
         self.assertNotIn('/api/app',HTML)
         self.assertIn('prefers-reduced-motion',HTML)
@@ -100,8 +100,16 @@ globalThis.fetch=()=>new Promise(()=>{});
         check="""
 assert(userReason({state:'skipped',reason:'Quality threshold not met'}).includes('quality checks'),'Clear quality reason');
 assert(userReason({state:'skipped',reason:'insufficient_savings'}).includes('enough space'),'Clear savings reason');
+assert(userReason({state:'skipped',decision_code:'full_output_insufficient_savings',evidence:{full_size:{source_bytes:1000000000,output_bytes:820000000,saved_percent:18,minimum_savings_percent:25,full_validation_performed:false}}}).includes('0.180 GB (18.0%), below the required 25.0%'),'Measured savings and threshold');
 assert(userReason({state:'skipped',reason:'HDR unsupported'}).includes('not supported'),'Clear unsupported reason');
 assert(resultGroup('failed')==='attention','Failure is not success');
+assert(progressFreshness({updated:960},1000)==='','40-second gap agrees with backend grace period');
+assert(progressFreshness({updated:910},1000).includes('Update overdue'),'90-second heartbeat gap warns');
+assert(progressFreshness({updated:999,telemetry_state:'stale'},1000).includes('Update overdue'),'Backend stale state is not hidden');
+assert(progressFreshness({updated:999,telemetry_state:'interrupted'},1000).includes('Worker stopped'),'Request running cannot hide stopped worker');
+assert(progressFreshness({updated:900},1000,false).includes('connection lost'),'Disconnection is distinct from worker stall');
+assert(progressFreshness({updated:900},1000,true,true).includes('display paused'),'Paused display is not stale worker');
+assert(progressFreshness({},1000).includes('first worker'),'Missing telemetry never means healthy progress');
 receiveControls({jobs:[{id:'one',source:'/media/<script>.mkv',state:'skipped',reason:'Quality failed'}]});
 assert(collect(userEl('user-results')).some(x=>x.textContent==='<script>.mkv'),'Safe filename text');
 userEl('result-filter').value='ready';userEl('result-filter').change();
@@ -158,6 +166,10 @@ assert(userEl('user-results').children.length===2,'Show archived restores histor
 assert(!savedText({state:'tested',file_savings_percent:40}).startsWith('Confirmed'),'Samples never count as confirmed savings');
 assert(evidenceText({evidence:{quality:[{id:'trial',samples:[{mean:95,p5:90,passed:true}]}]}}).includes('not percent quality preserved'),'Metric meaning explicit');
 assert(outcomeLabel({state:'skipped',decision_code:'already_efficient_for_settings'}).startsWith('No worthwhile savings'),'Measured savings outcome distinct');
+assert(outcomeLabel({state:'skipped',decision_code:'already_efficient_for_settings',outcome_category:'quality'})==='Quality checks not met','Quality failure must not look size-optimal');
+assert(outcomeLabel({state:'skipped',outcome_category:'savings'})==='Insufficient space savings','Size outcome explicit');
+assert(outcomeLabel({state:'skipped',outcome_category:'size_quality'})==='No setting met both size and quality','Mixed outcome explicit');
+assert(outcomeLabel({state:'failed',outcome_category:'error'})==='Processing error','Processing failures distinct');
 const sizeEvidence=evidenceText({evidence:{full_size:{source_bytes:1e9,output_bytes:950e6,saved_percent:5,minimum_savings_percent:10,full_validation_performed:false}}});
 assert(sizeEvidence.includes('1.00 GB')&&sizeEvidence.includes('0.95 GB')&&sizeEvidence.includes('5.00%')&&sizeEvidence.includes('Full validation not run'),'Full-size rejection explains measurement without claiming validation');
 assert(workflowStep('Publishing validated copy').startsWith('Replacement'),'Publication stage distinct');

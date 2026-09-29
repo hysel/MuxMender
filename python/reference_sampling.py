@@ -7,37 +7,43 @@ from fractions import Fraction
 import json
 
 
-def plan_keyframe(packets, time_base, requested, seconds, source_end, search_span=None):
+def plan_keyframe(packets, time_base, requested, seconds, source_end, search_span=None, *, excluded_starts=()):
     tick = Fraction(time_base)
     requested, seconds, source_end = map(Fraction, map(str, (requested, seconds, source_end)))
     search_span=seconds if search_span is None else Fraction(str(search_span))
     if tick <= 0 or seconds <= 0 or search_span<seconds or search_span>60 or requested < 0 or source_end <= requested:
         raise ValueError('Invalid sampling bounds')
     choices = []
+    excluded={Fraction(value) for value in excluded_starts}
     for packet in packets:
         if 'K' not in packet.get('flags', '') or 'D' in packet.get('flags', ''):
             continue
         if packet.get('pts_time') in (None, 'N/A') or packet.get('dts_time') in (None, 'N/A'):
             continue
         pts, dts = Fraction(packet['pts_time']), Fraction(packet['dts_time'])
+        if pts in excluded:continue
         # Keep the selected scene nearby and leave room for the entire sample.
-        if requested <= pts <= requested + search_span and pts + seconds <= source_end and dts >= tick:
+        if max(Fraction(0), requested-2*search_span) <= pts <= requested + search_span and pts + seconds <= source_end and dts >= tick:
             choices.append((pts, dts))
     if not choices:
         raise ValueError('No verified keyframe within sampling bounds')
-    pts, dts = min(choices)
-    ends=[]
-    for packet in packets:
-        if 'K' not in packet.get('flags','') or 'D' in packet.get('flags',''):
-            continue
-        if packet.get('pts_time') in (None,'N/A') or packet.get('dts_time') in (None,'N/A'):
-            continue
-        end_pts,end_dts=Fraction(packet['pts_time']),Fraction(packet['dts_time'])
-        if pts+seconds<=end_pts<=min(source_end,pts+2*search_span) and end_dts>dts:
-            ends.append((end_pts,end_dts))
-    if not ends:
+    pairs=[]
+    for pts,dts in choices:
+        for packet in packets:
+            if 'K' not in packet.get('flags','') or 'D' in packet.get('flags',''):
+                continue
+            if packet.get('pts_time') in (None,'N/A') or packet.get('dts_time') in (None,'N/A'):
+                continue
+            end_pts,end_dts=Fraction(packet['pts_time']),Fraction(packet['dts_time'])
+            # A preceding GOP is useful only if it includes the requested scene,
+            # not merely an easier, unrelated earlier scene. Evaluate complete
+            # pairs before choosing: the nearest forward keyframe may be the last.
+            if max(pts,requested)+seconds<=end_pts<=min(source_end,pts+2*search_span) and end_dts>dts:
+                pairs.append((pts,dts,end_pts,end_dts))
+    if not pairs:
         raise ValueError('No complete GOP boundary within sampling bounds')
-    end_pts,end_dts=min(ends)
+    pts,dts,end_pts,end_dts=min(pairs,key=lambda pair:
+        (pair[0]<requested,abs(pair[0]-requested),pair[2],pair[1]))
     return dict(keyframe_pts=pts,keyframe_dts=dts,seek=dts-tick,seconds=end_dts-dts,
                 end_keyframe_pts=end_pts,end_keyframe_dts=end_dts)
 
@@ -119,10 +125,11 @@ def verify_source_slice(source, sample, expected_shift=None, *, decoded_source=N
     return shift
 
 
-def recover_reference(workflow, source, metadata, position, seconds, label):
+def recover_reference(workflow, source, metadata, position, seconds, label, *, excluded_starts=()):
     """Bounded recovery for excessive preroll; prove source identity before use."""
     from task_progress import run_probe
-    video=next(s for s in metadata['streams'] if s['codec_type']=='video')
+    from auto_optimize import main_video,paired_streams
+    video=main_video(metadata)
     generated_pts=(video.get('codec_name')=='mpeg4' and
                    'avi' in metadata['format'].get('format_name','').split(','))
     input_options=['-fflags','+genpts'] if generated_pts else []
@@ -137,27 +144,61 @@ def recover_reference(workflow, source, metadata, position, seconds, label):
         command=[workflow.args.ffprobe,'-v','error',*workflow.decoder_options(path),*(input_options if path==source else [])]
         if interval:command+=['-read_intervals',interval]
         command+=['-show_packets','-show_data_hash','sha256','-show_entries',
-                  'packet=stream_index,pts_time,dts_time,duration_time,data_hash,flags','-of','json',str(path)]
+                  'packet=stream_index,pts,dts,duration,pts_time,dts_time,duration_time,data_hash,flags','-of','json',str(path)]
         run_probe(command,evidence,'Checking sample source packets: '+suffix,
                   workflow.args.timeout,workflow.guard,float(end-begin),float(begin))
         if evidence.with_suffix(evidence.suffix+'.stderr').stat().st_size:
             raise ValueError('Packet reader reported errors during sample recovery')
-        return json.loads(evidence.read_text(encoding='utf-8'))['packets']
+        rows=json.loads(evidence.read_text(encoding='utf-8'))['packets']
+        bases={s['index']:Fraction(s['time_base']) for s in workflow.probe(path)['streams'] if s.get('time_base')}
+        for row in rows:
+            base=bases.get(row['stream_index'])
+            if base is None:continue
+            for field in ('pts','dts','duration'):
+                if type(row.get(field)) is int:row[field+'_time']=str(row[field]*base)
+        return rows
     original=packets(source,'source',decimal(begin)+'%'+decimal(end))
     selected=[p for p in original if p['stream_index']==video['index']]
-    plan=plan_keyframe(selected,video['time_base'],target,span,origin+Fraction(metadata['format']['duration']),search_span)
+    plan=plan_keyframe(selected,video['time_base'],target,span,origin+Fraction(metadata['format']['duration']),search_span,
+                       excluded_starts=excluded_starts)
+    # ffprobe seeks to an earlier keyframe. If that complete GOP is selected,
+    # decode its beginning too rather than trimming the proof at the requested
+    # packet-search timestamp.
+    proof_begin=max(origin,min(begin,plan['seek']))
+    if proof_begin<begin:
+        begin=proof_begin
+        # Include packets from every copied stream at the newly selected start;
+        # audio packets may precede the demuxer's initially returned video GOP.
+        original=packets(source,'source-expanded',decimal(begin)+'%'+decimal(end))
     if generated_pts:
         # MPEG-4 B pictures preceding the boundary depend on its future I/P
         # picture. Include that boundary packet rather than flushing without it.
         # Exact decoded-source comparison below must still certify every frame.
         plan['seconds']+=Fraction(video['time_base'])
-    output=workflow.directory/(label+'.mkv')
+    suffix=getattr(workflow,'output_suffix','.mkv')
+    if suffix not in ('.mkv','.mp4','.mov'):raise ValueError('Invalid reference container')
+    output=workflow.directory/(label+suffix)
     command=[workflow.args.ffmpeg,'-hide_banner','-nostdin','-n',*input_options,'-ss',decimal(plan['seek']-origin),
              '-i',str(source),'-ss','0','-t',decimal(plan['seconds']),'-map','0','-c','copy',
              '-map_chapters','-1','-avoid_negative_ts','make_zero','-progress','pipe:1','-nostats',str(output)]
+    if suffix in ('.mp4','.mov'):
+        from media_metadata import mp4_clock_options
+        # Avoid per-track rounding caused by rebasing the requested fractional
+        # seek point. Keep native clocks and use one integral-second offset.
+        # Input seeking is rounded upward so demuxing includes the selected RAP,
+        # not the previous GOP. Exact packet/picture proof below remains required.
+        micros=(plan['keyframe_pts']-origin)*1000000
+        seek_us=-(-micros.numerator//micros.denominator)
+        offset=plan['keyframe_dts'].numerator//plan['keyframe_dts'].denominator
+        command=[workflow.args.ffmpeg,'-hide_banner','-nostdin','-n','-copyts',
+                 '-ss',decimal(Fraction(seek_us,1000000)),'-i',str(source),
+                 '-t',decimal(plan['end_keyframe_dts']),'-map','0','-c','copy',
+                 '-map_chapters','-1','-avoid_negative_ts','disabled','-output_ts_offset',str(-offset),
+                 *mp4_clock_options(metadata['streams']),'-progress','pipe:1','-nostats',str(output)]
     workflow.execute(workflow.preserve_covers(command,source,metadata,label),label,float(plan['seconds']))
     copied=packets(output,'sample')
-    vcopy=[p for p in copied if p['stream_index']==video['index']]
+    mapped={a['index']:b['index'] for a,b in paired_streams(metadata,workflow.probe(output))}
+    vcopy=[p for p in copied if p['stream_index']==mapped[video['index']]]
     if not vcopy:raise ValueError('Recovered reference contains no video')
     if 'K' not in vcopy[0].get('flags',''):
         raise ValueError('Recovered reference does not begin with a keyframe')
@@ -166,8 +207,8 @@ def recover_reference(workflow, source, metadata, position, seconds, label):
         evidence=workflow.directory/(label+'-'+suffix+'-decoded.md5')
         command=[workflow.args.ffmpeg,'-v','error','-nostdin','-xerror','-copyts']
         if is_source:command+=['-ss',decimal(begin-origin),'-t',decimal(end-begin)]
-        command+=[*workflow.decoder_options(path),'-i',str(path),'-map','0:v:0','-an','-sn','-dn','-threads','2',
-                  '-fps_mode','passthrough','-enc_time_base','1:1000000','-f','framemd5','-']
+        command+=[*workflow.decoder_options(path),'-noautorotate','-i',str(path),'-map','0:V:0','-an','-sn','-dn','-threads','2',
+                  '-fps_mode','passthrough','-enc_time_base','demux','-f','framemd5','-']
         run_probe(command,evidence,'Verifying decoded sample identity: '+suffix,
                   workflow.args.timeout,workflow.guard)
         if evidence.with_suffix(evidence.suffix+'.stderr').stat().st_size:
@@ -181,7 +222,7 @@ def recover_reference(workflow, source, metadata, position, seconds, label):
         if stream['codec_type'] not in ('video','audio','subtitle'):continue
         if stream.get('disposition',{}).get('attached_pic'):continue
         a=[p for p in original if p['stream_index']==stream['index']]
-        b=[p for p in copied if p['stream_index']==stream['index']]
+        b=[p for p in copied if p['stream_index']==mapped[stream['index']]]
         if not b:
             if stream['codec_type']!='subtitle':raise ValueError('Recovered reference lost a moving/audio track')
             if any(p.get('pts_time') not in (None,'N/A') and
@@ -189,7 +230,7 @@ def recover_reference(workflow, source, metadata, position, seconds, label):
                 raise ValueError('Recovered reference lost subtitle events within the scene')
             continue
         extra=dict(decoded_source=decoded_source,decoded_sample=decoded_sample,
-                   reorder_depth=video.get('has_b_frames',0)) if stream['codec_type']=='video' else {}
+                   reorder_depth=video.get('has_b_frames',0)) if stream['index']==video['index'] else {}
         verify_source_slice(a,b,shift,tolerance=tolerance,**extra)
         checked.append(stream['index'])
     workflow.guard()

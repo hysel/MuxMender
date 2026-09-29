@@ -47,10 +47,17 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(self.submit()['queued'],0)
 
     def test_obsolete_evaluation_does_not_block_new_search_policy(self):
-        for policy in (None,'old-search'):
+        for policy in (None,'old-search','source-driven-size-aware-interlaced-5','source-driven-dv-native-refinement-6'):
             self.controls.state['jobs']=[]
             self.record('skipped',history_decision=True,decision_code='already_efficient_for_settings',evaluation_policy=policy)
             self.assertEqual(self.submit()['queued'],1)
+
+    def test_search_upgrade_does_not_requeue_active_or_explicit_keep(self):
+        for state in ('pending','running','kept-original'):
+            with self.subTest(state=state):
+                self.controls.state['jobs']=[]
+                self.record(state,evaluation_policy='source-driven-size-aware-interlaced-5')
+                self.assertEqual(self.submit()['queued'],0)
 
     def test_active_claim_wins_even_with_obsolete_decision_fields(self):
         self.record('running',decision_code='already_efficient_for_settings',evaluation_policy='old-search')
@@ -148,11 +155,22 @@ class HistoryTests(unittest.TestCase):
             self.record(state)
             self.assertEqual(self.submit(history_mode='retry')['queued'],0)
 
-    def test_retry_only_protects_success_even_after_redundant_failure(self):
+    def test_retry_only_does_not_protect_success_of_a_different_source(self):
         self.record('awaiting-playback')
         self.source.write_bytes(b'previous manually published conversion')
         self.record('failed')
-        self.assertEqual(self.submit(history_mode='retry')['queued'],0)
+        self.assertEqual(self.submit(history_mode='retry')['queued'],1)
+
+    def test_identity_detects_same_size_same_mtime_change(self):
+        import os
+        from control_service import source_identity
+        self.record('kept-original',source_identity=source_identity(self.source))
+        stamp=self.source.stat()
+        replacement=self.source.with_suffix('.new');replacement.write_bytes(b'new data')
+        os.utime(replacement,ns=(stamp.st_atime_ns,stamp.st_mtime_ns))
+        replacement.replace(self.source)
+        self.assertEqual(signature(self.source),[stamp.st_size,stamp.st_mtime_ns])
+        self.assertEqual(self.submit()['queued'],1)
 
     def test_retry_only_protects_renamed_published_output(self):
         published=self.media/'movie.mkv';published.write_bytes(b'converted')

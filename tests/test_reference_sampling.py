@@ -4,6 +4,13 @@ from reference_sampling import plan_keyframe, verify_source_slice, verify_decode
 
 
 class ReferenceSamplingTests(unittest.TestCase):
+    def test_unusable_start_can_be_excluded_without_changing_source_bounds(self):
+        packets=[dict(flags='K_',pts_time=str(i),dts_time=str(i-.1)) for i in range(1,9)]
+        first=plan_keyframe(packets,'1/1000',3,2,9)
+        second=plan_keyframe(packets,'1/1000',3,2,9,excluded_starts=[first['keyframe_pts']])
+        self.assertNotEqual(first['keyframe_pts'],second['keyframe_pts'])
+        self.assertGreaterEqual(second['end_keyframe_pts'],5)
+
     def test_selects_dts_minus_source_tick_not_fixed_millisecond(self):
         packets=[dict(flags='K_',pts_time='478.395',dts_time='478.311'),
                  dict(flags='K_',pts_time='490.395',dts_time='490.311')]
@@ -88,3 +95,16 @@ class ReferenceSamplingTests(unittest.TestCase):
         with self.assertRaises(ValueError):verify_decoded_slice(a,b,tolerance=Fraction(2,1000))
         b[2]['pts']='2';b[2]['hash']='different'
         with self.assertRaises(ValueError):verify_decoded_slice(a,b,tolerance=Fraction(2,1000))
+
+    def test_tail_scene_uses_preceding_complete_gop_not_last_keyframe(self):
+        packets=[dict(flags='K_',pts_time='23.333',dts_time='23.333'),
+                 dict(flags='K_',pts_time='44.167',dts_time='44.167')]
+        plan=plan_keyframe(packets,'1/1000','38.625',5,50,search_span=15)
+        self.assertEqual(plan['keyframe_pts'],Fraction('23.333'))
+        self.assertEqual(plan['end_keyframe_pts'],Fraction('44.167'))
+
+    def test_preceding_gop_must_cover_requested_scene(self):
+        packets=[dict(flags='K_',pts_time='23',dts_time='23'),
+                 dict(flags='K_',pts_time='40',dts_time='40')]
+        with self.assertRaisesRegex(ValueError,'GOP boundary'):
+            plan_keyframe(packets,'1/1000',38,5,50,search_span=16)

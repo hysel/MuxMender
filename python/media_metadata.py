@@ -92,3 +92,32 @@ def compatible_measured_rate(left, right, verified_frame_count):
                 and abs(1/a-1/b)*verified_frame_count <= Fraction(1,500))
     except (ValueError, ZeroDivisionError, TypeError):
         return False
+def display_matrix(stream):
+    """Read the complete fixed-point transform, not just a lossy rotation angle."""
+    records=[s for s in stream.get('side_data_list',[]) if s.get('side_data_type')=='Display Matrix']
+    if not records:return None
+    if len(records)!=1:raise ValueError('Ambiguous display matrices')
+    rows=str(records[0].get('displaymatrix','')).strip().splitlines()
+    if len(rows)!=3:raise ValueError('Incomplete display matrix')
+    values=[]
+    for row in rows:
+        fields=row.split(':',1)
+        if len(fields)!=2:raise ValueError('Invalid display matrix row')
+        numbers=fields[1].split()
+        if len(numbers)!=3:raise ValueError('Invalid display matrix dimensions')
+        try:values.extend(int(n) for n in numbers)
+        except ValueError:raise ValueError('Invalid display matrix coefficient') from None
+    if any(not -(2**31)<=n<2**31 for n in values):raise ValueError('Display matrix coefficient out of range')
+    return tuple(values)
+
+
+def mp4_clock_options(streams):
+    """Keep edit-list offsets on an exact common source clock, not 1 ms."""
+    clock=1
+    for stream in streams:
+        if stream.get('time_base'):
+            base=Fraction(stream['time_base'])
+            if base<=0:raise ValueError('Invalid source track clock')
+            clock=math.lcm(clock,base.denominator)
+    if clock>2147483647:raise ValueError('Source clocks exceed exact MP4 movie timescale range')
+    return ['-movie_timescale',str(clock)]

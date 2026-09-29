@@ -27,7 +27,7 @@ def frame_evidence_percent(path, duration):
 
 
 def process_memory_bytes(process):
-    """Measured resident high-Episode_B mark; None if unavailable on this platform."""
+    """Measured resident high-water mark; None if unavailable on this platform."""
     if os.name == 'nt':
         from ctypes import wintypes
         class Memory(ctypes.Structure):
@@ -50,7 +50,10 @@ def process_memory_bytes(process):
 
 
 def guard_ordered_mux_memory(process, command, limit=1024**3):
-    if '-max_interleave_delta' not in command or command[command.index('-max_interleave_delta')+1] != '0':
+    # Finite interleaving reduces sparse-track buffering, but is not a byte cap.
+    # Keep the memory guard on both bounded and unlimited explicit mux commands.
+    is_matroska_mux=bool(command) and Path(str(command[0])).stem.lower()=='mkvmerge' and '-o' in command
+    if '-max_interleave_delta' not in command and not is_matroska_mux:
         return
     used = process_memory_bytes(process)
     if used is None and process.poll() is None:
@@ -66,7 +69,8 @@ def guard_ordered_mux_memory(process, command, limit=1024**3):
             if used is None:
                 raise RuntimeError('Ordered mux memory monitoring unavailable; partial retained')
     if used is not None and used > limit:
-        raise RuntimeError('Ordered mux exceeded 1 GiB memory guard; partial retained')
+        raise RuntimeError(f'Ordered mux exceeded memory guard: {used/1024**2:.1f} MiB '
+                           f'used, {limit/1024**2:.1f} MiB limit; output is not validated')
 
 
 class TerminalProgress:

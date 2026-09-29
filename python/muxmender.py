@@ -28,9 +28,9 @@ from typing import Any, Iterable
 from media_naming import MEDIA_EXTENSIONS
 SOFTWARE_ENCODERS = {"hevc": "libx265", "av1": "libsvtav1"}
 HARDWARE_ENCODERS = {
-    "amd": {"hevc": "hevc_amf", "av1": "av1_amf"},
-    "nvidia": {"hevc": "hevc_nvenc", "av1": "av1_nvenc"},
-    "intel": {"hevc": "hevc_qsv", "av1": "av1_qsv"},
+    "amd": {"hevc": "hevc_amf", "av1": "av1_amf", "h264": "h264_amf"},
+    "nvidia": {"hevc": "hevc_nvenc", "av1": "av1_nvenc", "h264": "h264_nvenc"},
+    "intel": {"hevc": "hevc_qsv", "av1": "av1_qsv", "h264": "h264_qsv"},
 }
 VENDOR_LABELS = {"amd": "AMD", "nvidia": "NVIDIA", "intel": "Intel", "cpu": "CPU"}
 DOWNLOAD_URLS = {
@@ -144,12 +144,15 @@ def probe(path: Path, ffprobe: str = "ffprobe") -> MediaInfo:
         ffprobe, "-v", "error", "-show_format", "-show_streams",
         "-show_entries",
         "stream=index,codec_type,codec_name,width,height,pix_fmt,bits_per_raw_sample,"
-        "color_primaries,color_transfer,color_space,color_range,side_data_list:"
+        "color_primaries,color_transfer,color_space,color_range,side_data_list:stream_disposition:"
         "format=format_name,duration",
         "-of", "json", str(path),
     ])
+    from dv_header import recover
+    recover(data,path,ffprobe)
     streams = data.get("streams", [])
-    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    video = next((s for s in streams if s.get("codec_type") == "video"
+                  and not s.get('disposition',{}).get('attached_pic')), None)
     if not video:
         raise RuntimeError("no video stream found")
 

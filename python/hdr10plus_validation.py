@@ -88,7 +88,11 @@ def validate_frames(source, output, mode='hdr10plus'):
                                      for token in ('dynamic','2094','hdr10+')) for item in original+encoded):
             raise ValueError('Dynamic HDR found during static HDR10 validation; requires separate route')
         if canonical_hdr_metadata(original) != canonical_hdr_metadata(encoded):
-            raise ValueError(f'Frame {index}: HDR metadata changed')
+            # Retain bounded field evidence in the terminal report even when
+            # disposable frame manifests are cleaned up after a failed trial.
+            raise ValueError(f'Frame {index}: HDR metadata changed; '
+                             f'source={str(canonical_hdr_metadata(original))[:1600]}; '
+                             f'output={str(canonical_hdr_metadata(encoded))[:1600]}')
         dynamic_count += any('2094-40' in item.get('side_data_type', '') or
                              'HDR10+' in item.get('side_data_type', '') for item in original)
         static_count += any(item.get('side_data_type')=='Mastering display metadata' for item in original)

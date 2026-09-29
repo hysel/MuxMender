@@ -9,7 +9,7 @@ import math
 from fractions import Fraction
 
 # Bump when the measured search/evaluation policy changes, not for every UI release.
-EVALUATION_POLICY = 'source-driven-adaptive-size-quality-2'
+EVALUATION_POLICY = 'source-driven-broader-sampling-9'
 
 
 def impossible_size_bound(references, samples, minimum_savings_percent):
@@ -60,7 +60,12 @@ def select_candidate(report, minimum_savings_percent=25.0):
         return result
     refs = report.get('references', [])
     ids = [r['id'] for r in refs]
-    if len(ids) < 3 or len(set(ids)) != len(ids):
+    whole_source=(len(refs)==1 and refs[0].get('whole_source') is True and
+                  len(source_id)==64 and all(c in '0123456789abcdef' for c in source_id) and
+                  refs[0].get('sha256')==source_id and
+                  type(report.get('source_bytes')) is int and
+                  refs[0].get('bytes')==report['source_bytes'])
+    if (len(ids) < 3 and not whole_source) or len(set(ids)) != len(ids):
         raise ValueError('At least three distinct shared reference samples are required')
     if any(type(r.get('bytes')) is not int or r['bytes'] <= 0 for r in refs):
         raise ValueError('Positive reference byte sizes are required')
@@ -79,7 +84,7 @@ def select_candidate(report, minimum_savings_percent=25.0):
             reasons.append('encoder_not_runtime_verified')
         if trial.get('playback_compatible') is not True:
             reasons.append('target_playback_not_verified')
-        if trial.get('codec') not in ('hevc', 'av1'):
+        if trial.get('codec') not in ('hevc', 'av1','h264'):
             reasons.append('unsupported_codec')
         if not trial.get('encoder') or not isinstance(trial.get('settings'), dict) or not trial['settings']:
             reasons.append('missing_encoder_settings')
@@ -111,7 +116,11 @@ def select_candidate(report, minimum_savings_percent=25.0):
             if report.get('color_mode') in ('pq','hlg'):
                 if sample.get('hdr_preservation_pass') is not True:
                     reasons.append('hdr_preservation_missing_or_failed')
-                if sample.get('quality',{}).get('domain')!='hdr-common-render-v1':
+                expected_domain=('dv-libplacebo-common-render-v1' if report.get('dv_profile') in ('5','7-MEL','8-native')
+                                 else 'hdr-common-render-v1')
+                if report.get('dv_profile')=='7-layered':
+                    expected_domain={'MEL':'dv-libplacebo-common-render-v1','FEL':'dv-felbaker-common-render-v1'}.get(sample.get('enhancement_type'),'missing-layer-type')
+                if sample.get('quality',{}).get('domain')!=expected_domain:
                     reasons.append('hdr_quality_domain_missing')
             if sample.get('error'):
                 reasons.append('sample_processing_error')
@@ -153,9 +162,19 @@ def select_candidate(report, minimum_savings_percent=25.0):
         reasons = {reason for row in result['candidates'] for reason in row['rejected_reasons']}
         result['reason'] = ('No eligible trial: ' + ', '.join(sorted(reasons)))
         if all(r['assessment'] in ('size_screened','insufficient_savings','quality_rejected') for r in result['candidates']):
+            size_count=sum(r['assessment'] in ('size_screened','insufficient_savings') for r in result['candidates'])
+            quality_count=sum(r['assessment']=='quality_rejected' for r in result['candidates'])
             result.update(reason_code='already_efficient_for_settings',cacheable=True,
-                reason='No worthwhile savings found with current settings: short tests found no eligible size reduction within the quality limits. Original retained.')
+                rejection_summary=dict(insufficient_savings=size_count,quality_below_target=quality_count),
+                reason=f'No worthwhile savings found with current settings: {size_count} tested settings missed the savings target; {quality_count} failed measured quality. Original retained. This does not prove the source is optimal.')
+            result['outcome_category']=('quality' if quality_count and not size_count else
+                                        'savings' if size_count and not quality_count else 'size_quality')
+            if not size_count:
+                result['reason']=f'Original kept: {quality_count} tested settings failed measured quality. No conversion met the quality requirements.'
+            elif not quality_count:
+                result['reason']=f'Original kept: {size_count} tested settings did not save enough space. Quality was not necessarily evaluated; this does not prove the source is optimal.'
         else:
+            result['outcome_category']='error'
             result['reason']='Evaluation incomplete: one or more encoders or validation checks failed or lacked evidence. Original retained; retry after resolving the issue.'
     if eligible:
         _, _, winner, savings = min(eligible, key=lambda row: (row[0], row[1]))

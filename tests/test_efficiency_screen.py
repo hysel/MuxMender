@@ -42,7 +42,7 @@ class EfficiencyScreenTests(unittest.TestCase):
                  patch.object(ao.mm,'probe',return_value=None), \
                  patch.object(ao.mm,'encoder_options',return_value=['-c:v','av1_nvenc']):
                 ao.main([str(source),'--output-dir',str(out),'--hardware','nvidia',
-                         '--playback-verified-codecs','av1','--execute'])
+                         '--playback-verified-codecs','av1','--execute','--savings-mode','fixed'])
             run=next(out.glob('auto-*'))
             self.assertEqual(source.read_bytes(),b'original'*1000)
             self.assertFalse(list(run.glob('full-*')))

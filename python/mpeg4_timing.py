@@ -56,7 +56,14 @@ def picture_clocks(payload):
             if resolution is not None and clock!=(resolution,width):raise ValueError('VOP clock changed')
             resolution,width=clock
         elif code==0xb3:
-            raise ValueError('GOV clock reset requires explicit timing support')
+            # Match the decoder's group clock, then independently require every
+            # known presentation timestamp to agree before recovering a tail.
+            bits=Bits(unit[1:])
+            hours=bits.get(5);minutes=bits.get(6);bits.marker();seconds=bits.get(6)
+            bits.get(1);bits.get(1)  # closed_gov / broken_link
+            if hours>23 or minutes>59 or seconds>59:
+                raise ValueError('Invalid MPEG-4 group clock')
+            base=hours*3600+minutes*60+seconds
         elif code==0xb6:
             if resolution is None:raise ValueError('VOP has no original VOL clock')
             bits=Bits(unit[1:]);kind=bits.get(2)

@@ -49,6 +49,7 @@ class AACPrimingTests(unittest.TestCase):
             args=Args()
             def __init__(self):self.commands=[]
             def execute(self,c,*args):self.commands.append(c)
+            def probe(self,path):return before
         w=W();before={'streams':[dict(index=0,codec_type='video'),dict(index=1,codec_type='audio')]}
         finalize(w,Path('source.mp4'),Path('encoded.mkv'),Path('fixed.mkv'),before,{1:dict(seconds=Fraction(2048,48000))},'test',5)
         cmd,edit=w.commands
@@ -56,6 +57,22 @@ class AACPrimingTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index('-c')+1],'copy')
         self.assertIn('codec-delay=42666667',edit)
         self.assertNotIn('source.mp4',edit)
+
+    def test_mp4_finalizer_keeps_native_priming_without_codec_delay_shift(self):
+        class Args:ffmpeg='ffmpeg'
+        class W:
+            args=Args()
+            def __init__(self):self.commands=[]
+            def execute(self,c,*args):self.commands.append(c)
+            def probe(self,path):return before
+        w=W();before={'streams':[dict(index=0,codec_type='video'),dict(index=1,codec_type='audio')]}
+        finalize(w,Path('source.mp4'),Path('encoded.mp4'),Path('fixed.mp4'),before,
+                 {1:dict(seconds=Fraction(1024,48000))},'test',3)
+        self.assertEqual(len(w.commands),1)
+        cmd=w.commands[0]
+        self.assertNotIn('-itsoffset',cmd)
+        self.assertIn('1:1',cmd)
+        self.assertEqual(cmd[cmd.index('-c')+1],'copy')
 
     def test_terminal_packet_is_only_accepted_after_explicit_proof(self):
         with tempfile.TemporaryDirectory() as folder:

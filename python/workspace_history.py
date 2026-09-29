@@ -12,7 +12,7 @@ from autonomous_queue import read, signature
 
 ACTIVE = ('pending', 'running')
 RETRYABLE = ('failed', 'interrupted', 'skipped')
-GENERATED_MEDIA = {'.mkv', '.mp4', '.avi', '.hevc', '.h264', '.ivf', '.yuv', '.wav'}
+from replacement_cleanup import MEDIA as GENERATED_MEDIA
 
 
 class WorkspaceHistory:

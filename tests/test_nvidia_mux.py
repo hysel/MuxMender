@@ -23,12 +23,12 @@ class NvidiaMuxTests(unittest.TestCase):
         ]}
         command = finalize_command('video.mkv', 'original.mkv', 'final.mkv', probe, 'ffmpeg')
         mapping = [command[i+1] for i, arg in enumerate(command) if arg == '-map']
-        self.assertEqual(mapping, ['1:0', '1:1', '0:v:0', '1:3'])
+        self.assertEqual(mapping, ['1:0', '1:1', '0:V:0', '1:3'])
         self.assertEqual(command[command.index('-disposition:1') + 1], '0')
         self.assertEqual(command[command.index('-c') + 1], 'copy')
         self.assertEqual(command[command.index('-map_chapters') + 1], '1')
         self.assertEqual(command[command.index('-max_interleave_delta') + 1], '0')
 
-    def test_extra_video_fails_closed(self):
+    def test_missing_probed_stream_indices_fail_closed(self):
         with self.assertRaises(ValueError):
             finalize_command('v', 's', 'o', {'streams': [{'codec_type': 'video'}, {'codec_type': 'video'}]}, 'ffmpeg')

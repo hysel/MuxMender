@@ -8,26 +8,36 @@ import time
 import re
 from collections import Counter
 
-MEDIA={'.mkv','.mp4','.avi','.hevc','.h264','.ivf','.yuv','.wav','.bin','.ac3','.m4v'}
+MEDIA={'.mkv','.mp4','.mov','.avi','.hevc','.h265','.h264','.av1','.obu','.ivf','.yuv','.y4m','.rgb','.raw','.pcm','.wav','.bin','.ac3','.aac','.m4v','.rpu','.mka','.thd','.truehd','.eac3','.dts','.flac'}
 
 
 def disposable(path):
     return (path.suffix.lower() in MEDIA or path.suffix=='.framehash'
             or path.name.endswith(('-frames.jsonl','-frames.json','-all-packets.txt','-vmaf.json'))
-            or re.search(r'-stream-\d+\.txt$',path.name) is not None)
+            or re.search(r'-stream-\d+\.txt$',path.name) is not None
+            or path.name=='rpu.json' or path.name.endswith('-rpu.json')
+            or path.name in ('timestamps.txt','source-rpu-packets.xml')
+            or (path.name=='metadata.json' and path.parent.name.endswith('-layers')))
 
 
-def prune_generated(directory, *, execute=False, guard=lambda:None):
+def prune_generated(directory, *, execute=False, guard=lambda:None, keep_paths=()):
     """Caller must establish terminal ownership and protect source/recovery state."""
     safe_path(directory);directory=directory.resolve(strict=True)
+    keep=set()
+    for path in keep_paths:
+        path=Path(path);safe_path(path);path=path.resolve(strict=True)
+        if not path.is_file() or not path.is_relative_to(directory):raise ValueError('Retained deliverable outside job directory')
+        keep.add(path)
     files=[];links=Counter()
+    from artifact_manifest import registered_outputs
+    registered=registered_outputs(directory)
     for path in directory.rglob('*'):
-        if not disposable(path):continue
+        if not disposable(path) and path not in registered:continue
         safe_path(path)
         if not path.is_file() or not path.resolve().is_relative_to(directory):continue
         s=path.stat();files.append((path,identity(path),s.st_nlink));links[(s.st_dev,s.st_ino)]+=1
     # Internal hardlinks are disposable only if every link is in this manifest.
-    files=[x for x in files if links[x[1][:2]]==x[2]]
+    files=[x for x in files if links[x[1][:2]]==x[2] and x[0].resolve() not in keep]
     report=dict(state='preview',at=time.time(),files=len(files),bytes=sum(s[2] for _,s,_ in files),
                 removed=[],retained='Receipts, history, quality summaries, errors and logs')
     if not execute:return report
@@ -45,6 +55,54 @@ def prune_generated(directory, *, execute=False, guard=lambda:None):
         finally:
             log.write(json.dumps(report)+'\n');log.flush();os.fsync(log.fileno())
     return report
+
+
+def cleanup_finished(directory, *, execute=False):
+    """Shared post-task policy. Call only after the owned media processes exit."""
+    directory=Path(directory).absolute();safe_path(directory);directory=directory.resolve(strict=True)
+    status_path=directory/'status.json';safe_path(status_path)
+    status=json.loads(status_path.read_text());state=status.get('state')
+    if state in ('stopped-original-retained','full-output-rejected-insufficient-savings') and not status.get('research_only'):
+        return cleanup_terminal(directory,execute=execute)
+    if state=='trials-completed' and status.get('decision',{}).get('action')=='keep_original':
+        return cleanup_terminal(directory,execute=execute)
+    research=status.get('research_only') is True and state in (
+        'research-completed-not-approved','research-stopped-not-approved','stopped-original-retained')
+    sample_success=state=='trials-completed' and status.get('decision',{}).get('action')=='encode_copy'
+    if not (state=='validated-copy-awaiting-playback' or research or sample_success):
+        raise ValueError('No terminal deliverable policy for this run; files retained')
+    if status.get('original_retained') is not True:raise ValueError('Original retention not confirmed')
+    if any(directory.rglob('replacement.json')) or any(directory.rglob('replacement-journal.jsonl')):
+        raise ValueError('Publication/recovery requires separate verified cleanup')
+    source=Path(status['source']);safe_path(source);source=source.resolve(strict=True)
+    if not source.is_file() or source.is_relative_to(directory):raise ValueError('Source must exist outside work directory')
+    source_stamp=identity(source);status_stamp=identity(status_path)
+    keep=[]
+    if sample_success:
+        report_path=directory/'trials.json';safe_path(report_path)
+        report=json.loads(report_path.read_text())
+        chosen=status['decision'].get('selected',{}).get('id')
+        trials=[t for t in report.get('trials',[]) if t.get('id')==chosen]
+        if len(trials)!=1 or not trials[0].get('samples'):raise ValueError('Missing selected sample deliverables')
+        for sample in trials[0]['samples']:
+            if not sample.get('output'):raise ValueError('Older sample record lacks output paths; retained for review')
+            keep.append(Path(sample['output']))
+        for ref in report.get('references',[]):
+            if ref.get('path'):
+                p=Path(ref['path']);safe_path(p)
+                if p.resolve(strict=True).is_relative_to(directory):keep.append(p)
+    else:
+        output=status.get('candidate') if research else status.get('output')
+        if not output:raise ValueError('Missing final deliverable path')
+        p=Path(output);safe_path(p)
+        if not p.resolve().is_relative_to(directory):raise ValueError('Deliverable outside job directory')
+        if p.exists():keep.append(p)
+        elif not research:raise ValueError('Final deliverable missing')
+    keep_stamps={p:identity(p) for p in keep}
+    def guard():
+        if identity(source)!=source_stamp or identity(status_path)!=status_stamp:raise ValueError('Source or status changed')
+        if any(identity(p)!=s for p,s in keep_stamps.items()):raise ValueError('Deliverable changed')
+    return prune_generated(directory,execute=execute,guard=guard,keep_paths=keep)
 
 
 def cleanup_terminal(directory, *, execute=False, media_root=None, guard=lambda:None):

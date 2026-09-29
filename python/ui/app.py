@@ -2,8 +2,9 @@
 from ui.controls import PANEL, SCRIPT
 from ui.workspace import STYLE, SCRIPT as RESULTS_SCRIPT
 from ui.workspace_history import SCRIPT as HISTORY_SCRIPT
+from ui.activity_reports import PANEL as REPORT_PANEL, SCRIPT as REPORT_SCRIPT, STYLE as REPORT_STYLE
 from app_version import VERSION
-from ui.outcome_summary import PANEL as OUTCOME_PANEL, SCRIPT as OUTCOME_SCRIPT
+from ui.outcome_summary import SCRIPT as OUTCOME_SCRIPT
 
 controls = PANEL[:PANEL.index('<details class="control-advanced"><summary>Job queue & logs')]+ '</div></section>'
 for old,new in [
@@ -40,7 +41,7 @@ HTML = '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name=
 <section class="panel" id="live-resources" aria-labelledby="live-resources-title"><div class="panel-head"><h2 id="live-resources-title">Server resources</h2></div><div class="panel-body"><p id="resource-status" class="control-note">Collecting CPU, GPU and available RAM measurements…</p></div></section>
 <section class="panel" id="activity" aria-labelledby="activity-title"><div class="panel-head"><h2 id="activity-title">Processing dashboard</h2><span id="connection-state" role="status">Connecting…</span></div><div class="panel-body">
 <p id="control-state">Checking queue…</p><p class="control-note">Follow the highlighted step. Percentages describe the current check—not the whole video.</p><div class="control-actions"><button id="pause-selected" type="button" disabled>Pause after current job</button><button id="resume-selected" type="button" disabled>Resume queue</button><button id="toggle-updates" type="button" aria-pressed="false">Pause live updates</button></div>
-<details><summary>Resource settings</summary><div class="control-actions"><div><label for="resource-profile">Shared-server resource use</label><select id="resource-profile"><option value="quiet">Quiet · one file</option><option value="shared" selected>Shared host · up to two files</option><option value="faster">Faster · up to four files</option></select></div><button id="save-resource-profile" type="button">Apply resource profile</button></div><p class="control-note">New workers start only with sustained headroom. Busy-server backoff stops new starts; running jobs finish at lower CPU priority. This is not a hard CPU/GPU limit. Unknown GPU telemetry restricts processing to one file.</p></details>
+<details><summary>Resource settings</summary><div class="control-actions"><div><label for="resource-profile">Shared-server resource use</label><select id="resource-profile"><option value="quiet">Quiet · one file</option><option value="shared" selected>Shared host · up to two files</option><option value="faster">Faster · up to four files</option></select></div><button id="save-resource-profile" type="button">Apply resource profile</button></div><p class="control-note">New workers start only with sustained headroom. This is not a hard CPU/GPU limit.</p><label for="gpu-yield-enabled"><input id="gpu-yield-enabled" type="checkbox" aria-describedby="gpu-yield-help"> Yield GPU to other apps</label><p id="gpu-yield-help" class="control-note">Requires the read-only host GPU monitor. Pauses supported media stages during competing GPU activity, then resumes after 60 seconds of quiet. GPU memory remains allocated. Missing telemetry blocks new starts, not active work.</p><button id="save-gpu-yield" type="button">Apply GPU sharing</button></details><p id="gpu-yield-status" role="status" aria-live="polite">Automatic GPU yielding is off.</p>
 <p class="control-note">Pausing the queue lets its current job finish. Pausing live updates only freezes this display.</p><div id="current-work">No running job reported yet.</div><p id="activity-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
 </div></section>
 '''+controls+'''
@@ -54,11 +55,24 @@ HTML = '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name=
 </div></section>
 <details class="panel help"><summary>How decisions are made</summary><div class="panel-body"><p><strong>Create smaller copies</strong> tests short sections using supported encoders. Only candidates meeting quality and size checks proceed to full conversion and validation.</p><p><strong>Original kept</strong> means the tested options did not qualify, or you chose not to convert. A skipped video is not an error.</p><p><strong>Needs attention</strong> means processing stopped or the input is unsupported. Open its details for the reason. No source file is deleted.</p><p>Advanced settings are optional. Automatic mode compares playback-verified formats available on your hardware. Testing covers sampled visual quality and full-file preservation/decode checks, not a perceptual guarantee for every frame.</p></div></details>
 <footer>MuxMender <span id="app-version">'''+VERSION+'''</span> · Replacement is opt-in · History and preferences are stored on the /output mount.</footer></main>
-'''+HISTORY_SCRIPT+OUTCOME_SCRIPT+RESULTS_SCRIPT+SCRIPT+'''</body></html>'''
-HTML=HTML.replace('<section class="panel" id="live-resources"',OUTCOME_PANEL+'<section class="panel" id="live-resources"')
-HTML=HTML.replace('</head>','<style>.outcome-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;margin:16px 0}.outcome-grid>div{border:1px solid var(--border);border-radius:8px;padding:16px}.outcome-grid dt{color:var(--muted)}.outcome-grid dd{font-size:2rem;font-weight:700;margin:8px 0 0}</style></head>')
+'''+HISTORY_SCRIPT+OUTCOME_SCRIPT+REPORT_SCRIPT+RESULTS_SCRIPT+SCRIPT+'''</body></html>'''
+HTML=HTML.replace('<a href="#results">Results</a>','<a href="#results">Results</a><a href="#reports">Reports</a>')
+HTML=HTML.replace('<section class="panel" id="results"',REPORT_PANEL+'<section class="panel" id="results"')
+HTML=HTML.replace('</head>',REPORT_STYLE+'</head>')
 HTML=HTML.replace('No source file is deleted.','Replacement failures may leave a recovery backup; inspect details before retrying.')
 HTML=HTML.replace('<div class="control-grid"><div><label for="result-search">',
                   '<details id="result-tools" open><summary>Search, filter and sort results</summary><div class="control-grid"><div><label for="result-search">')
 HTML=HTML.replace('<div class="control-actions"><button id="archive-results"',
                   '</details><div class="control-actions"><button id="archive-results"')
+
+from ui.redesign import redesign
+HTML=redesign(HTML)
+HTML=HTML.replace('<button id="toggle-updates"',
+    '<button id="clear-waiting-queue" type="button" disabled>Clear waiting queue</button><button id="toggle-updates"',1)
+HTML=HTML.replace('<div id="current-work">',
+    '<p id="queue-clear-feedback" role="status" aria-live="polite"></p><div id="current-work">',1)
+HTML=HTML.replace('</main>', '''<dialog id="queue-clear-dialog" aria-labelledby="queue-clear-title" aria-describedby="queue-clear-description">
+<h2 id="queue-clear-title">Clear waiting queue?</h2><p id="queue-clear-description"></p>
+<p>Running jobs will finish normally. History and all video files stay untouched. You can add cancelled videos again later.</p>
+<p id="queue-clear-error" role="alert"></p><div class="control-actions"><button id="queue-clear-cancel" type="button" autofocus>Keep queue</button><button id="queue-clear-confirm" type="button">Cancel waiting jobs</button></div></dialog></main>''',1)
+HTML=HTML.replace('</head>','<style>dialog{max-width:min(540px,calc(100vw - 32px));border:1px solid var(--border);border-radius:14px;padding:24px;background:var(--panel);color:var(--text)}dialog::backdrop{background:rgb(0 0 0 / .5)}</style></head>')

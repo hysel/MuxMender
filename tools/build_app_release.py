@@ -1,20 +1,35 @@
 """Create an exclusive, portable Docker context without Windows directory modes."""
 import argparse
+import ast
 import hashlib
 import json
+import re
 from pathlib import Path
 import tarfile
 
 
-def create_release(root, archive, release_note, hdr_tool_archive=None, dovi_tool_archive=None):
+def create_release(root, archive, release_note, hdr_tool_archive=None, dovi_tool_archive=None, fel_runtime_archives=None):
     root=Path(root).resolve(strict=True);archive=Path(archive)
-    selected=['python','tests','deploy/truenas/Dockerfile.app',release_note,
+    release=re.fullmatch(r'RELEASE-(\d{8}-v\d+)\.md',Path(release_note).name)
+    if release:
+        tree=ast.parse((root/'python/app_version.py').read_text())
+        versions=[ast.literal_eval(node.value) for node in tree.body
+                  if isinstance(node,ast.Assign) and any(
+                      isinstance(target,ast.Name) and target.id=='VERSION' for target in node.targets)]
+        if versions!=[release.group(1)]:
+            raise ValueError('Release note and app version disagree; update app_version.py before packaging')
+    selected=['python','tests','deploy/truenas/Dockerfile.app','deploy/truenas/requirements-av1-runtime.txt',release_note,
+              'docs/av1-hdr-metadata.md','docs/dv-aac-duration-validation.md',
+              'docs/cooperative-pause.md','deploy/truenas/install_gpu_monitor.py',
               'docs/per-video-codec-selection.md','tools/build_app_release.py',
-              'tools/compare_encoders.py','tools/run_truenas_sample_batch.py',
+              'tools/compare_encoders.py','tools/run_truenas_sample_batch.py','tools/dv_fel_research.py','tools/install_fel_runtime.py',
+              'tools/monitor_remote_research.py','tools/probe_dv_renderer.py','tools/inspect_hevc_layers.py',
               'tools/publish_reviewed_research.py','docs/research-checkpoint-20260922.md',
               'tools/research_coverage.py',
               'tools/benchmark_hdr_reader.py','docs/artifact-retention.md',
               'docs/source-audio-preflight.md','docs/aac-priming-preservation.md',
+              'docs/changing-hdr-brightness.md','docs/post-task-cleanup.md','docs/activity-reports.md',
+              'docs/conversion-reliability.md','docs/input-diagnostics.md',
               'docs/validation-performance-20260922.md',
               'tools/smoke_auto_optimize.py','tools/smoke_hdr_auto.py','tools/smoke_hdr_dynamic.py','tools/smoke_timestamp.py','tools/monitor_queue.py','tools/qualify_frame_reader.py',
               'tools/benchmark_frame_threads.py','tools/benchmark_packet_validation.py',
@@ -41,6 +56,14 @@ def create_release(root, archive, release_note, hdr_tool_archive=None, dovi_tool
         files['vendor/dovi.tar.gz']=vendor
     elif 'vendor/dovi.tar.gz' in (root/'deploy/truenas/Dockerfile.app').read_text():
         raise ValueError('This Dockerfile requires --dovi-tool-archive')
+    if fel_runtime_archives is not None:
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('fel_runtime_installer',Path(__file__).with_name('install_fel_runtime.py'))
+        installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
+        directory=installer.inspect_archives(fel_runtime_archives)
+        for name in installer.CHECKSUMS:files['vendor/fel-runtime-archives/'+name]=directory/name
+    elif 'vendor/fel-runtime-archives' in (root/'deploy/truenas/Dockerfile.app').read_text():
+        raise ValueError('This Dockerfile requires --fel-runtime-archives with pinned packages and license')
     manifest={}
     # Exclusive creation prevents silently replacing a previously staged release.
     with tarfile.open(archive,'x',format=tarfile.PAX_FORMAT) as tar:
@@ -63,5 +86,6 @@ if __name__=='__main__':
     parser.add_argument('--release-note',required=True)
     parser.add_argument('--hdr-tool-archive',type=Path)
     parser.add_argument('--dovi-tool-archive',type=Path)
+    parser.add_argument('--fel-runtime-archives',type=Path)
     args=parser.parse_args()
-    print(json.dumps(create_release(args.root,args.archive,args.release_note,args.hdr_tool_archive,args.dovi_tool_archive),indent=2))
+    print(json.dumps(create_release(args.root,args.archive,args.release_note,args.hdr_tool_archive,args.dovi_tool_archive,args.fel_runtime_archives),indent=2))

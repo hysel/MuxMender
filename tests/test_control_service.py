@@ -14,6 +14,33 @@ from autonomous_queue import write
 
 
 class ControlTests(unittest.TestCase):
+    def test_gpu_sharing_requires_explicit_monitor_and_preserves_queue(self):
+        self.controls.gpu_yield.telemetry=None
+        with self.assertRaisesRegex(ValueError,'monitor'):
+            self.controls.action(dict(action='gpu-yield',enabled=True))
+        with self.assertRaises(ValueError):
+            self.controls.action(dict(action='gpu-yield',enabled='yes'))
+        self.controls.gpu_yield.telemetry='/telemetry/gpu.json'
+        with patch('control_service.sys.platform','linux'):
+            self.controls.action(dict(action='gpu-yield',enabled=True))
+        self.assertTrue(self.controls.snapshot()['gpu_yield']['enabled'])
+        self.assertFalse(self.controls.state['paused'])
+        self.controls.action(dict(action='gpu-yield',enabled=False))
+        self.assertFalse(self.controls.state['gpu_yield'])
+
+    def test_h264_choice_uses_shared_worker_and_requires_playback_permission(self):
+        from ui.app import HTML
+        self.assertIn('value="h264"',HTML)
+        self.controls.codecs=['hevc','av1']
+        with self.assertRaisesRegex(ValueError,'playback-verified'):
+            self.controls.settings(dict(mode='encode',codec='h264'))
+        self.controls.codecs=['hevc','av1','h264']
+        settings=self.controls.settings(dict(mode='encode',codec='h264'))
+        self.assertEqual(settings['codecs'],['h264'])
+        command=self.controls.build_command(dict(source=str(self.media/'example.mkv'),settings=settings),Path('output'))
+        self.assertIn('h264',command)
+        self.assertEqual(self.controls.settings(dict(mode='encode',codec='auto'))['codecs'],['hevc','av1','h264'])
+
     def test_savings_choices_reach_shared_engine_and_default_to_25(self):
         from ui.app import HTML
         from html.parser import HTMLParser
@@ -26,14 +53,15 @@ class ControlTests(unittest.TestCase):
             def handle_endtag(self,tag):
                 if tag=='select':self.active=False
         parser=Options();parser.feed(HTML)
-        self.assertEqual([o['value'] for o in parser.options],['25','20','15','10'])
-        self.assertEqual([o['value'] for o in parser.options if 'selected' in o],['25'])
+        self.assertEqual([o['value'] for o in parser.options],['size-aware','25','20','15','10'])
+        self.assertEqual([o['value'] for o in parser.options if 'selected' in o],['size-aware'])
         self.assertEqual(self.controls.preview(dict(path=str(self.media)))['settings']['minimum_savings'],25)
         for value in (25,20,15,10):
-            preview=self.controls.preview(dict(path=str(self.media),minimum_savings=value))
+            preview=self.controls.preview(dict(path=str(self.media),minimum_savings=value,savings_mode='fixed'))
             self.assertEqual(preview['settings']['minimum_savings'],value)
             command=self.controls.build_command(dict(source=str(self.media/'example.mkv'),settings=preview['settings']),Path('output'))
             self.assertEqual(command[command.index('--minimum-savings-percent')+1],str(value))
+            self.assertEqual(command[command.index('--savings-mode')+1],'fixed')
 
     def test_creation_age_filters_nested_files_without_changing_existing_queue(self):
         self.controls.submit(self.draft(mode='analyze')['preview_id'])
@@ -148,7 +176,7 @@ class ControlTests(unittest.TestCase):
         self.assertIn('--adaptive',command)
 
     def test_reject_unknown_unsafe_or_unverified_settings(self):
-        for data in [dict(codec='h264'),dict(hardware='cpu'),dict(quality='bad'),dict(minimum_savings=-1),
+        for data in [dict(codec='unknown'),dict(hardware='cpu'),dict(quality='bad'),dict(minimum_savings=-1),
                      dict(minimum_savings=float('nan')),dict(delete_original=True),dict(recursive='yes')]:
             with self.assertRaises(ValueError):self.controls.settings(data)
         self.controls.codecs=['hevc']
@@ -221,6 +249,42 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(self.controls.state['jobs'][0]['state'],'awaiting-playback')
         resumed=cs.Controls(self.media,self.output,lambda _:True,['hevc'])
         self.assertEqual(resumed.state['jobs'][0]['state'],'awaiting-playback')
+        self.assertEqual(self.source.read_bytes(),b'original')
+
+    def test_native_container_results_require_matching_shared_evidence(self):
+        for suffix,declared,expected in [('.mp4','mp4','awaiting-playback'),
+                ('.mov','mov','awaiting-playback'),('.mp4',None,'failed'),
+                ('.mov','mp4','failed'),('.mkv','mov','failed'),('.avi','avi','failed')]:
+            with self.subTest(suffix=suffix,declared=declared):
+                self.controls.state['jobs']=[]
+                self.controls.submit(self.draft(mode='encode')['preview_id'])
+                def worker(command,**kwargs):
+                    folder=Path(command[command.index('--output-dir')+1])/'auto-result';folder.mkdir()
+                    candidate=folder/('full-video'+suffix);candidate.write_bytes(b'copy')
+                    write(folder/'status.json',dict(state='validated-copy-awaiting-playback',source=str(self.source),
+                        output=str(candidate),output_container=declared,source_sha256='a'*64,output_sha256='b'*64))
+                    return Mock(wait=lambda:0)
+                with patch.object(cs.subprocess,'Popen',side_effect=worker):self.controls.step()
+                self.assertEqual(self.controls.state['jobs'][0]['state'],expected)
+                self.assertEqual(self.source.read_bytes(),b'original')
+
+    def test_unqualified_validated_copy_does_not_attempt_publication(self):
+        self.controls.replacement_root=self.media;self.controls.readonly=lambda _:False
+        self.controls.submit(self.draft(mode='replace')['preview_id'],True)
+        def worker(command,**kwargs):
+            self.assertIn('--output-dir',command)  # A publication child must not be launched.
+            folder=Path(command[command.index('--output-dir')+1])/'auto-result';folder.mkdir()
+            candidate=folder/'full-hevc.mkv';candidate.write_bytes(b'copy')
+            write(folder/'status.json',dict(state='validated-copy-awaiting-playback',source=str(self.source),
+                output=str(candidate),source_sha256='a'*64,output_sha256='b'*64,publication_authorized=False))
+            return Mock(wait=lambda:0)
+        with patch.object(cs.subprocess,'Popen',side_effect=worker) as process:self.controls.step()
+        self.assertEqual(process.call_count,1)
+        job=self.controls.state['jobs'][0]
+        self.assertEqual(job['state'],'awaiting-playback')
+        self.assertEqual(job['decision_code'],'replacement_qualification_required')
+        self.assertFalse(job['publication_authorized'])
+        self.assertIn('replacement qualification',job['reason'])
         self.assertEqual(self.source.read_bytes(),b'original')
 
     def test_failed_files_do_not_pause_remaining_queue(self):

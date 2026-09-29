@@ -18,6 +18,7 @@ import native_pipeline as np
 import mux_integrity as nvidia_mux
 import job_tracking as jobs
 import dv_preservation_test as dv
+import dv_tracks
 from streaming_pipeline import RunGuard, chapter_summary
 from run_logged import Tee
 import validate_nvidia as nv
@@ -33,9 +34,11 @@ def grouped_packets(packets):
     return groups
 
 def compare_track_packets(before, after, streams):
-    """Exact bytes/order/PTS; report AAC container-duration quantization separately.
+    """Exact bytes/order/PTS; report AAC duration representation separately.
 
-    Caller must additionally prove decoded PCM identity for every returned track.
+    Caller must prove decoded PCM, sample count and presentation timing for
+    every returned track using decoded_track_proof. Missing durations are not
+    invented and do not by themselves approve a track.
     """
     left, right = grouped_packets(before), grouped_packets(after)
     if left.keys() != right.keys():
@@ -53,11 +56,32 @@ def compare_track_packets(before, after, streams):
             stream = info[index]
             if stream.get('codec_type') != 'audio' or stream.get('codec_name') != 'aac' or stream.get('time_base') != '1/1000':
                 raise ValueError('Unexpected packet duration change')
-            x, y = Fraction(a['duration_time']), Fraction(b['duration_time'])
+            try:
+                x=Fraction(a['duration_time'])
+                if b.get('duration_time') in (None,'N/A'):
+                    if x<=0:raise ValueError('Invalid source AAC duration')
+                    rounded[index]=rounded.get(index,0)+1
+                    continue
+                y=Fraction(b['duration_time'])
+            except (KeyError,TypeError,ZeroDivisionError) as exc:
+                raise ValueError('Unresolved AAC duration evidence') from exc
             if min(x,y) <= 0 or abs(x-y) > Fraction(1,1000):
                 raise ValueError('AAC duration change exceeds one Matroska millisecond')
             rounded[index] = rounded.get(index, 0)+1
     return rounded
+
+
+def decoded_track_proof(ff,source,output,index,directory,execute):
+    """Shared audio proof includes timing, not merely concatenated PCM bytes."""
+    from packet_validation import compare_decoded_audio
+    evidence=[]
+    for label,path in [('source',source),('output',output)]:
+        target=Path(directory)/f'aac-{index}-{label}-presentation.framehash'
+        execute(ff+['-v','error','-xerror','-copyts','-threads','2','-i',str(path),'-map',f'0:{index}',
+                    '-c:a','pcm_f64le','-progress','pipe:1','-nostats','-f','framehash','-hash','sha256',str(target)],
+                f'Validate decoded {label} AAC track {index} and presentation timing')
+        evidence.append(target)
+    return compare_decoded_audio(*evidence)
 
 def frame_evidence_timeout(duration):
     """Bound full-frame work without assuming a short file or an idle CPU."""
@@ -74,12 +98,13 @@ def frame_evidence(ffprobe, source, output, guard, timeout=None):
     display = TerminalProgress(label=guard.phase, machine=False)
     fields = ('side_data_type,red_x,red_y,green_x,green_y,blue_x,blue_y,'
               'white_point_x,white_point_y,min_luminance,max_luminance,max_content,max_average')
-    command = [ffprobe, '-v', 'error', '-threads', '2', '-select_streams', 'v:0',
+    from decoder_context import metadata_reader_options
+    command = [ffprobe, '-v', 'error', *metadata_reader_options(), '-select_streams', 'V:0',
                '-show_frames', '-show_entries',
                'frame=best_effort_timestamp_time,interlaced_frame,repeat_pict,width,height,pix_fmt,sample_aspect_ratio,color_range,color_space,color_transfer,color_primaries,chroma_location:frame_side_data=' + fields,
                '-of', 'compact', str(source)]
     if getattr(guard,'allow_hdr10plus',False):
-        command=[ffprobe,'-v','error','-threads','2','-select_streams','v:0',
+        command=[ffprobe,'-v','error',*metadata_reader_options(),'-select_streams','V:0',
                  '-show_frames','-of','json',str(source)]
     started = last = time.monotonic()
     with Path(output).open('xb') as out, Path(str(output)+'.log').open('xb') as err:
@@ -143,12 +168,27 @@ def frames(path, allow_hdr10plus=False):
 
 def validate_source_frames(path, expected_pts, guard=lambda: None):
     count = 0
+    previous = None
     for frame, timestamp in itertools.zip_longest(frames(path,getattr(guard,'allow_hdr10plus',False)), expected_pts):
         guard()
-        if frame is None or timestamp is None or abs(float(frame['best_effort_timestamp_time'])-timestamp) > .002:
+        if frame is None or timestamp is None:
             raise ValueError('Source decoded-frame and packet timelines differ')
+        pair = frame_timestamp(frame), frame_timestamp({'best_effort_timestamp_time': timestamp})
+        if abs(pair[0]-pair[1]) > Fraction(1,500):
+            raise ValueError('Source decoded-frame and packet timelines differ')
+        if previous is not None and any(b <= a for a,b in zip(previous,pair)):
+            raise ValueError('Source presentation timeline is not increasing')
+        previous = pair
         count += 1
     return count
+
+
+def frame_timestamp(frame):
+    """Exact finite presentation time; NaN must never pass an error comparison."""
+    try:
+        return Fraction(str(frame['best_effort_timestamp_time']))
+    except (KeyError, ValueError, TypeError, ZeroDivisionError):
+        raise ValueError('Missing or invalid decoded-frame timestamp') from None
 
 def frame_picture_signature(frame):
     """Compare source-derived geometry/color, not an allowlist of resolutions."""
@@ -186,15 +226,24 @@ def picture_evidence_complete(path, guard=lambda: None):
 
 def compare_frames(source, output, guard=lambda: None):
     count, rounded = 0, 0
+    previous = None
     combined=getattr(guard,'allow_hdr10plus',False)
     for before, after in itertools.zip_longest(frames(source,combined), frames(output,combined)):
         guard()
         if before is None or after is None:
             raise ValueError('Decoded frame count changed')
-        if abs(float(before['best_effort_timestamp_time'])-float(after['best_effort_timestamp_time'])) > .002:
+        pair = frame_timestamp(before), frame_timestamp(after)
+        if abs(pair[0]-pair[1]) > Fraction(1,500):
             raise ValueError('Decoded frame timing changed')
+        if previous is not None and any(b <= a for a,b in zip(previous,pair)):
+            raise ValueError('Decoded presentation timeline is not increasing')
+        previous = pair
         if frame_picture_signature(before) != frame_picture_signature(after):
-            raise ValueError('Decoded frame geometry, aspect ratio or color signaling changed')
+            keys=('width','height','pix_fmt','sample_aspect_ratio','color_range','color_space',
+                  'color_transfer','color_primaries','chroma_location')
+            changed={k:dict(source=before.get(k),output=after.get(k)) for k in keys if before.get(k)!=after.get(k)}
+            raise ValueError('Decoded frame geometry, aspect ratio or color signaling changed: '
+                             +json.dumps(dict(frame=count,pts=str(pair[0]),fields=changed),sort_keys=True))
         if dv.compare_static_hdr([before], [after]):
             rounded += 1
         if combined and dv.hdr10plus_metadata(before)!=dv.hdr10plus_metadata(after):
@@ -221,7 +270,7 @@ def final_decode_maps(streams, frame_checks, expected_frames):
                and all(frame_checks.get(key) is True for key in required))
     return np.decode_maps_after_frame_audit(streams,expected_frames if reuse else None)
 
-def rpu_digest(path, guard=lambda: None):
+def rpu_digest(path, guard=lambda: None, *, inspect=None):
     """Read a top-level JSON array incrementally; memory bounded per RPU."""
     decoder = json.JSONDecoder()
     digest, count, buffer, eof = hashlib.sha256(), 0, '', False
@@ -247,8 +296,15 @@ def rpu_digest(path, guard=lambda: None):
                 if expect_value and count:
                     raise ValueError('Trailing comma in RPU export')
                 buffer = buffer[1:]
-                if buffer.strip() or stream.read().strip():
+                if buffer.strip():
                     raise ValueError('Trailing data in RPU export')
+                while True:
+                    guard()
+                    tail = stream.read(65536)
+                    if not tail:
+                        break
+                    if tail.strip():
+                        raise ValueError('Trailing data in RPU export')
                 return count, digest.hexdigest()
             if not expect_value:
                 if not buffer.startswith(','):
@@ -265,6 +321,10 @@ def rpu_digest(path, guard=lambda: None):
                 continue
             if not isinstance(value, dict):
                 raise ValueError('RPU entry must be an object')
+            if end > 8 * 1024**2:
+                raise ValueError('Oversized RPU entry')
+            if inspect is not None:
+                inspect(value)
             digest.update(json.dumps(dv.canonical_rpu(value), sort_keys=True, separators=(',', ':')).encode())
             digest.update(b'\n')
             count += 1
@@ -273,7 +333,7 @@ def rpu_digest(path, guard=lambda: None):
 
 
 def video_packets(ffprobe, path):
-    data = np.checked_json([ffprobe, '-v', 'error', '-select_streams', 'v:0', '-show_packets',
+    data = np.checked_json([ffprobe, '-v', 'error', '-select_streams', 'V:0', '-show_packets',
         '-show_entries', 'packet=pts_time,size', '-of', 'json', str(path)], timeout=600)
     packets = data['packets']
     return sorted(float(p['pts_time']) for p in packets), sum(int(p['size']) for p in packets)
@@ -287,8 +347,20 @@ def mux_command(ffmpeg, source, injected, output, rate):
         '-progress', 'pipe:1', '-nostats', str(output)]
 
 
-def timestamped_video_command(ffmpeg, injected, output, rate, intel=False):
+def timestamped_video_command(ffmpeg, injected, output, rate, intel=False, *, timestamps=None, mkvmerge='mkvmerge', preserve_enhancement=False):
     """Materialize raw HEVC timestamps before it shares a mux queue with audio."""
+    if timestamps is not None or preserve_enhancement:
+        # Research route for irregular decoded presentation times. Callers must
+        # verify every reconstructed frame; supplying a clock is not approval.
+        if Path(output).exists():raise ValueError('Timestamp output already exists')
+        if Fraction(rate)<=0:raise ValueError('Positive fallback frame rate required')
+        # FFmpeg's dovi_rpu filter can synthesize a single-layer Profile 8
+        # configuration for raw layered input. Do not use it for retained EL.
+        # This only chooses a mux mechanism: callers must independently verify
+        # the configuration, every RPU, EL payload and all decoded timestamps.
+        command=[mkvmerge,'-o',str(output),'--disable-lacing','--default-duration','0:'+rate+'fps']
+        if timestamps is not None:command += ['--timestamps','0:'+str(timestamps)]
+        return command+[str(injected)]
     bsf = "dovi_rpu=compression=none"
     if intel:
         cadence = Fraction(rate)
@@ -300,24 +372,66 @@ def timestamped_video_command(ffmpeg, injected, output, rate, intel=False):
             '-progress', 'pipe:1', '-nostats', str(output)]
 
 
-def ordered_dv_mux_command(ffmpeg, video, source, output, streams):
+def ordered_dv_mux_command(ffmpeg, video, source, output, streams, start_offset=0):
     command = nvidia_mux.finalize_command(video, source, output, streams, ffmpeg)
-    # Sparse subtitle gaps must not force premature video/audio queue flushing.
-    # Explicit DV experiment only; ordinary optimizer defaults remain unchanged.
+    if not math.isfinite(float(start_offset)):
+        raise ValueError('DV video start offset must be finite')
+    if start_offset:
+        # Raw HEVC lost its timestamps; only the reconstructed video needs the
+        # source offset. Original audio/subtitle timestamps must not move.
+        first_input=command.index('-i')
+        command[first_input:first_input]=['-itsoffset',str(start_offset)]
+    # Keep ordered interleaving until an alternative passes memory and seeking
+    # qualification. A finite-buffer trial preserved packets but failed seeking.
     command[command.index('-max_interleave_delta')+1] = '0'
     command[-1:-1] = ['-progress', 'pipe:1', '-nostats']
     return command
+
+
+def matroska_dv_mux_command(video,source,output,streams,identified,start_offset=0,mkvmerge='mkvmerge'):
+    """Two-input Matroska mux with original non-video tracks and bounded memory.
+
+    Track IDs come from mkvmerge identification, never assumed from ffprobe.
+    Callers still verify all packets, metadata, frame clocks and seek points.
+    """
+    if Path(output).exists():raise ValueError('DV mux output already exists')
+    if not math.isfinite(float(start_offset)):raise ValueError('DV video start offset must be finite')
+    original=[s for s in streams['streams'] if s.get('codec_type')!='attachment']
+    tracks=identified.get('tracks',[])
+    types={'video':'video','audio':'audio','subtitle':'subtitles'}
+    if len(original)!=len(tracks) or any(types.get(s.get('codec_type'))!=t.get('type')
+                                        for s,t in zip(original,tracks)):
+        raise ValueError('Matroska track identification does not match source inventory')
+    if any(type(t.get('id')) is not int or t['id']<0 for t in tracks) or len({t['id'] for t in tracks})!=len(tracks):
+        raise ValueError('Matroska track IDs must be unique nonnegative integers')
+    primary=dv_tracks.primary(streams['streams'])
+    primary_position=next(i for i,s in enumerate(original) if s is primary)
+    video_ids=[t['id'] for i,t in enumerate(tracks) if t['type']=='video' and i!=primary_position]
+    order=','.join('0:0' if i==primary_position else '1:'+str(t['id']) for i,t in enumerate(tracks))
+    flags=primary.get('disposition',{});tags=primary.get('tags',{})
+    command=[mkvmerge,'-o',str(output),'--disable-lacing','--track-order',order,
+             '--no-audio','--no-subtitles','--no-attachments','--no-chapters','--no-global-tags',
+             '--language','0:'+tags.get('language','und'),'--track-name','0:'+tags.get('title',''),
+             '--default-track-flag','0:'+str(int(bool(flags.get('default')))),
+             '--forced-display-flag','0:'+str(int(bool(flags.get('forced'))))]
+    if start_offset:command+=['--sync','0:'+format(float(start_offset)*1000,'.9f')]
+    command+=[str(video)]
+    command+=['--video-tracks',','.join(map(str,video_ids))] if video_ids else ['--no-video']
+    return command+[str(source)]
 
 
 def nvidia_savings_preflight(args, duration=None):
     """Bounded sample must shrink before any full-file NVIDIA encode starts."""
     root = args.work_dir.resolve()/('nvidia-size-preflight-'+time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:8])
     root.mkdir(parents=True,exist_ok=False)
-    start = min(300., max(0., duration/2-15)) if duration else 0.
+    seconds=min(30.,duration) if duration and duration>0 else 30.
+    whole_source=bool(duration and 0<duration<30)
+    start = 0. if whole_source else min(300., max(0., duration/2-15)) if duration else 0.
     sample_args = argparse.Namespace(source=args.source, execute=True,
         overall_offset=0, overall_span=10,
-        experimental_nvidia=not getattr(args,'experimental_intel',False), experimental_intel=getattr(args,'experimental_intel',False), seconds=30, start=start, work_dir=root,
+        experimental_nvidia=not getattr(args,'experimental_intel',False), experimental_intel=getattr(args,'experimental_intel',False), seconds=seconds, start=start, whole_source=whole_source, work_dir=root,
         nvenc_cq=getattr(args,'nvenc_cq',None), measure_quality=True,
+        nvenc_maxrate_mbps=getattr(args,'nvenc_maxrate_mbps',None),
         minimum_savings_percent=getattr(args,'min_savings',5.0),
         experimental_hdr10plus=getattr(args,'experimental_hdr10plus',False),
         ffmpeg=args.ffmpeg, ffprobe=args.ffprobe, dovi_tool=args.dovi_tool)
@@ -341,7 +455,7 @@ def nvidia_savings_preflight(args, duration=None):
     return decision
 
 
-def run(args):
+def run(args, *, qualified_preflight=None):
     minimum = getattr(args, 'min_savings', 5.0)
     savings_decision(1, 1, minimum)  # Validate before reading or encoding media.
     info = mm.probe(args.source, args.ffprobe)
@@ -354,7 +468,8 @@ def run(args):
     combined=getattr(args,'experimental_hdr10plus',False)
     if combined and (not nvidia or not shutil.which('hdr10plus_tool')):
         raise ValueError('Combined DV/HDR10+ full research requires NVIDIA and hdr10plus_tool')
-    options = dv.sample_encoder_options(info, nvidia, intel, getattr(args,'nvenc_cq',None)) if experimental else dv.experimental_encoder_options(info, args.qp_i, args.qp_p)
+    options = dv.sample_encoder_options(info, nvidia, intel, getattr(args,'nvenc_cq',None),
+        getattr(args,'nvenc_maxrate_mbps',None)) if experimental else dv.experimental_encoder_options(info, args.qp_i, args.qp_p)
     if getattr(args,'nvenc_cq',None) is not None and not nvidia:
         raise ValueError('NVENC CQ requires explicit NVIDIA research')
     encoder = 'hevc_qsv' if intel else 'hevc_nvenc' if nvidia else 'hevc_amf'
@@ -372,7 +487,11 @@ def run(args):
     if nvidia and 'nvidia' not in mm.gpu_vendors():
         raise ValueError('NVIDIA GPU not detected; no CPU fallback')
     if experimental:
-        decision = nvidia_savings_preflight(args, info.duration_seconds)
+        # The automatic workflow already compared multiple preserved scenes.
+        # Reuse its verified, source/settings-bound decision rather than letting
+        # an unrelated single scene veto it. Standalone callers still preflight.
+        decision = (qualified_preflight(args) if qualified_preflight is not None
+                    else nvidia_savings_preflight(args, info.duration_seconds))
         if not decision['eligible']:
             print(f"SKIPPED: {decision['reason']}. No full-file encode; original retained.",flush=True)
             return 0
@@ -417,16 +536,19 @@ def run(args):
             guard.status(0)
             source_pts, source_bytes = video_packets(args.ffprobe, args.source)
             streams = {'streams': dv.stream_info(args.ffprobe, args.source)}
-            stream = next(s for s in streams['streams'] if s['codec_type'] == 'video')
+            stream = dv_tracks.primary(streams['streams'])
+            from hdr10_trial import chroma_options
+            options += chroma_options(stream)
             rate = stream['r_frame_rate']
             step = 1 / float(dv.Fraction(rate))
-            if not source_pts or abs(source_pts[0]) > .002 or any(abs(b-a-step) > .002 for a,b in zip(source_pts, source_pts[1:])):
-                raise ValueError('Only continuous constant-rate video starting at zero is supported')
+            variable=bool(source_pts) and any(abs(b-a-step)>.002 for a,b in zip(source_pts,source_pts[1:]))
+            if not source_pts or (variable and not experimental):
+                raise ValueError('DV timestamp reconstruction requires continuous constant-rate video')
+            if not experimental and abs(source_pts[0]) > .002:
+                raise ValueError('Nonzero DV start requires the ordered timestamp-preserving workflow')
             if experimental:
                 audit = sys.modules[__name__]
-                nv.first_video(streams)
-                if any(s['codec_type'] not in ('video','audio','subtitle','attachment') for s in streams['streams']):
-                    raise ValueError('Unsupported original track type')
+                dv_tracks.primary(streams['streams'])
                 guard.phase = 'Inspect every source frame for HDR and DV metadata'
                 guard.status(0)
                 source_frames = directory/'source-frames.compact'
@@ -437,9 +559,9 @@ def run(args):
             if getattr(args, 'video_only_folder', False):
                 final = directory / 'media' / final.name
                 final.parent.mkdir(exist_ok=False)
-            stage(ff + ['-i', args.source, '-map', '0:v:0', '-c', 'copy', '-bsf:v', 'hevc_mp4toannexb', '-f', 'hevc', *progress, raw], 'extract source bitstream', 0, 8)
+            stage(ff + ['-i', args.source, '-map', '0:V:0', '-c', 'copy', '-bsf:v', 'hevc_mp4toannexb', '-f', 'hevc', *progress, raw], 'extract source bitstream', 0, 8)
             stage([args.dovi_tool, 'extract-rpu', '-i', raw, '-o', rpu], 'extract full RPU', 8, 2)
-            stage(ff + ['-xerror','-threads', '2', '-i', args.source, '-map', '0:v:0', *options,
+            stage(ff + ['-xerror','-threads', '2', '-i', args.source, '-map', '0:V:0', *options,
                   '-profile:v', 'main10', '-fps_mode', 'passthrough', '-f', 'hevc', *progress, encoded], f'{encoder} full encode', 10, 55)
             if experimental and shutil.disk_usage(directory).free < 4*encoded.stat().st_size + 3*1024**3:
                 raise ValueError('Insufficient room for injection, final mux and retained verification copy')
@@ -454,11 +576,26 @@ def run(args):
             mux = mux_command(args.ffmpeg, args.source, injected, final, rate)
             if experimental:
                 timestamped = directory/'timestamped-dv-video.mkv'
-                stage(timestamped_video_command(args.ffmpeg, injected, timestamped, rate, intel=intel),
+                timestamps=None
+                if variable:
+                    from hdr10plus_preserve import write_decoded_timestamps
+                    timestamps=directory/'decoded-timestamps.txt'
+                    write_decoded_timestamps(({'pts_time':f['best_effort_timestamp_time']}
+                        for f in audit.frames(source_frames,combined)),timestamps,guard)
+                stage(timestamped_video_command(args.ffmpeg, injected, timestamped, rate, intel=intel,
+                                                timestamps=timestamps),
                       'materialize DV video timestamps', 70, 0)
-                mux = ordered_dv_mux_command(args.ffmpeg, timestamped, args.source, final, streams)
+                report['variable_timing_detected']=variable
+                if shutil.which('mkvmerge'):
+                    identified=np.checked_json(['mkvmerge','-J',str(args.source)],timeout=60)
+                    mux=matroska_dv_mux_command(timestamped,args.source,final,streams,identified,
+                                                start_offset=0 if variable else source_pts[0])
+                else:
+                    mux = ordered_dv_mux_command(args.ffmpeg, timestamped, args.source, final, streams,
+                                                 start_offset=0 if variable else source_pts[0])
             stage(mux, 'copy all audio subtitles chapters', 70, 5)
-            decision = savings_decision(info.size_bytes, final.stat().st_size, minimum)
+            decision = savings_decision(info.size_bytes, final.stat().st_size, minimum,
+                                       policy=getattr(args,'savings_policy',None))
             report['optimization_decision'] = decision
             if not decision['eligible']:
                 report.update(status='skipped', error=decision['reason'],
@@ -479,7 +616,7 @@ def run(args):
                 final_streams = {'streams': dv.stream_info(args.ffprobe, final)}
                 if nv.stream_inventory(streams) != nv.stream_inventory(final_streams):
                     raise ValueError('Original stream inventory/dispositions changed')
-                if stream.get('sample_aspect_ratio') != nv.first_video(final_streams).get('sample_aspect_ratio'):
+                if stream.get('sample_aspect_ratio') != dv_tracks.primary(final_streams['streams']).get('sample_aspect_ratio'):
                     raise ValueError('Sample aspect ratio changed')
                 passed, detail = verify_startup_interleaving(final, args.ffprobe)
                 report['startup_interleaving'] = {'passed': passed, 'detail': detail}
@@ -498,25 +635,20 @@ def run(args):
                 if experimental:
                     rounded = audit.compare_track_packets(source_packets, final_packets, streams['streams'])
                     for index, count in rounded.items():
-                        hashes = []
-                        for label, path in (('source', args.source), ('output', final)):
-                            text = stage(ff + ['-v','error','-xerror','-i',path,'-map',f'0:{index}',
-                                               '-c:a','pcm_s32le','-f','hash','-hash','sha256','-'],
-                                         f'Validate decoded {label} AAC track {index}',75,0)
-                            hashes.append(next(line.strip() for line in text.splitlines() if line.startswith('SHA256=')))
-                        if hashes[0] != hashes[1]:
-                            raise ValueError('Decoded AAC audio changed')
-                        report.setdefault('aac_duration_rounding', {})[index] = dict(packets=count, decoded_pcm_identical=True, sha256=hashes[0])
+                        proof=decoded_track_proof(ff,args.source,final,index,directory,
+                                                 lambda command,label:stage(command,label,75,0))
+                        report.setdefault('aac_duration_rounding', {})[index] = dict(packets=count, decoded_pcm_identical=True, presentation=proof)
                 elif source_packets != final_packets:
                     raise ValueError(f'Original {selector} packets changed')
             if chapter_summary(args.ffprobe, args.source, 60) != chapter_summary(args.ffprobe, final, 60):
                 raise ValueError('Chapters changed')
             def first_frame(path):
-                return np.checked_json([args.ffprobe, '-v', 'error', '-select_streams', 'v:0',
+                from decoder_context import metadata_reader_options
+                return np.checked_json([args.ffprobe, '-v', 'error', *metadata_reader_options(), '-select_streams', 'V:0',
                     '-read_intervals', '%+#1', '-show_frames', '-of', 'json', str(path)])['frames']
             report['static_hdr_rounding_first_frame'] = dv.compare_static_hdr(first_frame(args.source), first_frame(final))
             check_raw, check_rpu = directory / 'final-check.hevc', directory / 'final-rpu.bin'
-            stage(ff + ['-i', final, '-map', '0:v:0', '-c', 'copy', '-bsf:v', 'hevc_mp4toannexb', '-f', 'hevc', *progress, check_raw], 'extract final verification video', 75, 3)
+            stage(ff + ['-i', final, '-map', '0:V:0', '-c', 'copy', '-bsf:v', 'hevc_mp4toannexb', '-f', 'hevc', *progress, check_raw], 'extract final verification video', 75, 3)
             stage([args.dovi_tool, 'extract-rpu', '-i', check_raw, '-o', check_rpu], 'extract final verification RPU', 78, 2)
             digests = []
             for binary, name in ((rpu, 'original-rpu.json'), (check_rpu, 'final-rpu.json')):
@@ -531,6 +663,11 @@ def run(args):
                 output_frames = directory/'output-frames.compact'
                 report['commands'].append(audit.frame_evidence(args.ffprobe, final, output_frames, guard))
                 report['decoded_frame_checks'] = audit.compare_frames(source_frames, output_frames, guard)
+                if variable:report['variable_timing_preserved']=True
+                report['verified_secondary_video_tracks']=dv_tracks.verify(
+                    args.ffmpeg,args.ffprobe,args.source,final,directory,guard,frames=len(output_pts),
+                    verified_variable_timing=variable)
+                report['secondary_video_packets_unchanged']=True
             maps,reused=final_decode_maps(final_streams if experimental else streams,
                 report.get('decoded_frame_checks',{}),len(output_pts))
             report['final_decode_evidence']=dict(video_audit_reused=reused,audio_maps=maps if reused else 'all',
@@ -547,8 +684,9 @@ def run(args):
             if report.get('aac_duration_rounding'):
                 report['audio_subtitle_packets_unchanged'] = False
                 report['packet_payloads_order_and_pts_unchanged'] = True
-                report['audio_note'] = 'AAC duration fields rounded by at most 1ms; decoded PCM hashes are identical. Packet bytes and presentation timestamps are exact.'
-            if minimum is not None and report['total_savings_percent'] < minimum:
+                report['audio_note'] = 'AAC duration fields are omitted or rounded by at most 1ms. Packet bytes and timestamps are exact; decoded PCM, sample count and presentation timing passed independently.'
+            if not savings_decision(info.size_bytes,final.stat().st_size,minimum,
+                                    policy=getattr(args,'savings_policy',None))['eligible']:
                 raise ValueError(f"Output passed structural checks but saved only {report['total_savings_percent']:.2f}%; requires {minimum}%. Output retained, not accepted.")
             report['artwork'] = mm.copy_matching_artwork(args.source, final, getattr(args, 'video_only_folder', False))
             report['video_only_folder'] = getattr(args, 'video_only_folder', False)
@@ -679,12 +817,8 @@ def verify_existing(parent, *, output=None, ffmpeg='ffmpeg', ffprobe='ffprobe',
         report['aac_duration_rounding_packets']=rounding
         report['decoded_pcm_checks']={}
         for index in rounding:
-            hashes=[]
-            for label,path in (('source',source),('output',output)):
-                result=stage(ff+['-v','error','-xerror','-i',path,'-map',f'0:{index}','-c:a','pcm_s32le','-f','hash','-hash','sha256','-'],f'Decode {label} AAC track {index} to PCM hash',15)
-                hashes.append(next(line.strip() for line in result.splitlines() if line.startswith('SHA256=')))
-            if hashes[0]!=hashes[1]: raise ValueError('Decoded AAC audio changed')
-            report['decoded_pcm_checks'][index]=dict(identical=True,sha256=hashes[0])
+            report['decoded_pcm_checks'][index]=decoded_track_proof(ff,source,output,index,directory,
+                                                                  lambda command,label:stage(command,label,15))
         if chapter_summary(ffprobe,source,60)!=chapter_summary(ffprobe,output,60): raise ValueError('Chapters changed')
         passed,detail=verify_startup_interleaving(output,ffprobe)
         if not passed: raise ValueError(detail)

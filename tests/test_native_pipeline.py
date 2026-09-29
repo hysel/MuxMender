@@ -74,6 +74,8 @@ class NativePipelineTests(unittest.TestCase):
 
     def test_progress_mapping(self):
         self.assertEqual(progress('MUXMENDER_PROGRESS=45', 10), 45)
+        self.assertEqual(progress('Progress: 45%',10),45)
+        self.assertIsNone(progress('Progress: 101%',10))
         self.assertEqual(progress('out_time_us=5000000', 10), 50)
         self.assertIsNone(progress('out_time_us=N/A', 10))
         self.assertIsNone(progress('encoder log', 10))
