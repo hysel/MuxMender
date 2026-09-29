@@ -14,10 +14,10 @@ def admit(video, inspection):
     transfer=video.get('color_transfer')
     if transfer not in ('smpte2084','arib-std-b67'):
         raise ValueError('HDR transfer cannot be determined from source evidence')
-    from auto_optimize import PLANAR_FORMATS
-    if video.get('pix_fmt') not in PLANAR_FORMATS:
-        raise ValueError('No native encoder mapping for source pixel format '+str(video.get('pix_fmt')))
-    for key in ('color_primaries','color_space','color_range','sample_aspect_ratio'):
+    from source_format import valid_pixel_format
+    if not valid_pixel_format(video.get('pix_fmt')):
+        raise ValueError('Missing or invalid HDR source pixel format')
+    for key in ('color_primaries','color_space','color_range'):
         if video.get(key) in (None,'unknown','unspecified','N/A','0:1'):
             raise ValueError('HDR source evidence is missing '+key)
     if int(video.get('width',0))<=0 or int(video.get('height',0))<=0:
@@ -44,7 +44,7 @@ def quality_graph(name, frame_rate, frame_count=None):
     if frame_count is not None and (type(frame_count) is not int or frame_count<=0):
         raise ValueError('Quality prefix requires a positive frame count')
     prefix=f'trim=end_frame={frame_count},' if frame_count is not None else ''
-    return (f'[0:v:0]{prefix}{render},{clock}[d];[1:v:0]{prefix}{render},{clock}[r];'
+    return (f'[0:V:0]{prefix}{render},{clock}[d];[1:V:0]{prefix}{render},{clock}[r];'
             f'[d][r]libvmaf=n_threads=2:log_fmt=json:log_path={name}')
 
 
@@ -75,12 +75,19 @@ def encode_preserved(workflow, source, output, settings, info, before, label, du
     from hdr10_trial import chroma_options
     video=main_video(before)
     hevc=settings['codec']=='hevc'
-    encoded=output.with_name(output.stem+'-before-hdr-finalization.mkv') if hevc else output
+    av1_light=None
+    if settings['codec']=='av1':
+        from av1_content_light import source_light,available
+        if available():av1_light=source_light(workflow,source,before,label)
+    encoded=output.with_name(output.stem+'-before-hdr-finalization.mkv') if hevc or av1_light is not None else output
     command=encode_command(workflow.args.ffmpeg,source,encoded,settings,info,before['streams'])
     if hevc:command=command[:-1]+chroma_options(video)+command[-1:]
     elif settings['codec']=='av1':
         command=command[:-1]+av1_chroma_options(video)+command[-1:]
     workflow.execute(workflow.preserve_covers(command,source,before,label),label,duration)
+    if av1_light is not None:
+        from av1_content_light import finalize as finalize_av1
+        finalize_av1(workflow,encoded,output,av1_light,label,duration)
     if not hevc:
         # AV1 is tried on merit. Any lost static/dynamic metadata is detected by
         # the same full-frame validator; another candidate can still succeed.
@@ -90,6 +97,7 @@ def encode_preserved(workflow, source, output, settings, info, before, label, du
         final_output=output,mode=workflow.hdr_mode,repair_only=True,
         reference_frames=workflow.frame_cache.get(str(source.resolve())),
         timeout=workflow.args.timeout,guard=workflow.guard,
+        recover_empty_dv=bool(getattr(workflow.args,'dv_declaration_recovery',None)),
         ffmpeg=workflow.args.ffmpeg,ffprobe=workflow.args.ffprobe,
         hdr10plus_tool='hdr10plus_tool',mkvmerge='mkvmerge',mkvextract='mkvextract',mkvpropedit='mkvpropedit')
     result=finalize(args)

@@ -84,8 +84,8 @@ def worker_command(env,media,output):
     if not is_read_only(media):raise ValueError('Conversion requires a read-only media mount')
     codecs=env.get('MUXMENDER_PLAYBACK_CODECS','').split(',')
     codecs=[c.strip() for c in codecs if c.strip()]
-    if not codecs or any(c not in ('hevc','av1') for c in codecs):
-        raise ValueError('Declare tested playback codecs: hevc,av1')
+    if not codecs or any(c not in ('hevc','av1','h264') for c in codecs):
+        raise ValueError('Declare tested playback codecs: hevc,av1,h264')
     command=[sys.executable,'-B','-m','auto_optimize',str(source),'--output-dir',str(output),
              '--hardware','auto','--playback-verified-codecs',*codecs,'--execute']
     if env.get('MUXMENDER_FULL_COPY','false').lower()=='true':command.append('--encode-best')

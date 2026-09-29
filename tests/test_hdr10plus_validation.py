@@ -13,6 +13,12 @@ def frame():
 
 
 class HDR10PlusValidationTests(unittest.TestCase):
+    def test_mismatch_retains_field_evidence(self):
+        a=frame();b=copy.deepcopy(a)
+        b['side_data_list'][0]['bezier_curve_anchors']=['999/1023']
+        with self.assertRaisesRegex(ValueError,'HDR metadata changed; source=.*output=.*999/1023'):
+            validate_frames([a],[b])
+
     def test_static_hdr_route_preserves_metadata(self):
         a=frame();a['side_data_list']=[{'side_data_type':'Mastering display metadata','max_luminance':'10000000/10000'}]
         result=validate_frames([a],[copy.deepcopy(a)],mode='hdr10')

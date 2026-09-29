@@ -145,7 +145,7 @@ class ColorTests(unittest.TestCase):
             inputs=Path(folder)/'inputs';inputs.mkdir()
             source=inputs/'input.mkv';source.write_bytes(b'original')
             with patch.object(ao.Workflow,'probe',return_value=self.missing()),patch.object(lc,'inspect_frames',return_value=[{}]),patch.object(ao,'probe_encoder') as encoder:
-                ao.main([str(source),'--output-dir',str(Path(folder)/'output'),'--execute','--encode-best','--legacy-color','bt709-limited'])
+                ao.main([str(source),'--output-dir',str(Path(folder)/'output'),'--execute','--encode-best','--legacy-color','bt709-limited','--savings-mode','fixed'])
             encoder.assert_not_called()
             self.assertEqual(source.read_bytes(),b'original')
 

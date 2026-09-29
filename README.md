@@ -18,6 +18,11 @@ It works with files you already have. It does not find, download or share videos
 3. Set your quality and savings targets, or use automatic encoding selection.
 4. Follow the current step and read the result: converted, kept, or needs attention.
 
+**“Inspection complete” means the file was inspected, not converted.** Inspection
+does not save disk space. Sample testing also stops before full conversion.
+Choose **Create smaller copies** or **Convert and replace originals** to request
+full conversion. See [what each action does](docs/GETTING-STARTED.md#choose-the-right-action).
+
 The app compares supported HEVC/H.265 and AV1 options. It preserves the original
 resolution by default and checks audio, subtitles, chapters and HDR information
 where supported. Not every video will get smaller, and lossy encoding cannot
@@ -63,9 +68,11 @@ Selected SDR, HDR10, legacy AVI and DVD-rip workflows have passed project tests.
 Results depend on the input, GPU, driver, encoder and player—not just the file
 extension. See [tested formats](docs/TESTED-FORMATS.md) for the scope and limits.
 
-Dolby Vision and combined Dolby Vision/HDR10+ research has promising results,
-but those automatic routes remain disabled until integration is qualified.
-A successful experiment does not mean every similar file is supported.
+The current shared engine includes NVIDIA Dolby Vision and combined
+Dolby Vision/HDR10+ routes. Acceptance and replacement depend on each file's
+preservation, quality and savings evidence. These are not universally certified
+formats. See the [current use-case inventory](docs/SUPPORTED-USE-CASES.md),
+including known failures and the distinction between automatic and research use.
 
 The [status report](docs/STATUS.md) separates merged code, recorded tests and
 deployment. Merging code does not update a running TrueNAS app.

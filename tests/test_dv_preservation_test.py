@@ -8,6 +8,24 @@ from dv_preservation_test import sample_encoder_options, require_nvidia_frames
 
 
 class DVExperimentTests(unittest.TestCase):
+    def test_static_hdr_count_error_names_both_sides(self):
+        source=[{'side_data_list':[{'side_data_type':'Content light level metadata',
+                                  'max_content':1000,'max_average':400}]}]
+        with self.assertRaisesRegex(ValueError,"source types=.*Content light level metadata.*output types=\\[\\]"):
+            compare_static_hdr(source,[{}])
+        with self.assertRaisesRegex(ValueError,"source types=\\[\\].*output types=.*Content light level metadata"):
+            compare_static_hdr([{}],source)
+
+    def test_variable_sample_uses_elapsed_clock_not_nominal_rate(self):
+        from dv_preservation_test import variable_sample_prefix
+        frames=[{'best_effort_timestamp_time':str(t)} for t in (2.5,2.6,2.8,2.9,3.1)]
+        selected,end=variable_sample_prefix(frames,.35)
+        self.assertEqual(selected,frames[:3])
+        self.assertEqual(end,2.9)
+        with self.assertRaisesRegex(ValueError,'endpoint'):variable_sample_prefix(frames,10)
+        with self.assertRaisesRegex(ValueError,'increasing'):variable_sample_prefix(frames[::-1],.35)
+        with self.assertRaises(ValueError):variable_sample_prefix([frames[0],frames[0]],.1)
+
     def test_bounded_nvenc_quality_search_preserves_metadata_flags(self):
         info=sample(dolby_vision=True,video_codec='hevc',dolby_vision_profile=8,
                     dolby_vision_compatibility_id=1,dolby_vision_rpu_present=True)

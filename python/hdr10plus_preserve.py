@@ -18,7 +18,13 @@ from hdr10plus_validation import preserve_json_pairs, validate_frames
 from job_tracking import tracked_call, progress
 from task_progress import run_probe
 from packet_validation import collect_packets
-from auto_optimize import metadata_check, compare_packets, main_video, is_cover, Workflow
+from auto_optimize import metadata_check, compare_packets, main_video, is_cover, Workflow, paired_streams, copied_track_indices
+
+
+def attached_artifacts(command):
+    """Use the actual extraction paths, never guess from an image codec."""
+    return [Path(command[index+1]) for index, argument in enumerate(command[:-1])
+            if argument == '-attach']
 
 
 def frame_records(path):
@@ -55,7 +61,7 @@ def frame_records(path):
             if len(buffer)>4*1024*1024:raise ValueError('Frame evidence exceeds bounded record size')
 
 
-def write_decoded_timestamps(frames, destination, guard=lambda: None):
+def write_decoded_timestamps(frames, destination, guard=lambda: None, *, include_end=False):
     """Assign presentation timestamps to decoded pictures, not encoded packets.
 
     Cut GOPs may retain non-output/preroll packets. Container timestamp extraction
@@ -76,6 +82,17 @@ def write_decoded_timestamps(frames, destination, guard=lambda: None):
             stream.write(format(Decimal(value.numerator)*1000/Decimal(value.denominator),'.9f')+'\n')
             previous=value;count+=1
         if not count:raise ValueError('No decoded presentation timestamps')
+        if include_end:
+            duration=frame.get('duration_time',frame.get('pkt_duration_time'))
+            if duration not in (None,'N/A'):
+                try:duration=Fraction(str(duration))
+                except (ValueError,TypeError,ZeroDivisionError):
+                    raise ValueError('Invalid terminal frame duration') from None
+                if duration<=0:raise ValueError('Positive terminal frame duration required')
+                endpoint=previous+duration
+                # mkvmerge consumes this extra boundary as the last picture's
+                # duration, not as an extra picture. Returned count remains N.
+                stream.write(format(Decimal(endpoint.numerator)*1000/Decimal(endpoint.denominator),'.9f')+'\n')
     return count
 
 
@@ -91,8 +108,9 @@ def preserved_tracks_command(ffmpeg, packaged, source, output, streams):
     """Copy restored video and original non-video packets, including block durations."""
     command=[ffmpeg,'-v','error','-nostdin','-n','-copyts','-i',str(packaged),
              '-i',str(source)]
+    primary=next(s['index'] for s in streams if s['codec_type']=='video' and not is_cover(s))
     for stream in streams:
-        moving = stream['codec_type']=='video' and not is_cover(stream)
+        moving = stream['index']==primary
         command+=['-map','0:v:0' if moving else '1:'+str(stream['index'])]
     command+=['-c','copy','-map_metadata','1','-map_chapters','1','-avoid_negative_ts','disabled']
     for index,stream in enumerate(streams):
@@ -150,13 +168,19 @@ def finalize(args):
     def work():
         before=probe(source);mid=probe(encoded)
         video=main_video(before)
-        from auto_optimize import PLANAR_FORMATS
-        if video.get('pix_fmt') not in PLANAR_FORMATS or video.get('color_transfer')!=('arib-std-b67' if mode=='hlg' else 'smpte2084'):
+        from source_format import valid_pixel_format
+        if not valid_pixel_format(video.get('pix_fmt')) or video.get('color_transfer')!=('arib-std-b67' if mode=='hlg' else 'smpte2084'):
             raise ValueError('Requires supported native pixel format and matching HDR transfer')
         if any(s['codec_type'] not in ('video','audio','subtitle','attachment') for s in before['streams']):
             raise ValueError('Additional track types need preservation validation')
         if any(s['codec_type']=='attachment' and not s.get('extradata_hash') for s in before['streams']):
             raise ValueError('Attachment payload hash unavailable')
+        if getattr(args,'recover_empty_dv',False):
+            from hevc_inventory import inspect_source
+            from hdr_inspection import recover_empty_dv_declaration
+            evidence=inspect_source(args.ffmpeg,source,run,guard,timeout=args.timeout)
+            (run/'dv-declaration-evidence.json').write_text(json.dumps(evidence,indent=2))
+            recover_empty_dv_declaration(video,evidence)
         if any('dovi' in str(s).lower() or 'dolby vision' in str(s).lower() for s in video.get('side_data_list',[])):
             raise ValueError('Dolby Vision requires a separate workflow')
         encoded_video=main_video(mid)
@@ -173,16 +197,21 @@ def finalize(args):
         source_frames=getattr(args,'reference_frames',None)
         if source_frames is None:
             source_frames=run/'source-frames.json'
-            run_probe([args.ffprobe,'-v','error','-threads','2','-select_streams','v:0','-show_frames','-of','json',str(source)],
+            from decoder_context import metadata_reader_options
+            run_probe([args.ffprobe,'-v','error',*metadata_reader_options(),'-select_streams','V:0','-show_frames','-of','json',str(source)],
                       source_frames,'Checking original HDR metadata',args.timeout,guard,duration)
             if source_frames.with_suffix(source_frames.suffix+'.stderr').stat().st_size:
                 raise ValueError('Decoder errors in original HDR evidence')
         from hdr10plus_validation import hdr_metadata
         dynamic=False
+        from hevc_content_light import content_light
+        light_values=set();complete_light=True
         for number,frame in enumerate(frame_records(source_frames)):
             if number%4096==0:guard()
             items=hdr_metadata(frame)
             dynamic=any('2094-40' in item.get('side_data_type','') or 'HDR10+' in item.get('side_data_type','') for item in items) or dynamic
+            try:light_values.add(content_light(frame))
+            except ValueError:complete_light=False
         restore_dynamic=mode=='hdr10plus' or (mode=='pq' and dynamic)
         if restore_dynamic:
             if video.get('codec_name')!='hevc':
@@ -194,8 +223,24 @@ def finalize(args):
             command([args.hdr10plus_tool,'inject','-i',raw,'-j',run/'hdr10plus.json','-o',injected],'Restoring HDR10Plus')
         else:
             injected=raw  # Static metadata must already survive encoding; full validation proves it.
+        if complete_light and len(light_values)>1:
+            # Encoder initialization can flatten changing CLL values. Associate
+            # source presentation order with decoded encoded-packet positions,
+            # never assume coded packet order equals display order (B frames).
+            encoded_positions=run/'content-light-frames.json'
+            from decoder_context import metadata_reader_options
+            run_probe([args.ffprobe,'-v','error',*metadata_reader_options(),'-select_streams','V:0',
+                       '-show_frames','-show_entries','frame=pkt_pos','-of','json',str(injected)],
+                      encoded_positions,'Mapping HDR brightness metadata',args.timeout,guard,duration)
+            if encoded_positions.with_suffix(encoded_positions.suffix+'.stderr').stat().st_size:
+                raise ValueError('Decoder errors in HDR packet-position evidence')
+            from hevc_content_light import restore
+            restored=run/'content-light.hevc'
+            proof=restore(injected,restored,frame_records(source_frames),frame_records(encoded_positions),guard)
+            (run/'content-light-preservation.json').write_text(json.dumps(proof,indent=2))
+            injected=restored
         progress('Restoring decoded presentation timestamps',directory=run)
-        write_decoded_timestamps(frame_records(source_frames),run/'timestamps.txt',guard)
+        write_decoded_timestamps(frame_records(source_frames),run/'timestamps.txt',guard,include_end=True)
         from media_metadata import canonical_tags
         tags=canonical_tags(video.get('tags',{}));disposition=video.get('disposition',{})
         options=['--language','0:'+tags.get('language','und'),'--track-name','0:'+tags.get('title',''),
@@ -215,12 +260,11 @@ def finalize(args):
         track_command=preserved_tracks_command(args.ffmpeg,packaged,source,output,before['streams'])
         cover_workflow=Workflow(args,run,guard)
         track_command=cover_workflow.preserve_covers(track_command,source,before,'original-artwork',input_index=1)
-        cover_files=[run/('original-artwork-cover-'+str(s['index'])+
-                         ('.png' if s['codec_name']=='png' else '.jpg'))
-                     for s in before['streams'] if is_cover(s)]
+        cover_files=attached_artifacts(track_command)
         command(track_command,'Restoring original copied-track timing')
         progress('Checking preserved track and chapter metadata',directory=run)
-        after=probe(output);metadata_check(before,after,'hevc')
+        after=probe(output)
+        cover_workflow.check_metadata(source,output,before,after,'hevc','preserved-metadata')
         if getattr(args,'repair_only',False):
             intermediates={raw,injected,packaged,*cover_files}
             result_holder.update(output=str(output),reference_frames=str(source_frames),validated=False,
@@ -229,16 +273,19 @@ def finalize(args):
         paths=[Path(source_frames)]
         for label,path in [('output',output)]:
             evidence=run/(label+'-frames.json');paths.append(evidence)
-            run_probe([args.ffprobe,'-v','error','-select_streams','v:0','-show_frames','-of','json',str(path)],
+            from decoder_context import metadata_reader_options
+            run_probe([args.ffprobe,'-v','error',*metadata_reader_options(),'-select_streams','V:0','-show_frames','-of','json',str(path)],
                       evidence,'Checking HDR frames: '+label,args.timeout,guard,duration)
             # ffprobe can return success despite decoder errors. Do not certify
             # concealed/damaged frames merely because counts happen to match.
             if evidence.with_suffix(evidence.suffix+'.stderr').stat().st_size:
                 raise ValueError('Decoder reported errors while reading '+label+' HDR evidence')
         result=validate_frames(frame_records(paths[0]),frame_records(paths[1]),mode=mode)
-        indices=[s['index'] for s in before['streams'] if s['codec_type'] in ('audio','subtitle') or is_cover(s)]
+        indices=copied_track_indices(before)
         original=collect_packets(args.ffprobe,source,run,'source',indices,args.timeout,guard,duration)
-        final=collect_packets(args.ffprobe,output,run,'output',indices,args.timeout,guard,duration)
+        output_indices={a['index']:b['index'] for a,b in paired_streams(before,after)}
+        final_raw=collect_packets(args.ffprobe,output,run,'output',[output_indices[i] for i in indices],args.timeout,guard,duration)
+        final={i:final_raw[output_indices[i]] for i in indices}
         for index in indices:
             cover=any(s['index']==index and is_cover(s) for s in before['streams'])
             compare_packets(original[index],final[index],cover=cover)

@@ -25,6 +25,65 @@ def evidence(source,start=15,seconds=10,combined=False):
 
 
 class DVWorkflowTests(unittest.TestCase):
+    def test_shared_preflight_binds_identity_settings_quality_and_savings(self):
+        source=Path('fixture.mkv');identity='b'*64
+        samples=[flow.sample_evidence(evidence(source,start),source,start,10,False,90,90)
+                 for start in (15,50,85)]
+        settings=dict(codec='hevc',encoder='hevc_nvenc',nvenc_cq=24,
+                      nvenc_maxrate_mbps=None,combined=False)
+        report=dict(schema='muxmender-codec-trials-v1',source_id=identity,color_mode='pq',
+            references=[dict(id=str(s),bytes=100) for s in (15,50,85)],
+            trials=[dict(id='candidate',codec='hevc',encoder='hevc_nvenc',source_id=identity,
+                runtime_supported=True,playback_compatible=True,settings=settings,samples=samples)])
+        selected=select_candidate(report,25)['selected']
+        options=SimpleNamespace(source=source,min_savings=25,experimental_nvidia=True,
+            experimental_intel=False,experimental_hdr10plus=False,nvenc_cq=24,nvenc_maxrate_mbps=None)
+        check=flow.shared_full_preflight(source,identity,report,selected,90,90,lambda:None)
+        with patch.object(flow,'digest',return_value=identity):
+            self.assertTrue(check(options)['eligible'])
+            for key,value in [('nvenc_cq',28),('nvenc_maxrate_mbps',20),
+                              ('experimental_hdr10plus',True),('experimental_intel',True),
+                              ('source',Path('other.mkv')),('min_savings',75)]:
+                changed=copy.copy(options);setattr(changed,key,value)
+                with self.subTest(key=key),self.assertRaises(ValueError):check(changed)
+            # Copy at handoff prevents later trial mutation changing evidence.
+            report['trials'][0]['samples'][0]['quality']['mean']=80
+            self.assertTrue(check(options)['eligible'])
+            bad=flow.shared_full_preflight(source,identity,report,selected,90,90,lambda:None)
+            with self.assertRaises(ValueError):bad(options)
+        with patch.object(flow,'digest',return_value='c'*64),self.assertRaises(ValueError):check(options)
+
+    def test_auto_vendor_discovery_selects_evaluator_not_certification(self):
+        for vendors,expected in [(['amd'],True),(['intel'],True),(['amd','intel'],True),
+                                 (['nvidia'],False),(['nvidia','intel'],False),([],False)]:
+            with self.subTest(vendors=vendors),patch('dv_workflow.mm.gpu_vendors',return_value=vendors):
+                self.assertEqual(flow.use_shared_candidate_route(dict(dv_profile=8),'auto'),expected)
+        with patch('dv_workflow.mm.gpu_vendors') as discover:
+            self.assertTrue(flow.use_shared_candidate_route(dict(dv_profile=8),'intel'))
+            self.assertFalse(flow.use_shared_candidate_route(dict(dv_profile=8),'nvidia'))
+            self.assertTrue(flow.use_shared_candidate_route(dict(dv_profile=5),'auto'))
+        discover.assert_not_called()
+
+    def test_profile7_dispatch_precedes_profile81_vendor_restriction(self):
+        data=dict(streams=[dict(index=0,codec_type='video',codec_name='hevc',
+            side_data_list=[dict(dv_profile=7,el_present_flag=1,bl_present_flag=1,rpu_present_flag=1)])])
+        args=SimpleNamespace(hardware='intel')
+        for profile in (5,7,8):
+            data['streams'][0]['side_data_list'][0]['dv_profile']=profile
+            with patch('dv_mel.run',return_value=7) as route:
+                self.assertEqual(flow.run(args,Path('source.mkv'),Path('output'),data,{}),7)
+            route.assert_called_once_with(args,Path('source.mkv'),Path('output'),data,{})
+
+    def test_additional_track_publication_requires_packet_proof(self):
+        report=dict(status='verified-full-file-awaiting-playback',source='fixture.mkv',original_stat_unchanged=True,
+            frames=24,decoded_frame_checks=dict(frames=24,timing_preserved=True,static_hdr_preserved=True,
+            frame_picture_preserved=True,rpu_present_every_frame=True),rpu_content_digest='hash',
+            chapters_unchanged=True,audio_subtitle_packets_unchanged=True,final_decode_evidence={'complete':True})
+        with self.assertRaisesRegex(ValueError,'additional-track'):
+            flow.verified_full(report,'fixture.mkv',False,additional_tracks=True)
+        report['secondary_video_packets_unchanged']=True
+        flow.verified_full(report,'fixture.mkv',False,additional_tracks=True)
+
     def test_shared_selector_accepts_complete_evidence_only(self):
         samples=[flow.sample_evidence(evidence('fixture.mkv',start),Path('fixture.mkv'),start,10,False,90,90)
                  for start in (15,50,85)]
@@ -62,6 +121,16 @@ class DVWorkflowTests(unittest.TestCase):
     def test_custom_quality_floors_are_not_ignored(self):
         sample=flow.sample_evidence(evidence('fixture.mkv'),Path('fixture.mkv'),15,10,False,98,98)
         self.assertFalse(sample['quality_pass'])
+
+    def test_sample_requires_additional_track_proof_when_present(self):
+        record=evidence('fixture.mkv')
+        for value in (None,False):
+            record['secondary_video_packets_unchanged']=value
+            with self.assertRaisesRegex(ValueError,'additional-track'):
+                flow.sample_evidence(record,Path('fixture.mkv'),15,10,False,90,90,additional_tracks=True)
+        record['secondary_video_packets_unchanged']=True
+        self.assertTrue(flow.sample_evidence(record,Path('fixture.mkv'),15,10,False,90,90,
+                                            additional_tracks=True)['preservation_pass'])
 
     def test_adapter_allows_copies_but_never_replacement(self):
         settings=dict(mode='encode',hardware='auto',quality='auto',codecs=['hevc'],
@@ -114,41 +183,79 @@ class DVWorkflowTests(unittest.TestCase):
             self.assertEqual(source.read_bytes(),b'original'*100)
             self.assertFalse(list(output.rglob('full-hevc.mkv')))
 
-    def test_orchestrator_keeps_copy_and_shared_selection(self):
+    def test_orchestrator_authorizes_only_fully_validated_automatic_output(self):
+        self.check_orchestrator_publication()
+        self.check_orchestrator_publication(combined=True)
+
+    def test_explicit_research_run_still_cannot_publish(self):
+        self.check_orchestrator_publication(experimental=True)
+
+    def test_full_failure_reason_reaches_job_status(self):
+        self.check_orchestrator_publication(failure='Ordered mux exceeded 1 GiB memory guard; partial retained')
+
+    def check_orchestrator_publication(self,combined=False,experimental=False,failure=None):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);source=root/'fixture.mkv';source.write_bytes(b'original'*100)
             output=root/'work'
             args=SimpleNamespace(hardware='nvidia',playback_verified_codecs=['hevc'],ffmpeg='ffmpeg',ffprobe='ffprobe',
-                seconds=10,hevc_nvenc_cq=[30],minimum_savings_percent=25,vmaf_mean=90,vmaf_p5=90,
-                execute=True,encode_best=True,min_free_gib=1)
+                seconds=10,hevc_nvenc_cq=None,minimum_savings_percent=25,vmaf_mean=90,vmaf_p5=90,
+                execute=True,encode_best=True,min_free_gib=1,experimental_dv81=experimental)
             metadata=dict(streams=[dict(codec_type='video')])
             def sample(options):
                 options.source_guard()
                 folder=options.work_dir/'dv81-test';folder.mkdir()
-                record=evidence(source,options.start,options.seconds,False)
+                record=evidence(source,options.start,options.seconds,combined)
                 (folder/'validation.json').write_text(json.dumps(record));return 0
-            def full(options):
+            def full(options,*,qualified_preflight):
                 options.source_guard()
+                self.assertTrue(qualified_preflight(options)['eligible'])
                 folder=options.work_dir/'dv-full-test';folder.mkdir()
+                if failure:
+                    (folder/'validation.json').write_text(json.dumps(dict(status='failed',error=failure)))
+                    return 1
                 candidate=folder/'fixture.mkv';candidate.write_bytes(b'encoded')
                 record=dict(status='verified-full-file-awaiting-playback',source=str(source),output=str(candidate),
                     original_stat_unchanged=True,frames=240,rpu_content_digest='a'*64,
                     chapters_unchanged=True,audio_subtitle_packets_unchanged=True,
                     final_decode_evidence={'video':'strict full-frame audit'},
                     decoded_frame_checks=dict(frames=240,timing_preserved=True,static_hdr_preserved=True,
-                                              frame_picture_preserved=True,rpu_present_every_frame=True))
+                                              frame_picture_preserved=True,rpu_present_every_frame=True,
+                                              hdr10plus_preserved=combined))
                 (folder/'validation.json').write_text(json.dumps(record));return 0
             with patch.object(flow.mm,'probe',return_value=SimpleNamespace(duration_seconds=600)), \
                  patch.object(flow.dv,'require_candidate'),patch.object(flow.shutil,'which',side_effect=lambda x:x), \
-                 patch('hdr_inspection.inspect',return_value={'side_data_types':[]}), \
+                 patch('hdr_inspection.inspect',return_value={'side_data_types':['hdr10+'] if combined else []}), \
                  patch('auto_optimize.Workflow.preflight_source'),patch.object(flow.dv,'run',side_effect=sample), \
                  patch.object(flow.full,'run',side_effect=full):
-                self.assertEqual(flow.run(args,source,output,metadata,fingerprint(source)),0)
+                if failure:
+                    with self.assertRaisesRegex(RuntimeError,'DV full preservation failed: '+failure):
+                        flow.run(args,source,output,metadata,fingerprint(source))
+                else:self.assertEqual(flow.run(args,source,output,metadata,fingerprint(source)),0)
             state=json.loads(next(output.glob('auto-*/status.json')).read_text())
+            if failure:
+                self.assertEqual(state['state'],'stopped-original-retained')
+                self.assertIn(failure,state['error'])
+                self.assertEqual(source.read_bytes(),b'original'*100)
+                return
             self.assertEqual(state['state'],'validated-copy-awaiting-playback')
-            self.assertFalse(state['publication_authorized'])
+            self.assertEqual(state['publication_authorized'],not experimental)
             self.assertEqual(source.read_bytes(),b'original'*100)
             self.assertTrue(Path(state['output']).is_file())
+            # Exercise the ordinary publisher against generated bytes only.
+            result_dir=next(output.glob('auto-*'))
+            self.assertIn(24,json.loads((result_dir/'plan.json').read_text())['cqs'])
+            if experimental:
+                with self.assertRaisesRegex(ValueError,'not been qualified'):
+                    replace_validated(source,root,root,result_dir,25,'generated-dv')
+                return
+            replace_validated(source,root,root,result_dir,25,'generated-dv')
+            self.assertEqual(source.read_bytes(),b'encoded')
+
+    def test_automatic_replacement_needs_no_experimental_switch(self):
+        settings=dict(mode='replace',hardware='auto',quality='auto',codecs=['hevc'],minimum_savings=25)
+        args=automatic_arguments('fixture.mkv','out',settings)
+        self.assertIn('--encode-best',args)
+        self.assertNotIn('--experimental-dv81',args)
 
 
 if __name__=='__main__':unittest.main()

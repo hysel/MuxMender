@@ -34,7 +34,7 @@ for root_text in ROOTS:
  result.append(dict(state=b.get('state'),started=b.get('started'),
   validated=sum(s.get('state')=='validated-copy-awaiting-playback' for s in outcomes),
   evaluation_errors=sum(s.get('decision',{}).get('reason_code')=='evaluation_inconclusive' for s in outcomes),
-  retained=sum(s.get('state') in ('trials-completed','full-output-rejected-insufficient-savings') and s.get('decision',{}).get('reason_code')!='evaluation_inconclusive' for s in outcomes),
+  retained=sum((s.get('state')=='full-output-rejected-insufficient-savings' or (s.get('state')=='trials-completed' and s.get('decision',{}).get('action')=='keep_original')) and s.get('decision',{}).get('reason_code')!='evaluation_inconclusive' for s in outcomes),
   finished=b.get('finished'),updated=b.get('updated'),total=b.get('total',0),
   completed=sum(s.get('state') in ('passed','failed') for s in steps),
   failures=sum(s.get('state')=='failed' for s in steps),current=b.get('current'),
@@ -51,37 +51,63 @@ import json,time,os,sys
 from pathlib import Path
 if sys.platform != 'linux':
  raise RuntimeError('Remote research reader is Linux-only; never execute on Windows')
-jobs=[]
-outcomes=[]
+result=[]
+seen=set()
 for root_text in ROOTS:
  root=Path(root_text)
+ jobs=[]
+ outcomes=[]
  for p in root.rglob('job.json'):
   if p.is_symlink():continue
-  try:jobs.append(json.loads(p.read_text()))
+  try:jobs.append((p.resolve(),json.loads(p.read_text())))
   except (OSError,ValueError):pass
  for p in root.rglob('auto-*/status.json'):
   try:outcomes.append(json.loads(p.read_text()))
   except (OSError,ValueError):pass
-if not jobs:raise RuntimeError('Tracked development job has not registered')
-j=max(jobs,key=lambda x:x.get('started',0))
-state=j.get('state')
-done=state in ('completed','failed','cancelled')
-alive=True
-if not done:
- try:
-  pid=int(j.get('pid',0))
-  alive=pid>0 and Path('/proc',str(pid)).is_dir()
- except (TypeError,ValueError):alive=False
-result=[dict(state=('completed-with-failures' if state!='completed' else 'completed') if done else 'running',
- started=j.get('started'),finished=j.get('finished'),updated=j.get('updated') if alive else 0,
+ if not jobs:raise RuntimeError('Tracked development job has not registered')
+ # A nested fixture/child may finish while its parent research job still runs.
+ # Prefer the outermost tracked scope, then the latest attempt at that scope.
+ depth=min(len(path.relative_to(root.resolve()).parts) for path,j in jobs)
+ path,j=max((item for item in jobs if len(item[0].relative_to(root.resolve()).parts)==depth),
+            key=lambda x:x[1].get('started',0))
+ if path in seen:continue
+ seen.add(path)
+ state=j.get('state')
+ done=state in ('completed','failed','cancelled')
+ # Parent controls lifecycle; a current nested worker supplies stage progress.
+ # Ignore earlier attempts and completed fixtures when choosing the live stage.
+ stage=j
+ if not done:
+  children=[record for child_path,record in jobs
+            if len(child_path.relative_to(root.resolve()).parts)>depth
+            and record.get('state')=='running'
+            and record.get('started',0)>=j.get('started',0)]
+  stage=max(children,key=lambda record:record.get('stage_updated') or record.get('updated') or 0,default=j)
+ alive=True
+ if not done:
+  try:
+   pid=int(j.get('pid',0))
+   if globals().get('SERVICE_UNIT'):
+    import subprocess
+    pid=int(subprocess.check_output(['systemctl','show',SERVICE_UNIT,'--property=MainPID','--value'],text=True,timeout=10).strip())
+   alive=pid>0 and Path('/proc',str(pid)).is_dir()
+  except (TypeError,ValueError):alive=False
+ result.append(dict(state=('completed-with-failures' if state!='completed' else 'completed') if done else 'running',
+ started=j.get('started'),finished=j.get('finished'),updated=min(j.get('updated') or 0,stage.get('updated') or 0) if alive else 0,
  total=1,completed=int(done),failures=int(done and state!='completed'),
  validated=sum(s.get('state')=='validated-copy-awaiting-playback' for s in outcomes),
  evaluation_errors=sum(s.get('decision',{}).get('reason_code')=='evaluation_inconclusive' for s in outcomes),
- retained=sum(s.get('state') in ('trials-completed','full-output-rejected-insufficient-savings') and s.get('decision',{}).get('reason_code')!='evaluation_inconclusive' for s in outcomes),
- current=1,phase=j.get('phase'),stage_percent=j.get('stage_percent'),stage_eta=j.get('stage_eta'),
- stage_updated=j.get('stage_updated'),detail=j.get('detail'),workflow_stage=j.get('workflow_stage'))]
+ retained=sum((s.get('state')=='full-output-rejected-insufficient-savings' or (s.get('state')=='trials-completed' and s.get('decision',{}).get('action')=='keep_original')) and s.get('decision',{}).get('reason_code')!='evaluation_inconclusive' for s in outcomes),
+ current=1,phase=stage.get('phase'),stage_percent=stage.get('stage_percent'),stage_eta=stage.get('stage_eta'),
+ stage_updated=stage.get('stage_updated'),detail=stage.get('detail'),workflow_stage=stage.get('workflow_stage')))
+if not result:raise RuntimeError('Tracked development job has not registered')
 print(json.dumps(result))
 '''
+
+
+def entry_key(entry):
+    # Host alone merges independent jobs and can hide a failed run.
+    return str(entry.get('id') or (entry['host']+'\n'+entry['title']))
 
 
 def main():
@@ -91,12 +117,17 @@ def main():
     parser.add_argument('--interval', type=int, default=20)
     args = parser.parse_args()
     config = json.loads(args.config.read_text(encoding='utf-8'))
+    if len({entry_key(e) for e in config})!=len(config):
+        raise ValueError('Research monitor entries require unique identities')
     args.output.mkdir(parents=True, exist_ok=True)
     index_path = args.output/'monitor-index.json'
     saved = json.loads(index_path.read_text()) if index_path.exists() else {}
     jobs = []
     for entry in config:
-        existing = saved.get(entry['host'])
+        key=entry_key(entry)
+        existing = saved.get(key)
+        if not existing and sum(e['host']==entry['host'] for e in config)==1:
+            existing=saved.get(entry['host'])
         if existing:
             directory = Path(existing).resolve()
             if not directory.is_relative_to(args.output.resolve()):
@@ -110,16 +141,16 @@ def main():
         else:
             job = Job(args.output, entry['title'])
         jobs.append((entry, job))
-        saved[entry['host']] = str(job.directory)
+        saved[key] = str(job.directory)
     index_path.write_text(json.dumps(saved))
     while True:
         # Research plans can grow without restarting the dashboard or observer.
-        refreshed={e['host']:e for e in json.loads(args.config.read_text(encoding='utf-8'))}
+        refreshed={entry_key(e):e for e in json.loads(args.config.read_text(encoding='utf-8'))}
         terminal = []
         for entry, job in jobs:
-            entry=refreshed.get(entry['host'],entry)
+            entry=refreshed.get(entry_key(entry),entry)
             try:
-                script = 'ROOTS='+repr(entry['roots'])+'\n'+(REMOTE_TRACKED if entry.get('kind')=='tracked' else REMOTE)
+                script = 'ROOTS='+repr(entry['roots'])+'\nSERVICE_UNIT='+repr(entry.get('service_unit'))+'\n'+(REMOTE_TRACKED if entry.get('kind')=='tracked' else REMOTE)
                 command = ['ssh', '-i', entry['key'], '-o', 'IdentitiesOnly=yes',
                            '-o', 'StrictHostKeyChecking=yes', '-o', 'BatchMode=yes',
                            '-o', 'ConnectTimeout=10', entry['host'], *entry['command']]
@@ -137,8 +168,8 @@ def main():
                 done = active is None
                 fresh = done or time.time()-float(active.get('updated') or 0) < 90
                 state = ('failed' if failures or evaluation_errors else 'completed') if done else ('running' if fresh else 'stale')
-                phase = 'Research batch finished' if done else (active.get('phase') or 'Remote test '+str(completed+1)+' of '+str(total))
-                detail = f'{completed}/{total} commands finished; {validated} validated copies; {retained} size/quality keeps; {evaluation_errors} incomplete evaluations; {failures} command failures. Other completed commands may be unsupported-input skips. Originals retained.'
+                phase = 'Development execution finished — check outcomes' if done else (active.get('phase') or 'Remote test '+str(completed+1)+' of '+str(total))
+                detail = f'{completed}/{total} commands finished; {validated} validated test copies (not published); {retained} size/quality keeps; {evaluation_errors} incomplete evaluations; {failures} command failures. Execution completion alone does not mean conversion passed or disk space was reclaimed. Other completed commands may be unsupported-input skips or sample-only tests. Originals retained.'
                 if done and evaluation_errors:phase='Evaluation incomplete — investigation required'
                 if done and entry.get('completion_note'):
                     detail += ' '+str(entry['completion_note'])

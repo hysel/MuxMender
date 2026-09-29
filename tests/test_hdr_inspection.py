@@ -1,4 +1,5 @@
 import unittest
+import copy
 from unittest.mock import patch
 from types import SimpleNamespace
 import hdr_inspection as hdr
@@ -8,6 +9,23 @@ from job_tracking import tracked_call, progress
 from dashboard import Catalog
 
 
+class StaleDVDeclarationTests(unittest.TestCase):
+    def test_only_complete_absence_can_recover_container_label(self):
+        video=dict(codec_name='hevc',color_transfer='bt709',side_data_list=[
+            {'side_data_type':'DOVI configuration record','dv_profile':7},
+            {'side_data_type':'CPB properties'}])
+        evidence=dict(complete_bitstream=True,source_unchanged=True,bytes=1234,rpu_nals=0,potential_enhancement_nals=0)
+        for key,value in [('complete_bitstream',False),('source_unchanged',False),('bytes',0),
+                          ('rpu_nals',1),('potential_enhancement_nals',1),('rpu_nals',False)]:
+            changed=dict(evidence,**{key:value});untouched=copy.deepcopy(video)
+            self.assertFalse(hdr.recover_empty_dv_declaration(untouched,changed))
+            self.assertEqual(untouched,video)
+        self.assertTrue(hdr.recover_empty_dv_declaration(video,evidence))
+        self.assertEqual(video['color_transfer'],'bt709')
+        self.assertEqual(video['side_data_list'],[{'side_data_type':'CPB properties'}])
+
+
+
 class HDRInspectionTests(unittest.TestCase):
     def test_dolby_policy_includes_combined_metadata_but_not_hdr10plus_alone(self):
         dv={'side_data_type':'DOVI configuration record'}
@@ -15,12 +33,12 @@ class HDRInspectionTests(unittest.TestCase):
         for items in ([dv],[dv,plus]):
             with self.assertRaises(hdr.AutomaticHDRSkip) as error:
                 hdr.enforce_automatic_policy({'side_data_list':items})
-            self.assertEqual(error.exception.reason_code,'dolby_vision_temporarily_disabled')
+            self.assertEqual(error.exception.reason_code,'dolby_vision_requires_preservation_route')
         hdr.enforce_automatic_policy({'color_transfer':'smpte2084','side_data_list':[plus]})
         with self.assertRaises(hdr.AutomaticHDRSkip):
             hdr.enforce_automatic_policy({},hdr.classify({},[{'side_data_list':[dv,plus]}]))
 
-    def test_auto_skips_dolby_before_gpu_or_frame_inspection(self):
+    def test_auto_routes_dolby_without_experimental_flag(self):
         import auto_optimize as ao
         import json
         from test_auto_optimize import source_data
@@ -29,14 +47,12 @@ class HDRInspectionTests(unittest.TestCase):
             data=source_data();data['streams'][0]['side_data_list']=[{'side_data_type':'DOVI configuration record'}]
             args=SimpleNamespace(source=source,output_dir=root/'out',ffmpeg='ffmpeg',ffprobe='ffprobe')
             with patch.object(ao.Workflow,'probe',return_value=data), \
-                 patch.object(hdr,'inspect') as inspect, patch.object(ao,'probe_encoder') as encoder:
+                 patch.object(hdr,'inspect') as inspect, patch.object(ao,'probe_encoder') as encoder, \
+                 patch('dv_workflow.run',return_value=0) as route:
                 self.assertEqual(ao.run(args),0)
             inspect.assert_not_called();encoder.assert_not_called()
-            record=json.loads((root/'out/eligibility.json').read_text())
-            self.assertEqual(record['reason_code'],'dolby_vision_temporarily_disabled')
+            route.assert_called_once()
             self.assertEqual(source.read_bytes(),b'original')
-            from autonomous_queue import outcome
-            self.assertEqual(outcome(root/'out',0),('skipped',record['reason']))
 
     def test_skipped_job_is_not_presented_as_successful_conversion(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -75,3 +91,13 @@ class HDRInspectionTests(unittest.TestCase):
     def test_missing_frames_rejected(self):
         with patch.object(hdr.subprocess,'run',return_value=SimpleNamespace(stdout='{"frames":[]}')):
             with self.assertRaises(ValueError):hdr.inspect('ffprobe','source',{},120)
+
+    def test_missing_hdr_labels_recovered_without_guessing(self):
+        import json
+        frame=dict(color_primaries='bt2020',color_space='bt2020nc',color_range='tv',color_transfer='smpte2084')
+        with patch.object(hdr.subprocess,'run',return_value=SimpleNamespace(stdout=json.dumps({'frames':[frame]}))):
+            report=hdr.inspect('ffprobe','source',{'color_transfer':'smpte2084'},120)
+            self.assertEqual(report['recovered_color'],{key:value for key,value in frame.items() if key!='color_transfer'})
+            self.assertFalse(report['conversion_authorized'])
+            with self.assertRaisesRegex(ValueError,'Conflicting HDR'):
+                hdr.inspect('ffprobe','source',{'color_primaries':'bt709'},120)

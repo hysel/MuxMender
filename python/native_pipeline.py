@@ -19,6 +19,7 @@ from dataclasses import replace
 from pathlib import Path
 from runtime_support import TerminalProgress
 from encoder_progress import EncoderActivity, timestamp_percent
+from validation_resources import validation_limited
 
 
 def checked_json(command, timeout=60):
@@ -29,6 +30,10 @@ def checked_json(command, timeout=60):
 
 
 def progress(line, seconds):
+    mux=re.fullmatch(r'Progress: (\d+)%',line.strip())
+    if mux:
+        value=int(mux.group(1))
+        return float(value) if 0<=value<=100 else None
     if line.startswith("MUXMENDER_PROGRESS="):
         return min(100.0, max(0.0, float(line.split("=", 1)[1])))
     return timestamp_percent(line, seconds)
@@ -53,9 +58,11 @@ def decode_maps_after_frame_audit(streams, verified_frames=None):
     not a previous run's report, a sample count, or stream-header nb_frames.
     """
     if type(verified_frames) is not int or verified_frames<=0:
-        return ['0:v:0','0:a?'],False
+        return ['0:V:0','0:a?'],False
+    moving=[s for s in streams['streams'] if s.get('codec_type')=='video' and not s.get('disposition',{}).get('attached_pic')]
+    primary=moving[0]['index'] if moving else None
     return [f"0:{stream['index']}" for stream in streams['streams']
-            if stream.get('codec_type')=='audio'],True
+            if stream.get('codec_type')=='audio' or (stream in moving and stream['index']!=primary)],True
 
 
 def strict_decode_line(line):
@@ -70,13 +77,19 @@ def strict_decode_line(line):
     raise RuntimeError('Strict decode reported an error: '+text[:1600])
 
 
-def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None, observe=None, expected_frames=None, cwd=None, strict_decode=False):
+@validation_limited
+def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None, observe=None, expected_frames=None, cwd=None, strict_decode=False, env=None, pass_fds=()):
     """Stream logs/progress to caller; cap both stalls and total elapsed time."""
     from muxmender import stop_process_tree
     from job_tracking import stage_progress
     from runtime_support import guard_ordered_mux_memory
-    child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             text=True, encoding="utf-8", errors="replace", cwd=cwd)
+    from cooperative_pause import configured_lease, OwnedStagePause, launch_owned
+    lease = configured_lease(command, env)
+    inherited = dict(pass_fds=tuple(pass_fds)) if pass_fds else {}
+    launch = launch_owned if lease else subprocess.Popen
+    child = launch(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, encoding="utf-8", errors="replace", cwd=cwd, env=env, **inherited)
+    pause = OwnedStagePause(child, lease) if lease else None
     lines = queue.Queue()
     def read():
         try:
@@ -95,10 +108,36 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None,
     display = TerminalProgress(label=f"Stage ({offset:g}-{offset + span:g}% overall)" if span else 'Current stage', machine=False)
     try:
         eof = False
+        pause_reported = False
+        last_pause_report = 0
+        pause_accounted = 0
+        display_pause_accounted = 0
         while not eof or child.poll() is None:
             guard_ordered_mux_memory(child, command)
             if guard:
                 guard()
+            if pause:
+                paused = pause.update()
+                spent = pause.elapsed()
+                delta = spent-pause_accounted
+                started += delta
+                advanced += delta
+                pause_accounted = spent
+                if paused:
+                    if time.monotonic()-last_pause_report >= 1:
+                        stage_progress(last if last >= 0 else None, None,
+                                       detail=f'Paused: {pause.reason}; {spent:.0f}s paused. GPU memory remains allocated.')
+                        last_pause_report = time.monotonic()
+                    pause_reported = True
+                    time.sleep(.2)
+                    continue
+                if pause_reported:
+                    display.samples.clear()
+                    display.eta_seconds = None
+                    display.started += spent-display_pause_accounted
+                    display_pause_accounted = spent
+                    stage_progress(last if last >= 0 else None, None, detail='Resumed; measuring processing rate')
+                    pause_reported = False
             now = time.monotonic()
             if now - started > timeout or (stall and now - advanced > stall):
                 cause = 'total runtime limit' if now-started > timeout else 'no advancing frame/timestamp progress'
@@ -149,6 +188,12 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None,
             if span:print(f"MUXMENDER_PROGRESS={offset + span:.1f}", flush=True)
         return "".join(log)
     finally:
+        if pause:
+            try:
+                pause.resume()  # SIGTERM must not wait behind our own SIGSTOP.
+            except OSError:
+                # Still reap our child if resuming fails during teardown.
+                child.kill()
         if child.poll() is None:
             stop_process_tree(child)
         # taskkill can be denied or fail. Terminate the owned process directly

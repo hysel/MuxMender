@@ -16,6 +16,9 @@ classifiers = [
   "Programming Language :: Python :: 3",
 ]
 
+[project.optional-dependencies]
+hdr-av1 = ["av==18.1.0"]
+
 [project.scripts]
 muxmender = "muxmender:cli"
 muxmender-dashboard = "dashboard:main"
@@ -34,7 +37,7 @@ muxmender-dvd-av1 = "dvd_av1_batch:main"
 [tool.setuptools]
 package-dir = {"" = "python"}
 packages = ["ui"]
-py-modules = ["aac_priming", "muxmender", "media_naming", "media_workflow", "native_pipeline", "runtime_support", "streaming_pipeline", "job_tracking", "dashboard", "batch_dashboard", "run_logged", "dv_full_file", "dv_preservation_test", "dv_qualification", "dv_workflow", "validate_nvidia", "mux_integrity", "library_planner", "workflow_worker", "webui", "revalidate_output", "amd_av1_preview", "amd_av1_batch", "encoder_capabilities", "dvd_av1_batch", "codec_selection", "auto_optimize", "app_service", "app_version", "autonomous_queue", "control_service", "legacy_color", "media_metadata", "packet_validation", "publish_worker", "resource_governor", "task_progress", "validated_replace", "replacement_cleanup", "workspace_history", "amd_av1_repair_dispositions", "amd_av1_revalidate", "staged_mux_stress", "performance", "encoder_progress", "hdr_inspection", "hdr10plus_validation", "hdr10plus_preserve", "hdr10_trial", "hdr_auto", "reference_sampling", "trial_failures", "decoder_context", "mpeg4_timing"]
+py-modules = ["av1_content_light", "dv_packet_rpu", "artifact_manifest", "validation_resources", "dv_header", "hevc_content_light", "full_conversion_research", "full_research_app", "nvenc_quality_retry", "aac_priming", "muxmender", "media_naming", "media_workflow", "native_pipeline", "runtime_support", "streaming_pipeline", "job_tracking", "dashboard", "batch_dashboard", "run_logged", "dv_full_file", "dv_layer_evidence", "dv_mel", "dv_render", "dv_renderer", "dv_single", "dv_preservation_test", "dv_qualification", "dv_workflow", "dv_tracks", "validate_nvidia", "mux_integrity", "library_planner", "workflow_worker", "webui", "revalidate_output", "amd_av1_preview", "amd_av1_batch", "encoder_capabilities", "dvd_av1_batch", "codec_selection", "auto_optimize", "app_service", "app_version", "autonomous_queue", "control_service", "legacy_color", "media_metadata", "packet_validation", "publish_worker", "resource_governor", "task_progress", "validated_replace", "replacement_cleanup", "workspace_history", "amd_av1_repair_dispositions", "amd_av1_revalidate", "staged_mux_stress", "performance", "encoder_progress", "hdr_inspection", "hdr10plus_validation", "hdr10plus_preserve", "hdr10_trial", "hdr_auto", "reference_sampling", "trial_failures", "decoder_context", "mpeg4_timing", "savings_policy", "source_format", "hevc_inventory", "dv_fel_render", "dv_fel_quality", "dv_fel_runtime"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

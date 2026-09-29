@@ -1,4 +1,4 @@
-"""Measured HEVC/AV1 selection and optional full safe-copy encoding."""
+"""Measured hardware codec selection and optional full safe-copy encoding."""
 import argparse
 import hashlib
 import itertools
@@ -20,10 +20,11 @@ from dvd_av1_batch import save
 from encoder_capabilities import probe_encoder, nvidia_adapters, codec_order
 from job_tracking import tracked_call, progress, workflow_stage
 from native_pipeline import stage,decode_maps_after_frame_audit
+from source_format import valid_pixel_format
 import legacy_color
 import hdr_inspection
 from media_metadata import (canonical_tags, canonical_chapters, equivalent_ratio,
-                            equivalent_stream_language, compatible_measured_rate)
+                            equivalent_stream_language, compatible_measured_rate, display_matrix)
 
 PLANAR_FORMATS={f'yuv{chroma}p{depth}' for chroma in ('420','422','444')
                 for depth in ('','10le','12le')}
@@ -53,44 +54,72 @@ def sampling_window(duration, requested):
     return min(requested,duration/6)
 
 
+def reference_plan(duration, requested):
+    seconds=sampling_window(duration,requested)
+    # Subsecond excerpts can contain no complete GOP or even no picture.
+    # For a short source, compare the complete original instead of inventing
+    # three tiny, nominally distinct samples. All output checks still apply.
+    if duration<6:
+        return dict(seconds=duration,positions=[0.0],whole_source=True)
+    # Spread long-form screening more widely. This reduces reliance on three
+    # potentially easy scenes; it is still sampled, not whole-film visual proof.
+    fractions=(.10,.30,.50,.70,.90) if duration>=1800 else (.15,.5,.85)
+    return dict(seconds=seconds,positions=[(duration-seconds)*f for f in fractions],
+                whole_source=False)
+
+
 def is_cover(stream):
     return stream.get('codec_type') == 'video' and stream.get('disposition', {}).get('attached_pic') == 1
 
 
 def main_video(data):
     videos = [s for s in data['streams'] if s['codec_type'] == 'video' and not is_cover(s)]
-    if len(videos) != 1:
-        raise ValueError('Requires exactly one moving video track (cover pictures are separate)')
-    v = videos[0]
-    if next(s for s in data['streams'] if s['codec_type']=='video') is not v:
-        raise ValueError('Cover picture precedes the movie track; stream ordering needs specialized handling')
-    covers=[s for s in data['streams'] if is_cover(s)]
-    if covers:
-        first=data['streams'].index(covers[0])
-        if any(not is_cover(s) for s in data['streams'][first:]):
-            raise ValueError('Interleaved cover artwork needs stream-order-preserving remux support')
-        for cover in covers:
-            tags=canonical_tags(cover.get('tags',{}),'cover artwork')
-            if cover.get('codec_name') not in ('mjpeg','png') or not tags.get('filename') or tags.get('mimetype') not in ('image/jpeg','image/png'):
-                raise ValueError('Cover artwork needs a supported image codec, filename and MIME type')
-    return v
+    if not videos:
+        raise ValueError('No moving video track found')
+    return videos[0]
+
+
+def cover_labels(stream):
+    """Supply container-required labels without changing the original image bytes."""
+    tags=canonical_tags(stream.get('tags',{}),'cover artwork')
+    suffix,mime={'mjpeg':('.jpg','image/jpeg'),'png':('.png','image/png'),
+                 'bmp':('.bmp','image/bmp'),'webp':('.webp','image/webp')}.get(
+                     stream.get('codec_name'),('.bin','application/octet-stream'))
+    return dict(tags,filename=tags.get('filename') or f"cover-{stream['index']}"+suffix,
+                mimetype=tags.get('mimetype') or mime)
+
+
+def paired_streams(before, after):
+    """Matroska attachments trail ordinary tracks; preserve relative order in each group."""
+    def ordered(data):
+        return sorted(data['streams'],key=lambda stream: bool(is_cover(stream)))
+    old,new=ordered(before),ordered(after)
+    if len(old)!=len(new):raise ValueError('Track count changed')
+    return list(zip(old,new))
+
+
+def copied_track_indices(data):
+    primary=main_video(data)['index']
+    return [s['index'] for s in data['streams'] if s['codec_type'] in ('audio','subtitle','video','data') and s['index']!=primary]
 
 
 def eligibility(data):
     v = main_video(data)
     if v.get('color_transfer') in ('smpte2084','arib-std-b67'):
         raise ValueError('HDR transfer requires the specialized preservation workflow; no automatic SDR conversion')
-    if v.get('pix_fmt') not in PLANAR_FORMATS:
-        raise ValueError('Pixel format '+str(v.get('pix_fmt'))+' has no implemented preservation path')
-    if v.get('field_order') != 'progressive':
-        raise ValueError('Interlaced or unconfirmed scan type requires separate review')
+    if not valid_pixel_format(v.get('pix_fmt')):
+        raise ValueError('Missing or invalid source pixel format')
+    if v.get('field_order') not in ('progressive','tt','bb','tb','bt'):
+        raise ValueError('Scan type could not be established from source frames')
     if not legacy_color.is_supported(v):
         raise ValueError('Missing or unsupported color metadata; inspect legacy SDR before selecting a test assumption')
-    if v.get('color_range') not in ('tv', 'pc') or v.get('sample_aspect_ratio') in (None, 'N/A', '0:1'):
-        raise ValueError('Color range and aspect ratio must be known')
-    if any(s.get('side_data_type') != 'CPB properties' for s in v.get('side_data_list', [])):
-        raise ValueError('Video side data (including Dolby Vision/rotation) requires specialized review')
-    if any(s['codec_type'] not in ('video', 'audio', 'subtitle', 'attachment') for s in data['streams']):
+    if v.get('color_range') not in ('tv', 'pc'):
+        raise ValueError('Color range could not be established from source evidence')
+    display_matrix(v)
+    if any(any(token in item.get('side_data_type','').lower() for token in ('dovi','dolby','2094','hdr10+'))
+           for item in v.get('side_data_list',[])):
+        raise ValueError('Dynamic HDR requires its dedicated per-frame preservation workflow')
+    if any(s['codec_type'] not in ('video', 'audio', 'subtitle', 'attachment','data') for s in data['streams']):
         raise ValueError('Unsupported track type')
     if int(v['width']) <= 0 or int(v['height']) <= 0:
         raise ValueError('Invalid dimensions')
@@ -108,7 +137,7 @@ def quality_summary(data, expected_frames, mean_floor, p5_floor):
                 caveat='Objective SDR screening only, not proof of perceptual transparency')
 
 
-def quality_graph(name, frame_rate):
+def quality_graph(name, frame_rate, *, separate_fields=False):
     """Pair frame ordinals only AFTER count/geometry/timing validation.
 
     Millisecond container rounding can otherwise make framesync pick the previous
@@ -117,34 +146,54 @@ def quality_graph(name, frame_rate):
     rate = Fraction(frame_rate)
     if rate <= 0 or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.' for c in name):
         raise ValueError('Invalid quality graph parameters')
-    clock = f'settb=AVTB,setpts=N*{rate.denominator}/({rate.numerator}*TB)'
-    return f'[0:v:0]{clock}[d];[1:v:0]{clock}[r];[d][r]libvmaf=n_threads=2:log_fmt=json:log_path={name}'
+    if separate_fields:rate*=2
+    clock = ('separatefields,' if separate_fields else '')+f'settb=AVTB,setpts=N*{rate.denominator}/({rate.numerator}*TB)'
+    return f'[0:V:0]{clock}[d];[1:V:0]{clock}[r];[d][r]libvmaf=n_threads=2:log_fmt=json:log_path={name}'
 
 
 def quality_command(ffmpeg, output, reference, graph):
     """Bound decode pools; retain filter threading to preserve metric numerics."""
     return [ffmpeg, '-hide_banner', '-nostdin', '-v', 'warning', '-xerror',
-            '-threads', '2', '-i', str(output),
-            '-threads', '2', '-i', str(reference), '-filter_complex', graph,
+            '-noautorotate', '-threads', '2', '-i', str(output),
+            '-noautorotate', '-threads', '2', '-i', str(reference), '-filter_complex', graph,
             '-an', '-sn', '-progress', 'pipe:1', '-nostats', '-f', 'null', '-']
 
 
-def metadata_check(before, after, codec, *, verified_frame_count=None):
-    old, new = before['streams'], after['streams']
-    if len(old) != len(new):
-        raise ValueError('Track count changed')
-    for a, b in zip(old, new):
+def stream_metadata_check(before, after, codec, *, verified_frame_count=None, verified_variable_timing=False, verified_hdr_frames=False):
+    primary=main_video(before)['index']
+    for a, b in paired_streams(before,after):
         keys = ['codec_type', 'disposition']
-        if a['codec_type'] == 'video' and not is_cover(a):
+        if a['index']==primary:
+            if display_matrix(a)!=display_matrix(b):
+                raise ValueError('Primary video display matrix changed')
+            def preserved_side_data(stream):
+                # CPB describes the newly encoded bitstream; display matrices
+                # have their own exact coefficient comparison above. Other
+                # source semantics must survive, not be rejected by category.
+                def checked_elsewhere(s):
+                    name=s.get('side_data_type','')
+                    return (name in ('CPB properties','Display Matrix') or
+                            (verified_hdr_frames and type(verified_frame_count) is int and verified_frame_count>0 and
+                             any(t in name.lower() for t in ('mastering','content light','2094','hdr'))))
+                return sorted(json.dumps(s,sort_keys=True) for s in stream.get('side_data_list',[])
+                              if not checked_elsewhere(s))
+            if preserved_side_data(a)!=preserved_side_data(b):
+                raise ValueError('Primary video side data changed')
             keys += ['width', 'height', 'pix_fmt', 'sample_aspect_ratio', 'avg_frame_rate',
                      'color_range', 'color_space', 'color_transfer', 'color_primaries']
             if b['codec_name'] != codec:
                 raise ValueError('Unexpected video codec')
         else:
             keys += ['codec_name', 'sample_rate', 'channels', 'channel_layout', 'extradata_hash']
-            if is_cover(a):keys += ['width','height','pix_fmt','color_space','color_range','color_transfer','color_primaries']
+            if a['codec_type']=='data':keys+=['codec_tag_string','time_base']
+            if a['codec_type']=='video':keys += ['width','height','pix_fmt','color_space','color_range','color_transfer','color_primaries','side_data_list']
         def matches(key):
             if key == 'avg_frame_rate':
+                if verified_variable_timing is True and type(verified_frame_count) is int and verified_frame_count>1:
+                    # VFR nominal rates are muxer descriptions, not its decoded
+                    # clock. This requires an independent complete frame audit.
+                    try:return Fraction(str(a.get(key)))>0 and Fraction(str(b.get(key)))>0
+                    except (ValueError,ZeroDivisionError):return False
                 return compatible_measured_rate(a.get(key), b.get(key), verified_frame_count)
             if key == 'sample_aspect_ratio':
                 return equivalent_ratio(a.get(key), b.get(key))
@@ -154,19 +203,27 @@ def metadata_check(before, after, codec, *, verified_frame_count=None):
             raise ValueError('Stream properties changed: '+str(a['index'])+'; '+
                              ', '.join(f'{k}: {a.get(k)!r} -> {b.get(k)!r}' for k in changed))
         old_tags=canonical_tags(a.get('tags', {}), f"source stream {a['index']}")
+        if is_cover(a):old_tags=cover_labels(a)
         new_tags=canonical_tags(b.get('tags', {}), f"output stream {b['index']}")
-        for tag in ('language', 'title', 'filename', 'mimetype'):
+        for tag in ('language', 'title', 'filename', 'mimetype',*(['timecode','handler_name'] if a['codec_type']=='data' else [])):
             equal = (equivalent_stream_language(old_tags.get(tag), new_tags.get(tag))
                      if tag == 'language' else old_tags.get(tag) == new_tags.get(tag))
             if not equal:
                 raise ValueError(f"Stream {a['index']} ({a['codec_type']}) tag changed: {tag}: {old_tags.get(tag)!r} -> {new_tags.get(tag)!r}")
+def metadata_check(before, after, codec, *, verified_frame_count=None, verified_hdr_frames=False, duration_evidence=None, verified_variable_timing=False):
+    stream_metadata_check(before,after,codec,verified_frame_count=verified_frame_count,verified_hdr_frames=verified_hdr_frames,
+                          verified_variable_timing=verified_variable_timing)
     if canonical_chapters(before.get('chapters', [])) != canonical_chapters(after.get('chapters', [])):
         raise ValueError('Chapters changed')
     durations=[float(item['format']['duration']) for item in (before,after)]
     if any(not math.isfinite(value) or value<=0 for value in durations):
         raise ValueError('Invalid duration; finite positive evidence required')
     if abs(Fraction(str(before['format']['duration']))-Fraction(str(after['format']['duration']))) > Fraction(1,10):
-        raise ValueError('Duration changed')
+        if not (duration_evidence and duration_evidence.get('kind')=='elapsed-versus-absolute-end'
+                and duration_evidence.get('complete_packet_spans_equal') is True
+                and duration_evidence.get('headers')==[str(d['format']['duration']) for d in (before,after)]
+                and duration_evidence.get('starts')==[str(d['format'].get('start_time')) for d in (before,after)]):
+            raise ValueError('Duration changed')
 
 
 def encode_command(ffmpeg, source, output, settings, info, streams):
@@ -178,8 +235,14 @@ def encode_command(ffmpeg, source, output, settings, info, streams):
         # A direct encoder limitation must fail its candidate, not all codecs.
         extra['experimental_av1_hdr']=True
     options = mm.encoder_options(settings['codec'], settings['quality'], info, settings['encoder'],**extra)
+    # Only encode the first moving video. Secondary video streams remain copies.
+    options=[option+':0' if option.startswith('-') and option.endswith(':v') else option for option in options]
+    if video.get('field_order') in ('tt','bb','tb','bt'):
+        # Preserve each decoded frame's presentation flags. Container tb/bt
+        # labels are not reliable instructions to override field dominance.
+        options += ['-flags:v:0','+ildct+ilme']
     if 'nvenc_cq' in settings:
-        if (settings['encoder'] not in ('hevc_nvenc', 'av1_nvenc') or
+        if (settings['encoder'] not in ('hevc_nvenc', 'av1_nvenc','h264_nvenc') or
                 type(settings['nvenc_cq']) is not int or settings['nvenc_cq'] not in range(18,33)):
             raise ValueError('Measured NVENC CQ must be an approved bounded-search value')
         options = list(options)
@@ -189,34 +252,87 @@ def encode_command(ffmpeg, source, output, settings, info, streams):
             raise ValueError('Adaptive preset must be NVENC p7')
         options = list(options)
         options[options.index('-preset') + 1] = settings['nvenc_preset']
+    if settings.get('nvenc_tune') is not None:
+        if settings['encoder'] not in ('hevc_nvenc','av1_nvenc') or settings['nvenc_tune'] not in ('hq','uhq'):
+            raise ValueError('Measured NVENC tuning requires HEVC/AV1 and hq or uhq')
+        options=list(options)
+        options[options.index('-tune')+1]=settings['nvenc_tune']
+    if settings.get('nvenc_analysis') is not None:
+        if settings['encoder'] not in ('hevc_nvenc','av1_nvenc') or settings['nvenc_analysis']!='lookahead32-fullres':
+            raise ValueError('Measured analysis requires HEVC/AV1 NVENC and lookahead32-fullres')
+        # Explicit research setting, not a preset-capability assumption. Keep
+        # runtime failures and all preservation/quality checks authoritative.
+        options=[*options,'-rc-lookahead','32','-multipass','fullres']
     if settings.get('nvenc_maxrate_mbps') is not None:
         ceiling = settings['nvenc_maxrate_mbps']
-        if (settings['encoder'] not in ('hevc_nvenc','av1_nvenc') or
+        if (settings['encoder'] not in ('hevc_nvenc','av1_nvenc','h264_nvenc') or
                 type(ceiling) is not int or not 1 <= ceiling <= 1000):
-            raise ValueError('Explicit NVENC peak rate requires HEVC/AV1 NVENC and 1..1000 Mbps')
+            raise ValueError('Explicit NVENC peak rate requires HEVC/AV1/H264 NVENC and 1..1000 Mbps')
         # Optional, measured qualification setting. CQ can otherwise encounter
         # a runtime-chosen ceiling; this is not a target bitrate or approval.
         options = [*options, '-maxrate:v:0', str(ceiling * 1000000)]
-    command = [ffmpeg, '-hide_banner', '-nostdin', '-n', '-xerror', '-copyts', '-i', str(source),
+    command = [ffmpeg, '-hide_banner', '-nostdin', '-n', '-xerror', '-copyts', '-noautorotate', '-i', str(source),
                '-map', '0', '-map_metadata', '0', '-map_chapters', '0', '-c', 'copy',
-               *options, '-pix_fmt', encoder_pixel_format(video,settings['encoder']), '-fps_mode:v', 'passthrough',
+               *options, '-pix_fmt:v:0', encoder_pixel_format(video,settings['encoder']), '-fps_mode:v:0', 'passthrough',
                '-enc_time_base:v:0','demux',
                '-avoid_negative_ts', 'disabled']
     # Explicit flags avoid muxer auto-selection of default tracks.
     for i, stream in enumerate(streams):
         flags = '+'.join(k for k, value in stream.get('disposition', {}).items() if value) or '0'
         command += [f'-disposition:{i}', flags]
+    if Path(output).suffix.lower() in ('.mp4','.mov'):
+        from media_metadata import mp4_clock_options
+        command+=mp4_clock_options(streams)
     return command + ['-progress', 'pipe:1', '-nostats', str(output)]
 
 
+def probe_rate_retry(ffmpeg, settings, info, video, timeout=30):
+    """Initialize the exact candidate settings using generated frames only."""
+    pixel=encoder_pixel_format(video,settings['encoder'])
+    source=f"nullsrc=size={video['width']}x{video['height']}:rate=30,format={pixel}"
+    if video.get('field_order') in ('tt','bb','tb','bt'):
+        source+=',setfield='+('tff' if video['field_order'].endswith('t') else 'bff')
+    command=encode_command(ffmpeg,'generated','-',settings,info,[video])
+    index=command.index('-i')
+    command[index:index+2]=['-f','lavfi','-i',source]
+    command[-1:-1]=['-frames:v:0','64','-f','null']
+    result=dict(status='failed',command=command,
+                scope='64 generated frames with candidate settings; not media or playback approval')
+    try:
+        process=subprocess.run(command,capture_output=True,text=True,timeout=timeout)
+        result.update(status='working' if process.returncode==0 else 'failed',
+                      returncode=process.returncode,detail=process.stderr[-3000:])
+    except (OSError,subprocess.SubprocessError) as exc:
+        result['detail']=str(exc)
+    return result
+
+
 class Workflow:
+    def check_metadata(self, reference, output, before, after, codec, label, **verified):
+        evidence=None
+        if abs(Fraction(str(before['format']['duration']))-Fraction(str(after['format']['duration'])))>Fraction(1,10):
+            from packet_validation import duration_header_evidence
+            paths=[]
+            for side,path in [('source',reference),('output',output)]:
+                target=self.directory/(label+'-'+side+'-duration-packets.txt')
+                run_probe([self.args.ffprobe,'-v','error','-show_packets','-show_entries',
+                           'packet=stream_index,pts_time,duration_time','-of','compact=p=0',str(path)],
+                          target,'Verifying complete presentation span: '+side,self.args.timeout,self.guard)
+                paths.append(target)
+            evidence=duration_header_evidence(before,after,*paths,guard=self.guard)
+            save(self.directory/(label+'-duration-evidence.json'),evidence)
+        metadata_check(before,after,codec,duration_evidence=evidence,**verified)
+
     def cleanup_terminal_artifacts(self):
-        from replacement_cleanup import cleanup_terminal
+        from replacement_cleanup import cleanup_finished
         try:
-            report=cleanup_terminal(self.directory,execute=True)
+            report=cleanup_finished(self.directory,execute=True)
         except Exception as exc:
             report=dict(state='needs-attention',error=str(exc))
-        save(self.directory/'terminal-cleanup.json',report)
+        try:save(self.directory/'terminal-cleanup.json',report)
+        except OSError as exc:
+            print('Cleanup report could not be saved: '+str(exc),flush=True)
+        return report
 
     def decoder_options(self, source):
         build=getattr(self.args,'h264_build',None)
@@ -237,12 +353,13 @@ class Workflow:
         self.hdr_intermediates={}
         self.aac_priming_outputs={}
         self.source_packet_cache=None
+        self.output_suffix='.mkv'
 
     def encode_preserving_color(self, source, output, settings, info, before, label, duration):
         from aac_priming import inspect, finalize
         tracks=inspect(self,source,before,label)
         if not tracks:return self._encode_preserving_color(source,output,settings,info,before,label,duration)
-        encoded=output.with_name(output.stem+'-before-aac-priming.mkv')
+        encoded=output.with_name(output.stem+'-before-aac-priming'+output.suffix)
         self._encode_preserving_color(source,encoded,settings,info,before,label,duration)
         finalize(self,source,encoded,output,before,tracks,label,duration)
         self.aac_priming_outputs[output.resolve()]=set(tracks)
@@ -254,7 +371,7 @@ class Workflow:
         video=main_video(before)
         missing=[key for key in ('color_primaries','color_transfer','color_space')
                  if video.get(key) in legacy_color.UNKNOWN]
-        encoded=output.with_name(output.stem+'-before-color-finalization.mkv') if missing else output
+        encoded=output.with_name(output.stem+'-before-color-finalization'+output.suffix) if missing else output
         command=encode_command(self.args.ffmpeg,source,encoded,settings,info,before['streams'])
         resolved=getattr(self.args,'resolved_color',None)
         if resolved:
@@ -289,7 +406,7 @@ class Workflow:
                  '-avoid_negative_ts','disabled','-bsf:v:0',bsf]
         flags=dict(color_primaries='-color_primaries:v:0',color_transfer='-color_trc:v:0',color_space='-colorspace:v:0')
         for key in missing:command += [flags[key],'2']
-        for i,stream in enumerate(before['streams']):
+        for i,stream in enumerate(encoded_data['streams']):
             disposition='+'.join(k for k,v in stream.get('disposition',{}).items() if v) or '0'
             command += [f'-disposition:{i}',disposition]
         command += ['-progress','pipe:1','-nostats',str(output)]
@@ -302,21 +419,32 @@ class Workflow:
         """Reattach original image bytes, rather than remuxing them as video tracks."""
         covers=[s for s in data['streams'] if is_cover(s)]
         if not covers:return command
-        main_video(data)  # Prove supported trailing order before generating anything.
+        main_video(data)
+        ordered=sorted(data['streams'],key=lambda stream: bool(is_cover(stream)))
+        index_map={stream['index']:index for index,stream in enumerate(ordered)}
+        command=list(command)
+        # The attachment move also changes output indices for metadata/dispositions.
+        for number,argument in enumerate(command):
+            for prefix in ('-disposition:','-metadata:s:','-map_metadata:s:'):
+                if argument.startswith(prefix) and argument[len(prefix):].isdigit():
+                    old_index=int(argument[len(prefix):])
+                    if old_index in index_map:command[number]=prefix+str(index_map[old_index])
         options=[]
         for cover in covers:
             index=cover['index']
-            tags=canonical_tags(cover.get('tags',{}),'cover artwork')
-            image=self.directory/(label+f'-cover-{index}'+('.png' if cover['codec_name']=='png' else '.jpg'))
+            tags=cover_labels(cover)
+            # Owned filename only. Never interpret an embedded attachment name
+            # as a filesystem path, even if it contains separators.
+            image=self.directory/(label+f'-cover-{index}.bin')
             self.execute([self.args.ffmpeg,'-hide_banner','-nostdin','-n','-i',str(source),
-                '-map',f'0:{index}','-c','copy','-frames:v','1','-f','image2',str(image)],
+                '-map',f'0:{index}','-c','copy','-frames:v','1','-f','image2','-update','1',str(image)],
                 label+f'-extract-cover-{index}',1)
             if not image.is_file() or not image.stat().st_size:
                 raise ValueError('Cover extraction produced no payload')
             options += ['-map',f'-{input_index}:{index}','-attach',str(image)]
             for key,value in tags.items():
                 if key in ('filename','mimetype','title','language'):
-                    options += [f'-metadata:s:{index}',f'{key}={value}']
+                    options += [f'-metadata:s:{index_map[index]}',f'{key}={value}']
         return command[:-1]+options+command[-1:]
 
     def execute(self, command, label, duration, *, strict_decode=False):
@@ -332,8 +460,10 @@ class Workflow:
             def observe(line):
                 log.write(line)
                 return False
-            return stage(command, duration, 0, 100, timeout=self.args.timeout, stall=120,
-                         guard=self.guard, observe=observe, cwd=self.directory, strict_decode=strict_decode)
+            from artifact_manifest import command_outputs
+            with command_outputs(self.directory,command):
+                return stage(command, duration, 0, 100, timeout=self.args.timeout, stall=120,
+                             guard=self.guard, observe=observe, cwd=self.directory, strict_decode=strict_decode)
 
     def probe(self, source):
         progress('Reading media metadata: '+source.name, directory=self.directory)
@@ -341,9 +471,19 @@ class Workflow:
                '-show_chapters', '-show_format', '-show_data_hash', 'sha256', '-of', 'json', *self.decoder_options(source),str(source)],
                text=True, timeout=60)
         data=json.loads(raw)
+        from dv_header import recover
+        header_recovery=recover(data,source,self.args.ffprobe,getattr(self.args,'ffmpeg',None))
+        if header_recovery:data['dv_header_recovery']=header_recovery
+        recovered=getattr(self.args,'dv_declaration_recovery',None)
+        reference=(source.resolve()==Path(self.args.source).resolve() or
+                   (source.parent.resolve()==self.directory.resolve() and source.name.startswith('reference-'))) if recovered else False
+        if recovered and reference:
+            hdr_inspection.recover_empty_dv_declaration(main_video(data),recovered)
+        elif recovered and hdr_inspection.classify(main_video(data),[])['kind']=='Dolby Vision':
+            raise ValueError('Output retains a Dolby Vision declaration absent from the source bitstream')
         resolved=getattr(self.args,'resolved_color',None)
         if resolved and (source==self.args.source or source.name.startswith('reference-')):
-            video=next(s for s in data['streams'] if s['codec_type']=='video')
+            video=main_video(data)
             for key,value in resolved.items():
                 if video.get(key) in legacy_color.UNKNOWN:video[key]=value
                 elif video[key]!=value:raise ValueError('Reference color metadata changed: '+key)
@@ -354,8 +494,9 @@ class Workflow:
         path = self.directory/(label+'-frames.jsonl')
         if self.hdr_mode:
             from resource_governor import hdr_validation_threads
+            from decoder_context import metadata_reader_options
             threads=hdr_validation_threads() if float(metadata['duration'])>=300 else 2
-            run_probe([self.args.ffprobe,'-v','error','-threads',str(threads),'-select_streams','v:0',
+            run_probe([self.args.ffprobe,'-v','error',*metadata_reader_options(threads),'-select_streams','V:0',
                        '-show_frames','-of','json',*self.decoder_options(source),str(source)],path,'Checking HDR frame timing: '+label,
                       self.args.timeout,self.guard,float(metadata['duration']),float(metadata.get('start_time',0)))
             if path.with_suffix(path.suffix+'.stderr').stat().st_size:
@@ -364,8 +505,8 @@ class Workflow:
             return path
         # Bound CPU contention between queue workers. Do not drop side-data or
         # frames: identical validation fields and full EOF draining are retained.
-        run_probe([self.args.ffprobe, '-v', 'error', '-threads', '2', '-select_streams', 'v:0', '-show_frames',
-                '-show_entries', 'frame=best_effort_timestamp_time,width,height,pix_fmt,sample_aspect_ratio,interlaced_frame,repeat_pict,color_primaries,color_transfer,color_space,color_range',
+        run_probe([self.args.ffprobe, '-v', 'error', '-threads', '2', '-select_streams', 'V:0', '-show_frames',
+                '-show_entries', 'frame=best_effort_timestamp_time,width,height,pix_fmt,sample_aspect_ratio,interlaced_frame,top_field_first,repeat_pict,color_primaries,color_transfer,color_space,color_range',
                 '-of', 'compact=p=0', *self.decoder_options(source),str(source)],path,'Checking frame timing: '+label,
                 self.args.timeout,self.guard,float(metadata['duration']),float(metadata.get('start_time',0)))
         if path.with_suffix(path.suffix+'.stderr').stat().st_size:
@@ -378,7 +519,7 @@ class Workflow:
         """Recover a source-only absent final PTS using original coded clocks."""
         from mpeg4_timing import recover_tail_evidence
         original=getattr(self.args,'source',None)
-        if original is None or source.resolve()!=Path(original).resolve() or source.suffix.lower()!='.avi':
+        if original is None or source.resolve()!=Path(original).resolve():
             raise ValueError('Missing decoded timestamp: no qualified source clock recovery')
         metadata=self.probe(source)
         video=main_video(metadata)
@@ -393,14 +534,15 @@ class Workflow:
         errors=self.directory/(label+'-clock-probe.stderr')
         progress('Recovering missing source timestamp',detail='Checking original MPEG-4 picture clocks; not estimating from frame rate')
         self.execute([self.args.ffmpeg,'-hide_banner','-nostdin','-n','-v','error',
-                      '-ss',str(position),'-i',str(source),'-map','0:v:0','-c','copy',
+                      '-ss',str(position),'-i',str(source),'-map','0:V:0','-c','copy',
+                      '-bsf:v','dump_extra',
                       '-fs',str(64*1024*1024),'-f','m4v',str(raw)],label+'-clock-tail',10)
         if not 0<raw.stat().st_size<64*1024*1024:
             raise ValueError('MPEG-4 timing tail exceeds bounded evidence size')
         with tail.open('xb') as out,errors.open('xb') as err:
             self.guard()
             result=subprocess.run([self.args.ffprobe,'-v','error','-threads','2',
-                '-read_intervals',str(position)+'%','-select_streams','v:0','-show_frames',
+                '-read_intervals',str(position)+'%','-select_streams','V:0','-show_frames',
                 '-show_entries','frame=pict_type,best_effort_timestamp_time',
                 '-of','json',str(source)],stdout=out,stderr=err,timeout=min(120,self.args.timeout))
             self.guard()
@@ -470,11 +612,14 @@ class Workflow:
             summary.update(metadata=preflight_metadata(metadata),stage='audio-priming')
             save(path,summary)
             tracks=inspect_priming(self,source,metadata,'preflight-source')
+            if tracks:self.output_suffix='.mp4'
+            if any(s.get('codec_type')=='data' for s in metadata['streams']) and 'mov' in metadata['format'].get('format_name','').split(','):
+                self.output_suffix='.mov'
             summary.update(priming_tracks=sorted(tracks),stage='audio-decode');save(path,summary)
             self.preflight_source_audio(source,metadata)
             if getattr(self.args,'encode_best',False):
                 summary['stage']='copied-track-read';save(path,summary)
-                indices=[s['index'] for s in metadata['streams'] if s['codec_type'] in ('audio','subtitle') or is_cover(s)]
+                indices=copied_track_indices(metadata)
                 result=collect_packets(self.args.ffprobe,source,self.directory,'preflight-source',indices,
                                        self.args.timeout,self.guard,float(metadata['format']['duration']),
                                        float(metadata['format'].get('start_time',0)))
@@ -518,41 +663,10 @@ class Workflow:
         actual = self.probe(output)
         frames = self.frame_file(output, label, actual['format'])
         count = self.compare_frame_files(reference_frames, frames)
-        metadata_check(before, actual, codec, verified_frame_count=count)
-        indices=[s['index'] for s in before['streams'] if s['codec_type'] in ('audio','subtitle') or is_cover(s)]
-        original=self.copied_packets(reference,label+'-reference',indices,before['format'],reuse_sample=True)
-        encoded=self.copied_packets(output,label,indices,actual['format'])
-        for index in indices:
-            cover=any(s['index']==index and is_cover(s) for s in before['streams'])
-            try:
-                compare_packets(original[index],encoded[index],cover=cover)
-                if index not in self.aac_priming_outputs.get(output.resolve(),set()):continue
-                # Preserved decoder priming requires full decoded evidence even
-                # when compressed packet timestamps happen to compare equal.
-                raise ValueError('Verify preserved AAC priming')
-            except ValueError:
-                stream=next(s for s in before['streams'] if s['index']==index)
-                from packet_validation import aac_initialization_timestamp_case, aac_terminal_duration_case, packet_rows, compare_decoded_audio
-                if stream.get('codec_name')!='aac':raise
-                non_output_case=aac_initialization_timestamp_case(original[index],encoded[index])
-                priming_verified=index in self.aac_priming_outputs.get(output.resolve(),set())
-                terminal=aac_terminal_duration_case(original[index],encoded[index],preserved_priming=priming_verified)
-                if not (terminal or priming_verified or non_output_case or aac_initialization_timestamp_case(original[index],encoded[index],missing_initial_duration=True)):
-                    raise
-                evidence=[]
-                first_output=[]
-                for side,path,packets in [('source',reference,original[index]),('output',output,encoded[index])]:
-                    hashes=self.directory/(label+f'-aac-{index}-{side}.framehash')
-                    self.execute([self.args.ffmpeg,'-v','error','-nostdin','-n','-copyts','-threads','2',
-                                  '-i',str(path),'-map','0:'+str(index),'-c:a','pcm_f32le',
-                                  '-progress','pipe:1','-nostats','-f','framehash','-hash','sha256',str(hashes)],
-                                 label+f'-aac-{index}-{side}-presentation',float(before['format']['duration']),strict_decode=True)
-                    evidence.append(hashes)
-                    first_output.append(next(itertools.islice(packet_rows(packets),1,None))['pts_time'] if non_output_case else None)
-                proof=compare_decoded_audio(*evidence,*first_output)
-                proof['packet_representation_case']='terminal-duration' if terminal else ('preserved-priming' if priming_verified else ('non-output-initial-pts' if non_output_case else 'missing-initial-duration'))
-                save(self.directory/(label+f'-aac-{index}-presentation.json'),proof)
-                compare_packets(original[index],encoded[index],aac_initialization_verified=non_output_case or not (terminal or priming_verified),aac_terminal_verified=terminal,aac_priming_verified=priming_verified)
+        self.check_metadata(reference,output,before,actual,codec,label,
+                            verified_frame_count=count,verified_hdr_frames=bool(self.hdr_mode),
+                            verified_variable_timing=True)
+        self.validate_copied_tracks(reference,output,before,actual,label)
         maps,reused=decode_maps_after_frame_audit(actual,count)
         if maps:
             self.execute([self.args.ffmpeg, '-hide_banner', '-nostdin', '-v', 'error', '-xerror',
@@ -584,6 +698,65 @@ class Workflow:
             path.unlink()  # Exclusively created by this run; never an input file.
         return count
 
+    def validate_copied_tracks(self, reference, output, before, actual, label):
+        """Shared packet/PCM preservation independent of the main video route."""
+        indices=copied_track_indices(before)
+        original=self.copied_packets(reference,label+'-reference',indices,before['format'],reuse_sample=True)
+        output_indices={a['index']:b['index'] for a,b in paired_streams(before,actual)}
+        encoded_raw=self.copied_packets(output,label,[output_indices[i] for i in indices],actual['format'])
+        encoded={i:encoded_raw[output_indices[i]] for i in indices}
+        for index in indices:
+            cover=any(s['index']==index and is_cover(s) for s in before['streams'])
+            try:
+                compare_packets(original[index],encoded[index],cover=cover)
+                if index not in self.aac_priming_outputs.get(output.resolve(),set()):continue
+                # Preserved decoder priming requires full decoded evidence even
+                # when compressed packet timestamps happen to compare equal.
+                raise ValueError('Verify preserved AAC priming')
+            except ValueError:
+                stream=next(s for s in before['streams'] if s['index']==index)
+                from packet_validation import missing_audio_duration_case,compare_decoded_audio,reconstructed_audio_timestamp_case
+                reconstructed=(reconstructed_audio_timestamp_case(original[index],encoded[index])
+                               if stream.get('codec_name')=='truehd' and stream.get('codec_type')=='audio' else None)
+                missing_duration=(missing_audio_duration_case(original[index],encoded[index])
+                                  if stream.get('codec_type')=='audio' else None)
+                if missing_duration or reconstructed:
+                    evidence=[]
+                    for side,path in [('source',reference),('output',output)]:
+                        hashes=self.directory/(label+f'-audio-duration-{index}-{side}.framehash')
+                        self.execute([self.args.ffmpeg,'-v','error','-nostdin','-n','-copyts','-threads','2',
+                            '-i',str(path),'-map','0:'+str(index if side=='source' else output_indices[index]),
+                            '-c:a','pcm_f64le','-progress','pipe:1','-nostats','-f','framehash','-hash','sha256',str(hashes)],
+                            label+f'-audio-duration-{index}-{side}',float(before['format']['duration']),strict_decode=True)
+                        evidence.append(hashes)
+                    proof=compare_decoded_audio(*evidence)
+                    proof['packet_representation_case']='reconstructed-truehd-timestamps' if reconstructed else 'missing-audio-duration'
+                    save(self.directory/(label+f'-audio-duration-{index}-presentation.json'),proof)
+                    compare_packets(original[index],encoded[index],audio_duration_verified=missing_duration,
+                                    audio_timestamps_verified=reconstructed)
+                    continue
+                from packet_validation import aac_initialization_timestamp_case, aac_terminal_duration_case, packet_rows, compare_decoded_audio
+                if stream.get('codec_name')!='aac':raise
+                non_output_case=aac_initialization_timestamp_case(original[index],encoded[index])
+                priming_verified=index in self.aac_priming_outputs.get(output.resolve(),set())
+                terminal=aac_terminal_duration_case(original[index],encoded[index],preserved_priming=priming_verified)
+                if not (terminal or priming_verified or non_output_case or aac_initialization_timestamp_case(original[index],encoded[index],missing_initial_duration=True)):
+                    raise
+                evidence=[]
+                first_output=[]
+                for side,path,packets in [('source',reference,original[index]),('output',output,encoded[index])]:
+                    hashes=self.directory/(label+f'-aac-{index}-{side}.framehash')
+                    self.execute([self.args.ffmpeg,'-v','error','-nostdin','-n','-copyts','-threads','2',
+                                  '-i',str(path),'-map','0:'+str(index if side=='source' else output_indices[index]),'-c:a','pcm_f32le',
+                                  '-progress','pipe:1','-nostats','-f','framehash','-hash','sha256',str(hashes)],
+                                 label+f'-aac-{index}-{side}-presentation',float(before['format']['duration']),strict_decode=True)
+                    evidence.append(hashes)
+                    first_output.append(next(itertools.islice(packet_rows(packets),1,None))['pts_time'] if non_output_case else None)
+                proof=compare_decoded_audio(*evidence,*first_output)
+                proof['packet_representation_case']='terminal-duration' if terminal else ('preserved-priming' if priming_verified else ('non-output-initial-pts' if non_output_case else 'missing-initial-duration'))
+                save(self.directory/(label+f'-aac-{index}-presentation.json'),proof)
+                compare_packets(original[index],encoded[index],aac_initialization_verified=non_output_case or not (terminal or priming_verified),aac_terminal_verified=terminal,aac_priming_verified=priming_verified)
+
     def quality(self, reference, output, label, count, duration):
         # Safe generated basename and cwd avoid platform/path escaping in filter syntax.
         name = label+'-vmaf.json'
@@ -597,6 +770,18 @@ class Workflow:
         result = quality_summary(json.loads((self.directory/name).read_text()), count,
                                  self.args.vmaf_mean, self.args.vmaf_p5)
         result['alignment'] = 'verified-frame-ordinal-v1'
+        if not self.hdr_mode and video.get('field_order') in ('tt','bb','tb','bt'):
+            field_name=label+'-fields-vmaf.json'
+            field_graph=quality_graph(field_name,video['avg_frame_rate'],separate_fields=True)
+            self.execute(quality_command(self.args.ffmpeg,output,reference,field_graph),
+                         label+'-field-quality',duration)
+            fields=quality_summary(json.loads((self.directory/field_name).read_text()),2*count,
+                                   self.args.vmaf_mean,self.args.vmaf_p5)
+            result['field_quality']=fields
+            result['passed']=result['passed'] and fields['passed']
+            result['mean']=min(result['mean'],fields['mean'])
+            result['p5']=min(result['p5'],fields['p5'])
+            result['note']='Both woven-frame and separated-field VMAF must pass; field count/order/timing are validated independently. No output deinterlacing.'
         if self.hdr_mode:
             result['domain']='hdr-common-render-v1'
             result['note']='VMAF on identical fixed HDR-to-SDR rendering; not a native-HDR model. HDR metadata and native frame geometry validated separately.'
@@ -628,11 +813,14 @@ def compare_frames(reference, output):
         for key in legacy_color.FIELDS:
             if a.get(key) not in legacy_color.UNKNOWN and a.get(key)!=b.get(key):
                 raise ValueError('Decoded frame color metadata changed: '+key)
+        for key in ('interlaced_frame','repeat_pict'):
+            if a.get(key) is None or a.get(key)!=b.get(key):
+                raise ValueError('Decoded scan/cadence changed: '+key)
+        if a.get('interlaced_frame')=='1' and (a.get('top_field_first') not in ('0','1') or a.get('top_field_first')!=b.get('top_field_first')):
+            raise ValueError('Decoded interlaced field order changed')
         for frame in (a, b):
             if frame.get('color_transfer') in ('smpte2084','arib-std-b67'):
                 raise ValueError('HDR transfer found during SDR frame validation')
-            if frame.get('interlaced_frame') != '0' or frame.get('repeat_pict') != '0':
-                raise ValueError('Non-progressive/repeated frames require separate review')
             if 'side_data_type' in frame and any(x in frame['side_data_type'].lower() for x in ('dovi', 'dolby', 'mastering', 'content light', 'hdr', 'display matrix')):
                 raise ValueError('Unexpected HDR/geometry frame side data')
         timestamps = [Fraction(f['best_effort_timestamp_time']) for f in (a, b)]
@@ -644,7 +832,7 @@ def compare_frames(reference, output):
     return count
 
 
-def compare_packets(reference, output, cover=False, *, aac_initialization_verified=False, aac_terminal_verified=None, aac_priming_verified=False):
+def compare_packets(reference, output, cover=False, *, aac_initialization_verified=False, aac_terminal_verified=None, aac_priming_verified=False, audio_duration_verified=None, audio_timestamps_verified=None):
     progress('Comparing copied track evidence',detail='Checking packet hashes and timestamps; percentage unavailable')
     count=0
     for a, b in itertools.zip_longest(compact_rows(reference, 'data_hash'), compact_rows(output, 'data_hash')):
@@ -656,6 +844,12 @@ def compare_packets(reference, output, cover=False, *, aac_initialization_verifi
             if aac_terminal_verified==count and key=='duration_time':continue
             if aac_initialization_verified and count==1 and key=='pts_time':continue
             left, right = a.get(key), b.get(key)
+            if audio_timestamps_verified is not None and key in ('pts_time','dts_time') and left in (None,'N/A') and right not in (None,'N/A'):
+                Fraction(right)  # finite rational, never NaN/Infinity
+                continue
+            if audio_duration_verified is not None and key=='duration_time' and right in (None,'N/A') and left not in (None,'N/A'):
+                if Fraction(left)<=0:raise ValueError('Invalid source audio packet duration')
+                continue
             if ((aac_initialization_verified or aac_priming_verified) and count==1 and key=='duration_time'
                     and right in (None,'N/A')):continue
             if any(value not in (None,'N/A') and not math.isfinite(float(value)) for value in (left,right)):
@@ -664,6 +858,18 @@ def compare_packets(reference, output, cover=False, *, aac_initialization_verifi
                 raise ValueError(f'Copied packet timing changed: packet {count}, {key}: {left} -> {right}')
     if cover and count!=1:raise ValueError('Expected exactly one unchanged cover-image packet')
     if aac_terminal_verified is not None and count!=aac_terminal_verified:raise ValueError('Terminal AAC evidence count changed')
+    if audio_duration_verified is not None and count!=audio_duration_verified:raise ValueError('Decoded audio evidence packet count changed')
+    if audio_timestamps_verified is not None and count!=audio_timestamps_verified:raise ValueError('Decoded audio timestamp evidence packet count changed')
+
+
+def explicit_hevc_trials(cqs, preset='p6'):
+    """Bounded research candidates; defaults match the existing balanced route."""
+    if preset not in ('p6','p7'):
+        raise ValueError('Explicit HEVC trial preset must be p6 or p7')
+    if not cqs or any(type(q) is not int or q not in range(18,33) for q in cqs):
+        raise ValueError('Explicit HEVC trial CQ must be an integer from 18 to 32')
+    return [dict(codec='hevc',encoder='hevc_nvenc',quality='balanced',nvenc_cq=q,
+                 **({'nvenc_preset':'p7'} if preset=='p7' else {})) for q in dict.fromkeys(cqs)]
 
 
 def check_reference_window(probe, seconds):
@@ -679,7 +885,7 @@ def adaptive_candidates(report, limit=8):
     """Only refine runtime-tested encoders; never infer support or relax gates."""
     encoders = {}
     for trial in report['trials']:
-        if trial.get('runtime_supported') is True and trial.get('playback_compatible') is True and trial.get('encoder') in ('hevc_nvenc','av1_nvenc','hevc_amf','av1_amf','hevc_qsv','av1_qsv'):
+        if trial.get('runtime_supported') is True and trial.get('playback_compatible') is True and trial.get('encoder') in ('hevc_nvenc','av1_nvenc','h264_nvenc','hevc_amf','av1_amf','h264_amf','hevc_qsv','av1_qsv','h264_qsv'):
             encoders[trial['encoder']] = trial['codec']
     # Prefer the codec whose weakest scene scored best in the baseline trials.
     def score(encoder):
@@ -717,8 +923,10 @@ def adaptive_candidates(report, limit=8):
 
 def hardest_reference(report, encoder):
     scores={}
-    for trial in report['trials']:
-        if trial['encoder'] != encoder:continue
+    measured=[t for t in report['trials'] if t['encoder']==encoder and
+              any(s.get('quality',{}).get('p5') is not None for s in t['samples'])]
+    # Cross-codec scores affect ordering only, never approval or rejection.
+    for trial in measured or report['trials']:
         for sample in trial['samples']:
             value=sample.get('quality',{}).get('p5')
             if value is not None:
@@ -735,18 +943,45 @@ def run(args):
     args.ffmpeg = shutil.which(args.ffmpeg) or args.ffmpeg
     args.ffprobe = shutil.which(args.ffprobe) or args.ffprobe
     baseline = fingerprint(source)
+    from savings_policy import requirement
+    savings_policy=requirement(baseline['size'],getattr(args,'savings_mode','fixed'),
+                               getattr(args,'minimum_savings_percent',25))
+    if not savings_policy['possible']:
+        if not getattr(args,'execute',False):
+            print(json.dumps(dict(dry_run=True,savings_policy=savings_policy)))
+            return 0
+        root.mkdir(parents=True,exist_ok=True)
+        reason='Original kept: file is too small to meet the 100 MB minimum savings.'
+        save(root/'eligibility.json',dict(state='unsupported',reason=reason,
+             reason_code='insufficient_possible_savings',savings_policy=savings_policy))
+        progress('skipped',directory=root,detail=reason,original_unchanged=True)
+        return 0
+    args.minimum_savings_percent=savings_policy['effective_percent']
+    args.savings_policy=savings_policy
     args.h264_build=None
     args.decoder_context=None
+    args.dv_declaration_recovery=None
     data = Workflow(args, root, lambda: None).probe(source)
-    if (getattr(args,'experimental_dv81',False) and
-            hdr_inspection.classify(main_video(data),[])['kind']=='Dolby Vision'):
-        from dv_workflow import run as run_dv
-        return run_dv(args,source,root,data,baseline)
     color_report=None
     scan_report=None
     hdr_report=None
     try:
         videos=[main_video(data)]
+        if (getattr(args,'execute',False) and videos[0].get('codec_name')=='hevc'
+                and hdr_inspection.classify(videos[0],[])['kind']=='Dolby Vision'):
+            from hevc_inventory import inspect_source
+            def admission_guard():
+                if fingerprint(source)!=baseline:raise ValueError('Source changed during admission')
+                if (root/'STOP').exists():raise KeyboardInterrupt('STOP requested')
+            evidence=inspect_source(args.ffmpeg,source,root,admission_guard)
+            save(root/'dv-declaration-evidence.json',evidence)
+            if hdr_inspection.recover_empty_dv_declaration(videos[0],evidence):
+                args.dv_declaration_recovery=evidence
+        if hdr_inspection.classify(videos[0],[])['kind']=='Dolby Vision':
+            if getattr(args,'research_full_av1_cq',None) is not None:
+                raise ValueError('Dolby Vision requires its dedicated research workflow')
+            from dv_workflow import run as run_dv
+            return run_dv(args,source,root,data,baseline)
         if videos[0].get('codec_name')=='h264':
             from decoder_context import inspect_x264_build
             context=inspect_x264_build(args.ffmpeg,source)
@@ -759,10 +994,20 @@ def run(args):
                 hdr_report=hdr_inspection.inspect(args.ffprobe,source,videos[0],data['format']['duration'])
             except (ValueError, OSError, subprocess.SubprocessError) as exc:
                 raise ValueError('HDR metadata inspection incomplete; original retained: '+str(exc)) from exc
+            if hdr_report['kind']=='Dolby Vision':
+                if getattr(args,'research_full_av1_cq',None) is not None:
+                    raise ValueError('Dolby Vision requires its dedicated research workflow')
+                from dv_workflow import run as run_dv
+                return run_dv(args,source,root,data,baseline)
+            recovered=hdr_report.get('recovered_color',{})
+            if recovered:
+                videos[0].update(recovered)
+                args.resolved_color={key:videos[0][key] for key in legacy_color.FIELDS
+                                     if videos[0].get(key) not in legacy_color.UNKNOWN}
             from hdr_auto import admit
             args.hdr_mode=admit(videos[0],hdr_report)
         frames=None
-        if videos[0].get('field_order') in (None,'unknown') and videos[0].get('pix_fmt') in PLANAR_FORMATS:
+        if videos[0].get('field_order') in (None,'unknown') and valid_pixel_format(videos[0].get('pix_fmt')):
             progress('Inspecting scan type',detail='Checking decoded frames; full frame validation remains required')
             frames=legacy_color.inspect_frames(args.ffprobe,source,float(data['format']['duration']))
             scan_report=dict(original=videos[0].get('field_order'),decoded_frames=len(frames),
@@ -770,6 +1015,9 @@ def run(args):
                              full_frame_validation_required=True)
             if scan_report['progressive_samples']:
                 videos[0]['field_order']='progressive'
+            else:
+                order=legacy_color.confirm_interlaced(frames)
+                if order:videos[0]['field_order']=order
         if not getattr(args,'hdr_mode',None) and len(videos)==1 and any(videos[0].get(k) in legacy_color.UNKNOWN for k in legacy_color.FIELDS):
             progress('Inspecting legacy color metadata',detail='Reading declared color properties from decoded frames; no source changes')
             if frames is None:frames=legacy_color.inspect_frames(args.ffprobe,source,float(data['format']['duration']))
@@ -813,8 +1061,9 @@ def run(args):
         return 0
     duration = float(data['format']['duration'])
     requested_seconds=args.seconds
-    args.seconds=sampling_window(duration,args.seconds)
-    positions=[(duration-args.seconds)*fraction for fraction in (.15,.5,.85)]
+    sampling=reference_plan(duration,args.seconds)
+    args.seconds=sampling['seconds']
+    positions=sampling['positions']
     plan = dict(source=str(source), positions=positions, seconds=args.seconds, requested_seconds=requested_seconds, hardware=args.hardware,
                 qualities=args.qualities, hevc_nvenc_cq=getattr(args, 'hevc_nvenc_cq', None),
                 playback_verified_codecs=args.playback_verified_codecs,
@@ -825,7 +1074,11 @@ def run(args):
                 quality_domain='hdr-common-render-v1' if getattr(args,'hdr_mode',None) else 'sdr',
                 evaluation_policy=EVALUATION_POLICY)
     plan['decoder_context']=getattr(args,'decoder_context',None)
+    plan['dv_declaration_recovery']=getattr(args,'dv_declaration_recovery',None)
+    plan['savings_policy']=savings_policy
     plan['nvenc_maxrate_mbps']=getattr(args,'nvenc_maxrate_mbps',None)
+    plan['nvenc_tune']=getattr(args,'nvenc_tune',None)
+    plan['nvenc_analysis']=getattr(args,'nvenc_analysis',None)
     if not args.execute:
         print(json.dumps(dict(dry_run=True, plan=plan), indent=2))
         return 0
@@ -846,14 +1099,16 @@ def run(args):
             raise RuntimeError('Output free space below safety reserve')
     workflow = Workflow(args, directory, guard)
     save(directory/'plan.json', plan)
-    state = dict(state='running', source=str(source), original_retained=True)
+    state = dict(state='running', source=str(source), original_retained=True,savings_policy=savings_policy)
     save(directory/'status.json', state)
     try:
         guard()
         source_hash = digest(source, guard)
         workflow.preflight_source(source,data,source_hash)
+        plan['output_container']=workflow.output_suffix.lstrip('.')
+        save(directory/'plan.json',plan)
         progress('Checking available encoders and quality tools',directory=directory)
-        report = dict(schema='muxmender-codec-trials-v1', source_id=source_hash, color_mode=workflow.hdr_mode or 'sdr', references=[], trials=[])
+        report = dict(schema='muxmender-codec-trials-v1', source_id=source_hash, source_bytes=baseline['size'], color_mode=workflow.hdr_mode or 'sdr', references=[], trials=[])
         workflow_stage('compare')
         filters = subprocess.check_output([args.ffmpeg, '-hide_banner', '-filters'], text=True, stderr=subprocess.STDOUT, timeout=30)
         if 'libvmaf' not in filters:
@@ -872,7 +1127,7 @@ def run(args):
         adapters = nvidia_adapters() if 'nvidia' in vendors else []
         report['nvidia_adapters'] = adapters
         for vendor in vendors:
-            for codec in codec_order(vendor, adapters):
+            for codec in [*codec_order(vendor, adapters),'h264']:
                 intermediate = getattr(args, 'hevc_nvenc_cq', None)
                 if intermediate and (vendor != 'nvidia' or codec != 'hevc'):
                     continue
@@ -882,23 +1137,46 @@ def run(args):
                 runtime = probe_encoder(args.ffmpeg, encoder, video['width'], video['height'],
                                         ten_bit='10le' in video['pix_fmt'] or '12le' in video['pix_fmt'],
                                         pixel_format=encoder_pixel_format(video,encoder),
+                                        field_order=video.get('field_order','progressive'),
                                         adapters=adapters if vendor=='nvidia' else [],
                                         cache_dir=getattr(args,'capability_cache_dir',None) or root/'.gpu-capabilities')
                 save(directory/(encoder+'-runtime.json'), runtime)
                 if runtime['status'] == 'working':
                     if intermediate:
-                        candidates.extend(dict(codec=codec, encoder=encoder, quality='balanced', nvenc_cq=q)
-                                          for q in intermediate)
+                        candidates.extend(explicit_hevc_trials(intermediate,getattr(args,'hevc_nvenc_preset','p6')))
                     else:
                         candidates.extend(dict(codec=codec, encoder=encoder, quality=q) for q in args.qualities)
         if not candidates:
             raise RuntimeError('No runtime-verified GPU encoder for the allowed codecs; no automatic CPU fallback')
+        research_cq=getattr(args,'research_full_av1_cq',None)
+        if research_cq is not None:
+            if not any(c['encoder']=='av1_nvenc' for c in candidates):
+                raise RuntimeError('Research requires runtime-verified AV1 NVENC')
+            candidates=[dict(codec='av1',encoder='av1_nvenc',quality='balanced',
+                             nvenc_cq=research_cq,nvenc_preset='p7')]
         references = []
         for i, position in enumerate(positions):
-            reference = directory/f'reference-{i}.mkv'
+            if sampling['whole_source']:
+                reference=directory/('reference-'+str(i)+source.suffix)
+                workflow.guard()
+                shutil.copyfile(source,reference)
+                if digest(source,workflow.guard)!=digest(reference,workflow.guard):
+                    raise ValueError('Whole-source reference copy differs from original')
+                probe=workflow.probe(reference)
+                frames=workflow.frame_file(reference,'reference-'+str(i),probe['format'])
+                count=workflow.compare_frame_files(frames,frames)
+                window=check_reference_window(probe,args.seconds)
+                references.append((reference,probe,frames,count))
+                report['references'].append(dict(id=str(i),path=str(reference),bytes=reference.stat().st_size,
+                    position=0,window=window,recovery=None,whole_source=True,sha256=source_hash))
+                continue
+            reference = directory/(f'reference-{i}'+workflow.output_suffix)
             reference_command=[args.ffmpeg, '-hide_banner', '-nostdin', '-n', '-ss', str(position),
                 '-i', str(source), '-t', str(args.seconds), '-map', '0', '-c', 'copy', '-map_chapters', '-1',
                 '-avoid_negative_ts', 'make_zero', '-progress', 'pipe:1', '-nostats', str(reference)]
+            if reference.suffix in ('.mp4','.mov'):
+                from media_metadata import mp4_clock_options
+                reference_command[-1:-1]=mp4_clock_options(data['streams'])
             recovery=None
             try:
                 workflow.execute(workflow.preserve_covers(reference_command,source,data,'reference-'+str(i)), 'reference-'+str(i), args.seconds)
@@ -916,21 +1194,37 @@ def run(args):
             # Do not accept pathological keyframe preroll spanning another sample.
             window=check_reference_window(probe,max(args.seconds,15) if recovery else args.seconds)
             references.append((reference, probe, frames, count))
-            report['references'].append(dict(id=str(i), bytes=reference.stat().st_size, position=position,window=window,
+            report['references'].append(dict(id=str(i),path=str(reference), bytes=reference.stat().st_size, position=position,window=window,
                                              recovery=recovery))
             # Defer expensive VMAF until a candidate can actually save space.
         info = mm.probe(source, args.ffprobe)
+        if getattr(args,'dv_declaration_recovery',None):
+            info=replace(info,dolby_vision=False,dolby_vision_profile=None,dolby_vision_compatibility_id=None,
+                         dolby_vision_rpu_present=False,dolby_vision_el_present=False,
+                         hdr=info.color_transfer in mm.KNOWN_HDR_TRANSFERS or info.mastering_display_metadata)
         if getattr(args,'resolved_color',None):info=replace(info,**args.resolved_color)
         def trial_candidate(settings, adaptive=False):
+            analysis=getattr(args,'nvenc_analysis',None)
+            if analysis is not None and settings['encoder'] in ('hevc_nvenc','av1_nvenc'):
+                settings=dict(settings,nvenc_analysis=analysis)
+            tuning=getattr(args,'nvenc_tune',None)
+            if tuning is not None and settings['encoder'] in ('hevc_nvenc','av1_nvenc'):
+                settings=dict(settings,nvenc_tune=tuning)
             ceiling=getattr(args,'nvenc_maxrate_mbps',None)
-            if ceiling is not None and settings['encoder'] in ('hevc_nvenc','av1_nvenc'):
+            if ceiling is not None and settings['encoder'] in ('hevc_nvenc','av1_nvenc','h264_nvenc'):
                 settings=dict(settings,nvenc_maxrate_mbps=ceiling)
             trial_id = settings['encoder']+'-'+settings['quality']
             if 'nvenc_cq' in settings:
                 trial_id += '-cq'+str(settings['nvenc_cq'])
             if 'nvenc_preset' in settings:
                 trial_id += '-'+settings['nvenc_preset']
-            first=hardest_reference(report,settings['encoder']) if adaptive else 0
+            if 'nvenc_tune' in settings:
+                trial_id += '-'+settings['nvenc_tune']
+            if 'nvenc_analysis' in settings:
+                trial_id += '-'+settings['nvenc_analysis']
+            if settings.get('nvenc_maxrate_mbps') is not None:
+                trial_id += '-peak'+str(settings['nvenc_maxrate_mbps'])
+            first=hardest_reference(report,settings['encoder'])
             trial = dict(id=trial_id, source_id=source_hash, codec=settings['codec'], encoder=settings['encoder'],
                          settings=settings, runtime_supported=True, playback_compatible=True, samples=[])
             blocked = previous_structural_failure(report['trials'], settings['encoder'])
@@ -945,8 +1239,8 @@ def run(args):
             for i in order:
                 reference, probe, frames, count = references[i]
                 label = trial_id+'-'+str(i)
-                output = directory/(label+'.mkv')
-                sample = dict(reference_id=str(i), bytes=0, quality_pass=False, preservation_pass=False,
+                output = directory/(label+workflow.output_suffix)
+                sample = dict(reference_id=str(i),output=str(output), bytes=0, quality_pass=False, preservation_pass=False,
                               decode_pass=False, quality_method='VMAF mean and fifth percentile' if not workflow.hdr_mode else 'VMAF on common HDR-to-SDR render plus native HDR preservation')
                 trial['samples'].append(sample)
                 try:
@@ -988,7 +1282,7 @@ def run(args):
                 i=int(sample['reference_id'])
                 reference, probe, frames, count=references[i]
                 label=trial_id+'-'+str(i)
-                output=directory/(label+'.mkv')
+                output=directory/(label+workflow.output_suffix)
                 ref_report=report['references'][i]
                 if 'metric_self_check' not in ref_report:
                     calibration=workflow.quality(reference,reference,'self-'+str(i),count,float(probe['format']['duration']))
@@ -1017,8 +1311,32 @@ def run(args):
             progress('Candidate completed', index+1, len(candidates), directory=directory, unit='candidates')
         decision = select_candidate(report, args.minimum_savings_percent)
         if getattr(args,'adaptive',False) and decision['action']=='keep_original':
-            extra=adaptive_candidates(report,args.max_extra_trials)
             tested=0
+            # A measured HEVC quality failure may be rate-limited. Try one
+            # source-derived ceiling, not a blanket high-bitrate default. This
+            # consumes the existing adaptive budget and never bypasses checks.
+            from nvenc_quality_retry import rate_retry
+            retry=(rate_retry(report,baseline['size'],duration)
+                   if getattr(args,'nvenc_maxrate_mbps',None) is None else None)
+            if retry:
+                guard()
+                progress('Checking HEVC quality-retry capability',directory=directory,
+                         detail='Generated frames only; source-derived rate ceiling, unchanged quality requirements')
+                retry['runtime']=probe_rate_retry(args.ffmpeg,retry['settings'],info,video)
+                guard()
+                tested+=1
+                save(directory/'rate-control-retry.json',retry)
+                if retry['runtime']['status']=='working':
+                    trial_candidate(retry['settings'],adaptive=True)
+                else:
+                    report['trials'].append(dict(id='hevc-rate-retry-runtime',source_id=source_hash,
+                        codec='hevc',encoder='hevc_nvenc',settings=retry['settings'],
+                        runtime_supported=False,playback_compatible=True,samples=[],
+                        error=retry['runtime'].get('detail','Rate-control capability probe failed')))
+                    save(directory/'trials.json',report)
+                decision=select_candidate(report,args.minimum_savings_percent)
+            extra=(adaptive_candidates(report,args.max_extra_trials-tested)
+                   if decision['action']=='keep_original' else [])
             for settings in extra:
                 guard()
                 trial_candidate(settings,adaptive=True)
@@ -1026,22 +1344,30 @@ def run(args):
                 progress('Adaptive candidate checked',tested,len(extra),directory=directory,unit='candidates')
                 decision=select_candidate(report,args.minimum_savings_percent)
                 if decision['action']=='encode_copy':break
-            save(directory/'adaptive-search.json',dict(extra_trials=tested,budget=len(extra),
+            save(directory/'adaptive-search.json',dict(extra_trials=tested,budget=args.max_extra_trials,
                 result=decision['action'],stop_reason='eligible_candidate' if decision['action']=='encode_copy' else 'bounded_search_exhausted',
                 cpu_fallback='not_run_requires_explicit_opt_in',quality_thresholds_unchanged=True))
         save(directory/'selection.json', decision)
+        if getattr(args,'research_full_av1_cq',None) is not None:
+            from full_conversion_research import finish
+            settings=dict(candidates[0])
+            if args.nvenc_maxrate_mbps is not None:settings['nvenc_maxrate_mbps']=args.nvenc_maxrate_mbps
+            if args.nvenc_tune is not None:settings['nvenc_tune']=args.nvenc_tune
+            if args.nvenc_analysis is not None:settings['nvenc_analysis']=args.nvenc_analysis
+            return finish(workflow,source,data,info,settings,baseline,source_hash,duration,
+                          savings_policy,decision,state)
         if args.encode_best and decision['action'] == 'encode_copy':
             settings = decision['selected']['settings']
             from validated_replace import readable_destination
             readable=readable_destination(source)
-            output = directory/(readable.name if readable.stem!=source.stem else 'full-'+settings['codec']+'.mkv')
+            output = directory/((readable.stem if readable.stem!=source.stem else 'full-'+settings['codec'])+workflow.output_suffix)
             workflow_stage('encode')
             workflow.encode_preserving_color(source,output,settings,info,data,'full-encode',duration)
             # Rejection needs no expensive full-picture validation. Encoding has
             # completed successfully, but this file already cannot meet the size
             # requirement. This path never approves or publishes an output.
             actual_savings = 100*(1-output.stat().st_size/baseline['size'])
-            if output.stat().st_size >= baseline['size'] or actual_savings < args.minimum_savings_percent:
+            if output.stat().st_size >= baseline['size'] or baseline['size']-output.stat().st_size<savings_policy['required_bytes']:
                 guard()
                 if digest(source, guard) != source_hash:
                     raise RuntimeError('Source hash changed; size decision not reusable')
@@ -1050,7 +1376,6 @@ def run(args):
                              output_bytes=output.stat().st_size, minimum_savings_percent=args.minimum_savings_percent,
                              full_validation_performed=False, source_sha256=source_hash)
                 save(directory/'status.json', state)
-                workflow.cleanup_terminal_artifacts()
                 progress('Keeping original: full output did not meet savings target',directory=directory,
                          detail=f'{actual_savings:.2f}% smaller; {args.minimum_savings_percent:g}% required. Full validation not needed for rejection.')
                 print(json.dumps(state, indent=2))
@@ -1063,27 +1388,27 @@ def run(args):
             guard()
             if digest(source, guard) != source_hash:
                 raise RuntimeError('Source hash changed; output not approved')
-            if output.stat().st_size >= baseline['size'] or actual_savings < args.minimum_savings_percent:
+            if output.stat().st_size >= baseline['size'] or baseline['size']-output.stat().st_size<savings_policy['required_bytes']:
                 state.update(state='full-output-rejected-insufficient-savings', candidate=str(output), saved_percent=actual_savings)
             else:
                 state.update(state='validated-copy-awaiting-playback', output=str(output), saved_percent=actual_savings,
                              source_sha256=source_hash, output_sha256=digest(output, guard))
+                if workflow.output_suffix in ('.mp4','.mov'):
+                    state.update(output_container=workflow.output_suffix.lstrip('.'))
         else:
             guard()
             if digest(source, guard) != source_hash:
                 raise RuntimeError('Source hash changed')
             state.update(state='trials-completed', decision=decision)
         save(directory/'status.json', state)
-        if (state['state']=='full-output-rejected-insufficient-savings' or
-                (state['state']=='trials-completed' and decision.get('action')=='keep_original')):
-            workflow.cleanup_terminal_artifacts()
         print(json.dumps(state, indent=2))
         return 0
     except BaseException as exc:
         state.update(state='stopped-original-retained', error=str(exc))
         save(directory/'status.json', state)
-        if isinstance(exc,Exception):workflow.cleanup_terminal_artifacts()
         raise
+    finally:
+        workflow.cleanup_terminal_artifacts()
 
 
 def main(argv=None):
@@ -1094,31 +1419,55 @@ def main(argv=None):
     parser.add_argument('--hardware', choices=('auto', 'nvidia', 'amd', 'intel'), default='auto')
     parser.add_argument('--execute', action='store_true', help='Run trials; default only probes and prints plan')
     parser.add_argument('--encode-best', action='store_true', help='After trials, encode and validate a full copy')
+    parser.add_argument('--research-full-av1-cq',type=int,choices=range(18,33),
+                        help='Isolated read-only research: measure a full AV1 copy even after sample rejection; never publish')
     parser.add_argument('--experimental-dv81',action='store_true',
                         help='Isolated shared-workflow DV Profile 8.1 integration test; never authorizes publication')
     parser.add_argument('--legacy-color',choices=('inspect','bt709-limited'),default='inspect',
                         help='Inspect missing color tags; optional BT.709 limited-range assumption is sample-only')
-    parser.add_argument('--playback-verified-codecs', nargs='+', choices=('hevc', 'av1'), default=[])
+    parser.add_argument('--playback-verified-codecs', nargs='+', choices=('hevc', 'av1','h264'), default=[])
     parser.add_argument('--qualities', nargs='+', choices=('transparent', 'balanced', 'compact'), default=['balanced', 'compact'])
     parser.add_argument('--hevc-nvenc-cq', nargs='+', type=int, choices=range(18,33),
                         help='HEVC-only measured trials using balanced preset and explicit CQ values; quality/savings checks still apply')
+    parser.add_argument('--hevc-nvenc-preset',choices=('p6','p7'),default='p6',
+                        help='Preset for explicit HEVC CQ qualification trials only; default p6 is unchanged')
     parser.add_argument('--nvenc-maxrate-mbps',type=int,
                         help='Optional explicit NVENC peak-rate ceiling (1..1000 Mbps); does not change quality or savings requirements')
+    parser.add_argument('--nvenc-tune',choices=('hq','uhq'),
+                        help='Optional HEVC/AV1 NVIDIA qualification tuning; actual encoding must support it; defaults unchanged')
+    parser.add_argument('--nvenc-analysis',choices=('lookahead32-fullres',),
+                        help='Optional HEVC/AV1 qualification with 32-frame lookahead and full-resolution multipass; defaults unchanged')
     parser.add_argument('--adaptive', action='store_true', help='If baseline fails, refine runtime-tested NVENC settings using hardest-scene screening')
     parser.add_argument('--max-extra-trials', type=int, choices=range(1,13), default=8)
     parser.add_argument('--seconds', type=float, default=10)
     parser.add_argument('--vmaf-mean', type=float, default=90,
                         help='Minimum mean VMAF score (default: 90; not a percentage of retained quality)')
     parser.add_argument('--vmaf-p5', type=float, default=90)
+    parser.add_argument('--savings-mode',choices=('size-aware','fixed'),default='size-aware')
     parser.add_argument('--minimum-savings-percent', type=float, default=25,
                         help='Minimum reduction; 0 accepts any strictly smaller validated output')
     parser.add_argument('--min-free-gib', type=float, default=4)
     parser.add_argument('--timeout', type=float, default=7200)
     parser.add_argument('--ffmpeg', default='ffmpeg')
     parser.add_argument('--ffprobe', default='ffprobe')
+    parser.add_argument('--encoder-ffmpeg',help='Optional driver-compatible encoder executable for shared Dolby Vision trials')
+    parser.add_argument('--fel-render-plugin',type=Path,help='Optional FelBaker library for native FEL quality comparison')
+    parser.add_argument('--fel-render-python',help='Optional Python executable with the qualified VapourSynth runtime')
     args = parser.parse_args(argv)
+    if args.research_full_av1_cq is not None:
+        from full_conversion_research import require_read_only
+        require_read_only(args.source)
+        if (not args.execute or not args.encode_best or args.adaptive or args.hardware!='nvidia'
+                or args.playback_verified_codecs!=['av1'] or args.vmaf_mean<90 or args.vmaf_p5<90):
+            parser.error('Research requires execute, encode-best, NVIDIA, AV1 only, no adaptive search, and unchanged 90/90 floors')
+        if mm.probe(args.source,args.ffprobe).dolby_vision:
+            parser.error('This isolated AV1 research path does not handle Dolby Vision')
     if args.nvenc_maxrate_mbps is not None and (not 1 <= args.nvenc_maxrate_mbps <= 1000 or args.hardware not in ('auto','nvidia')):
         parser.error('Explicit NVENC peak rate requires auto/NVIDIA hardware and 1..1000 Mbps')
+    if args.nvenc_tune is not None and (args.hardware not in ('auto','nvidia') or not set(args.playback_verified_codecs).intersection(('hevc','av1'))):
+        parser.error('Explicit NVENC tuning requires auto/NVIDIA and HEVC/AV1 playback verification')
+    if args.nvenc_analysis is not None and (args.hardware not in ('auto','nvidia') or not set(args.playback_verified_codecs).intersection(('hevc','av1'))):
+        parser.error('Explicit NVENC analysis requires auto/NVIDIA and HEVC/AV1 playback verification')
     for name, low, high in [('vmaf_mean', 0, 100), ('vmaf_p5', 0, 100), ('minimum_savings_percent', 0, 99.9),
                             ('min_free_gib', 1, 100000), ('timeout', 1, 86400), ('seconds', 1, 60)]:
         value = getattr(args, name)
@@ -1129,6 +1478,8 @@ def main(argv=None):
         args.hevc_nvenc_cq = list(dict.fromkeys(args.hevc_nvenc_cq))
         if args.hardware not in ('auto', 'nvidia') or 'hevc' not in args.playback_verified_codecs:
             parser.error('Intermediate CQ trials require NVIDIA and HEVC playback verification')
+    if args.hevc_nvenc_preset!='p6' and not args.hevc_nvenc_cq:
+        parser.error('Explicit HEVC preset requires --hevc-nvenc-cq')
     # Validate separation BEFORE tracked_call creates dashboard artifacts.
     args.source, args.output_dir = disjoint(args.source, args.output_dir)
     return tracked_call(lambda: run(args), 'Measured codec selection', folder=args.output_dir) if args.execute else run(args)

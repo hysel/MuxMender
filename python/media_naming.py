@@ -11,14 +11,15 @@ MEDIA_EXTENSIONS = {
     ".mp4", ".mpeg", ".mpg", ".mts", ".ts", ".webm", ".wmv",
 }
 
-def readable_destination(original, *, preserve_companions=True):
+def readable_destination(original, *, preserve_companions=True, output_suffix='.mkv'):
     """Infer a title only for a cryptic release name in a single-movie folder.
 
     Folder labels are local naming hints, not verified film identities. Never
     collapse episode identifiers or distinguishable versions into one title.
     """
     original=Path(original)
-    fallback=original if original.suffix.lower()=='.mkv' else original.with_suffix('.mkv')
+    if output_suffix not in ('.mkv','.mp4','.mov'):raise ValueError('Unsupported publication container')
+    fallback=original if original.suffix.lower()==output_suffix else original.with_suffix(output_suffix)
     if re.search(r's\d+e\d+|\d+x\d+',original.stem,re.I):return fallback
     if not re.fullmatch(r'[a-z0-9]{2,12}-[a-z0-9]{2,12}[._-](?:480|576|720|1080|2160)p',original.stem,re.I):
         return fallback
@@ -34,7 +35,7 @@ def readable_destination(original, *, preserve_companions=True):
     companions={'.srt','.ass','.ssa','.sub','.idx','.vtt','.nfo','.jpg','.png'}
     if preserve_companions and any(p.suffix.lower() in companions and p.name.casefold().startswith(original.stem.casefold()+'.')
            for p in original.parent.iterdir()):return fallback
-    return original.with_name(title+'.mkv')
+    return original.with_name(title+output_suffix)
 
 def clean_media_name(source: Path) -> str:
     """Remove release suffixes without guessing titles from an online service."""

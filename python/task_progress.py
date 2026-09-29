@@ -51,6 +51,10 @@ def probe_status(path, duration, start=0):
     return percent,f'{position:.1f} seconds inspected · {size/1e6:.1f} MB of validation evidence'
 
 
+from validation_resources import validation_limited
+
+
+@validation_limited
 def run_probe(command,path,label,timeout,guard,duration=None,start=0):
     progress(label,detail='Starting validation reader')
     started=time.monotonic()

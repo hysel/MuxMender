@@ -18,6 +18,41 @@ def evidence():
 
 
 class CodecSelectionTests(unittest.TestCase):
+    def test_size_rejection_explains_tested_settings_not_optimality(self):
+        report=evidence()
+        for trial in report['trials']:
+            for sample in trial['samples']:sample['bytes']=1100
+        result=select_candidate(report)
+        self.assertEqual(result['rejection_summary']['insufficient_savings'],2)
+        self.assertEqual(result['rejection_summary']['quality_below_target'],0)
+        self.assertIn('does not prove the source is optimal',result['reason'])
+
+    def test_layered_profile_uses_matching_native_renderer_not_fallback_alone(self):
+        report=evidence();report.update(color_mode='pq',dv_profile='7-layered')
+        for trial in report['trials']:
+            for sample in trial['samples']:
+                sample.update(hdr_preservation_pass=True,enhancement_type='FEL',quality=dict(domain='hdr-common-render-v1'))
+        self.assertEqual(select_candidate(report)['action'],'keep_original')
+        for trial in report['trials']:
+            for sample in trial['samples']:sample['quality']['domain']='dv-felbaker-common-render-v1'
+        self.assertEqual(select_candidate(report)['action'],'encode_copy')
+        for trial in report['trials']:
+            for sample in trial['samples']:sample['enhancement_type']='MEL'
+        self.assertEqual(select_candidate(report)['action'],'keep_original')
+        for trial in report['trials']:
+            for sample in trial['samples']:sample['quality']['domain']='dv-libplacebo-common-render-v1'
+        self.assertEqual(select_candidate(report)['action'],'encode_copy')
+
+    def test_profile5_requires_native_dv_render_not_hdr_base_interpretation(self):
+        report=evidence();report.update(color_mode='pq',dv_profile='5')
+        for trial in report['trials']:
+            for sample in trial['samples']:
+                sample.update(hdr_preservation_pass=True,quality=dict(domain='hdr-common-render-v1'))
+        self.assertEqual(select_candidate(report)['action'],'keep_original')
+        for trial in report['trials']:
+            for sample in trial['samples']:sample['quality']['domain']='dv-libplacebo-common-render-v1'
+        self.assertEqual(select_candidate(report)['action'],'encode_copy')
+
     def test_default_requires_at_least_twenty_five_percent(self):
         report=evidence()
         for trial in report['trials']:

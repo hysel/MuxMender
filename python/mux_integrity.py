@@ -297,14 +297,20 @@ def finalize_command(video, source, output, source_probe, ffmpeg):
     Callers must monitor memory while running this ordered mux command.
     """
     streams = source_probe['streams']
-    if sum(s.get('codec_type') == 'video' for s in streams) != 1:
-        raise ValueError('Hardware finalization requires exactly one video stream')
+    indices = [s.get('index') for s in streams]
+    if any(not isinstance(index, int) or index < 0 for index in indices) or len(set(indices)) != len(indices):
+        raise ValueError('Hardware finalization requires unique probed stream indices')
+    primary = next((s for s in streams if s.get('codec_type') == 'video'
+                    and not s.get('disposition', {}).get('attached_pic')), None)
+    if primary is None:
+        raise ValueError('Hardware finalization requires a moving video stream')
     mapping = []
     disposition = []
     for index, stream in enumerate(streams):
-        mapping += ['-map', '0:v:0' if stream['codec_type'] == 'video' else f"1:{stream['index']}"]
+        mapping += ['-map', '0:V:0' if stream is primary else f"1:{stream['index']}"]
         flags = '+'.join(k for k, value in stream.get('disposition', {}).items() if value) or '0'
         disposition += [f'-disposition:{index}', flags]
+        disposition += [f'-map_metadata:s:{index}', f"1:s:{stream['index']}"]
     return [ffmpeg, '-hide_banner', '-nostdin', '-n', '-copyts',
             '-i', str(video), '-i', str(source), *mapping,
             '-map_metadata', '1', '-map_chapters', '1', '-c', 'copy',
@@ -335,19 +341,21 @@ class NoSavingsError(ValueError):
     """Stop optimization while retaining the original and diagnostic outputs."""
 
 
-def savings_decision(source_bytes, output_bytes, minimum_percent=5.0):
+def savings_decision(source_bytes, output_bytes, minimum_percent=5.0, *, policy=None):
     if source_bytes <= 0 or output_bytes <= 0:
         raise ValueError('Positive source and output sizes are required')
     if not math.isfinite(minimum_percent) or not 0 <= minimum_percent < 100:
         raise ValueError('Minimum savings must be finite and in [0,100)')
     savings = 100 * (source_bytes-output_bytes) / source_bytes
-    eligible = output_bytes < source_bytes and savings >= minimum_percent
+    from savings_policy import requirement,meets_requirement
+    policy=policy if policy is not None else requirement(source_bytes,'fixed',minimum_percent)
+    eligible = meets_requirement(source_bytes,output_bytes,policy)
     reason = ('meets size threshold; preservation and playback checks still required' if eligible else
               'output is larger than or equal to the source; keep original' if output_bytes >= source_bytes else
               'savings are below the minimum; keep original')
     return dict(eligible=eligible, savings_percent=savings,
                 minimum_percent=minimum_percent, source_bytes=source_bytes,
-                output_bytes=output_bytes, reason=reason)
+                output_bytes=output_bytes, required_bytes=policy['required_bytes'],reason=reason)
 
 
 def normalize_rounding(left, right, original_decode, output_decode):

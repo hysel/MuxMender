@@ -6,6 +6,46 @@ from dv_full_file import rpu_digest, mux_command, timestamped_video_command, ord
 
 
 class FullDVTests(unittest.TestCase):
+    def test_matroska_mux_maps_identified_ids_and_preserves_source_roles(self):
+        from dv_full_file import matroska_dv_mux_command
+        with tempfile.TemporaryDirectory() as tmp:
+            out=Path(tmp)/'out.mkv'
+            streams={'streams':[dict(index=0,codec_type='video',tags={'language':'eng','title':'Main'},
+                disposition={'default':1}),dict(index=2,codec_type='audio'),dict(index=3,codec_type='subtitle')]}
+            tracks={'tracks':[dict(id=4,type='video'),dict(id=8,type='audio'),dict(id=9,type='subtitles')]}
+            cmd=matroska_dv_mux_command('video.mkv','source.mkv',out,streams,tracks,start_offset=2.5)
+            self.assertEqual(cmd[cmd.index('--track-order')+1],'0:0,1:8,1:9')
+            self.assertIn('--disable-lacing',cmd)
+            self.assertEqual(cmd[cmd.index('--sync')+1],'0:2500.000000000')
+            self.assertEqual(cmd[cmd.index('--language')+1],'0:eng')
+            self.assertEqual(cmd[cmd.index('--track-name')+1],'0:Main')
+            self.assertEqual(cmd[-2:],['--no-video','source.mkv'])
+            bad={'tracks':[dict(id=4,type='video')]}
+            with self.assertRaises(ValueError):matroska_dv_mux_command('v','s',out,streams,bad)
+            out.write_bytes(b'existing')
+            with self.assertRaises(ValueError):matroska_dv_mux_command('v','s',out,streams,tracks)
+            self.assertEqual(out.read_bytes(),b'existing')
+
+    def test_frame_timing_rejects_nonfinite_and_nonincreasing_evidence(self):
+        from unittest.mock import patch
+        import dv_full_file as full
+        def row(t):
+            return dict(best_effort_timestamp_time=t,width=160,height=96,pix_fmt='yuv420p10le')
+        for times in (['NaN'],['Infinity'],['N/A'],['0','0'],['1','0']):
+            records=[row(t) for t in times]
+            with patch.object(full,'frames',side_effect=lambda *a:iter(records)),patch.object(full.dv,'compare_static_hdr',return_value=False):
+                with self.assertRaises(ValueError):full.compare_frames('source','output')
+        records=[row('-0.1'),row('0'),row('0.041'),row('0.09')]
+        with patch.object(full,'frames',side_effect=lambda *a:iter(records)),patch.object(full.dv,'compare_static_hdr',return_value=False):
+            self.assertEqual(full.compare_frames('source','output')['frames'],4)
+
+    def test_source_packet_nan_does_not_pass_timing_check(self):
+        from unittest.mock import patch
+        import dv_full_file as full
+        with patch.object(full,'frames',return_value=iter([dict(best_effort_timestamp_time='0')])):
+            with self.assertRaisesRegex(ValueError,'timestamp'):
+                full.validate_source_frames('source',[float('nan')])
+
     def test_real_ffprobe_evidence_contains_picture_fields(self):
         import shutil,subprocess
         from unittest.mock import Mock
@@ -147,6 +187,20 @@ class FullDVTests(unittest.TestCase):
         self.assertNotIn('time_base=',bsf)
         self.assertNotIn('-y',command)
 
+    def test_explicit_dv_timestamps_use_individual_pictures(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output=Path(folder)/'video.mkv'
+            command=timestamped_video_command('ffmpeg','raw.hevc',output,'24000/1001',
+                                               timestamps='decoded.txt',mkvmerge='mkvmerge')
+            self.assertEqual(command[0],'mkvmerge')
+            self.assertEqual(command[command.index('--timestamps')+1],'0:decoded.txt')
+            self.assertIn('--disable-lacing',command)
+            self.assertNotIn('-r',command)
+            output.write_bytes(b'existing')
+            with self.assertRaisesRegex(ValueError,'already exists'):
+                timestamped_video_command('ffmpeg','raw.hevc',output,'24',timestamps='decoded.txt')
+            self.assertEqual(output.read_bytes(),b'existing')
+
     def test_nvidia_mux_separates_timestamp_generation_and_preserves_tracks(self):
         first = timestamped_video_command('ffmpeg','raw.hevc','video.mkv','24000/1001')
         self.assertEqual(first.count('-i'), 1)
@@ -155,10 +209,19 @@ class FullDVTests(unittest.TestCase):
                                {'index': 1, 'codec_type': 'audio'},
                                {'index': 2, 'codec_type': 'subtitle'}]}
         final = ordered_dv_mux_command('ffmpeg','video.mkv','original.mkv','final.mkv',streams)
-        self.assertEqual([final[i+1] for i,x in enumerate(final) if x == '-map'], ['0:v:0','1:1','1:2'])
+        self.assertEqual([final[i+1] for i,x in enumerate(final) if x == '-map'], ['0:V:0','1:1','1:2'])
         self.assertEqual(final[final.index('-max_interleave_delta')+1], '0')
         self.assertIn('-copyts', final)
         self.assertNotIn('-y', final)
+
+    def test_dv_nonzero_start_offsets_only_reconstructed_video(self):
+        streams={'streams':[{'index':0,'codec_type':'video'},{'index':1,'codec_type':'audio'}]}
+        command=ordered_dv_mux_command('ffmpeg','video','source','out',streams,start_offset=2.5)
+        first=command.index('-i')
+        self.assertEqual(command[first-2:first],['-itsoffset','2.5'])
+        self.assertEqual(command.count('-itsoffset'),1)
+        self.assertIn('-copyts',command)
+        with self.assertRaises(ValueError):ordered_dv_mux_command('ffmpeg','v','s','o',streams,start_offset=float('nan'))
     def test_rpu_streamed_digest(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)/'rpu.json'

@@ -20,6 +20,7 @@ from streaming_pipeline import RunGuard
 from mux_integrity import verify_startup_interleaving
 import validate_nvidia as nv
 import job_tracking as jobs
+import dv_tracks
 
 
 def require_candidate(info):
@@ -42,7 +43,8 @@ def stream_info(ffprobe, path):
 
 def frame_info(ffprobe, path):
     from hdr10plus_validation import preserve_json_pairs
-    result=subprocess.run([ffprobe, '-v', 'error', '-threads','2','-select_streams', 'v:0',
+    from decoder_context import metadata_reader_options
+    result=subprocess.run([ffprobe, '-v', 'error', *metadata_reader_options(),'-select_streams', 'V:0',
                            '-show_frames', '-of', 'json', str(path)],timeout=120,
                           capture_output=True,text=True,check=True)
     if result.stderr.strip():raise ValueError('Decoder errors in DV frame evidence: '+result.stderr[-1000:])
@@ -58,7 +60,9 @@ def compare_static_hdr(source, output):
     """Allow at most one ST2086 chromaticity quantization unit; report it."""
     a, b = static_hdr(source), static_hdr(output)
     if len(a) != len(b):
-        raise ValueError('Static HDR metadata missing')
+        raise ValueError('Static HDR metadata missing or added: source types='
+                         +repr([s.get('side_data_type') for s in a])
+                         +'; output types='+repr([s.get('side_data_type') for s in b]))
     rounding = []
     for left, right in zip(a, b):
         if left.keys() != right.keys():
@@ -109,12 +113,16 @@ def experimental_encoder_options(info, qp_i=18, qp_p=20):
     return options
 
 
-def sample_encoder_options(info, experimental_nvidia=False, experimental_intel=False, nvenc_cq=None):
+def sample_encoder_options(info, experimental_nvidia=False, experimental_intel=False, nvenc_cq=None,
+                           nvenc_maxrate_mbps=None):
     """Separate opt-in sample route; the integrated/full-file AMD gate is unchanged."""
     if experimental_nvidia and experimental_intel:
         raise ValueError("Choose only one experimental hardware vendor")
     if nvenc_cq is not None and (not experimental_nvidia or type(nvenc_cq) is not int or nvenc_cq not in range(18,33)):
         raise ValueError('DV NVENC CQ requires NVIDIA and a bounded tested-search value')
+    if nvenc_maxrate_mbps is not None and (not experimental_nvidia or
+            type(nvenc_maxrate_mbps) is not int or not 1<=nvenc_maxrate_mbps<=1000):
+        raise ValueError('DV peak rate requires NVIDIA and an integer 1..1000 Mbps')
     if experimental_intel:
         require_candidate(info)
         return mm.encoder_options("hevc", "transparent", info, "hevc_qsv")
@@ -125,12 +133,25 @@ def sample_encoder_options(info, experimental_nvidia=False, experimental_intel=F
     # presentation/decode order. This is not a new general NVENC preset.
     options=mm.encoder_options('hevc', 'transparent', info, 'hevc_nvenc') + ['-bf', '0']
     if nvenc_cq is not None:options[options.index('-cq')+1]=str(nvenc_cq)
+    if nvenc_maxrate_mbps is not None:options+=['-maxrate:v',str(nvenc_maxrate_mbps*1000000)]
     return options
 
 
 def hdr10plus_metadata(frame):
     return [s for s in frame.get('side_data_list',[]) if
             '2094-40' in s.get('side_data_type','') or 'HDR10+' in s.get('side_data_type','')]
+
+
+def variable_sample_prefix(frames,seconds):
+    """Select a decoded-picture prefix by elapsed time, not a nominal FPS count."""
+    pts=[float(f['best_effort_timestamp_time']) for f in frames]
+    if (len(pts)<2 or any(not math.isfinite(p) for p in pts) or
+            any(b<=a for a,b in zip(pts,pts[1:]))):
+        raise ValueError('Decoded sample timestamps must be finite and increasing')
+    count=sum(p<pts[0]+seconds for p in pts)
+    if count<1 or count>=len(pts):
+        raise ValueError('Need a complete decoded sample endpoint')
+    return frames[:count],pts[count]
 
 
 def require_nvidia_frames(frames,allow_hdr10plus=False):
@@ -157,9 +178,18 @@ class NvidiaSampleGuard(RunGuard):
                       'Experimental DV sample; integrated opt-in supports AMD/Intel Profile 8.1.'))
 
 
+def decode_sink_options():
+    """Keep VFR decode evidence out of the null muxer's nominal-FPS clock.
+
+    These options affect only the discarded decode output, not the candidate.
+    Strict error detection and independent decoded timing checks stay enabled.
+    """
+    return ['-fps_mode:v', 'passthrough', '-enc_time_base:v', '1:1000000']
+
+
 def run(args):
-    if not math.isfinite(args.seconds) or not 1 <= args.seconds <= 30:
-        raise ValueError('Duration must be 1..30 seconds')
+    if not math.isfinite(args.seconds) or not 0 < args.seconds <= 30:
+        raise ValueError('Duration must be positive and at most 30 seconds')
     start = getattr(args, 'start', 0)
     if not math.isfinite(start) or start < 0:
         raise ValueError('Start must be finite and nonnegative')
@@ -172,6 +202,9 @@ def run(args):
             raise ValueError(f'Missing dependency: {tool}; no automatic installation')
     info = mm.probe(source, args.ffprobe)
     require_candidate(info)
+    whole_source=getattr(args,'whole_source',False)
+    if whole_source and (start!=0 or not 0<info.duration_seconds<=30):
+        raise ValueError('Whole-source DV reference requires start zero and a source of at most 30 seconds')
     qp_i, qp_p = getattr(args, 'qp_i', 18), getattr(args, 'qp_p', 20)
     nvidia = getattr(args, 'experimental_nvidia', False)
     intel = getattr(args, 'experimental_intel', False)
@@ -179,7 +212,8 @@ def run(args):
     combined=getattr(args,'experimental_hdr10plus',False)
     if combined and not nvidia:raise ValueError('Combined DV/HDR10+ research currently requires explicit NVIDIA mode')
     if combined and not shutil.which('hdr10plus_tool'):raise ValueError('Missing dependency: hdr10plus_tool')
-    options = sample_encoder_options(info, nvidia, intel, getattr(args,'nvenc_cq',None)) if experimental else experimental_encoder_options(info, qp_i, qp_p)
+    options = sample_encoder_options(info, nvidia, intel, getattr(args,'nvenc_cq',None),
+        getattr(args,'nvenc_maxrate_mbps',None)) if experimental else experimental_encoder_options(info, qp_i, qp_p)
     encoder = 'hevc_qsv' if intel else 'hevc_nvenc' if nvidia else 'hevc_amf'
     print(f'PLAN: {args.seconds:g}s near {start:g}s, exact {info.width}x{info.height}, {encoder}, original RPU; no tone mapping', flush=True)
     print(f'ENCODER OPTIONS: {options}; visual review required', flush=True)
@@ -225,32 +259,55 @@ def run(args):
     final = directory / 'candidate-dolby-vision.mkv'
     try:
         original_streams = stream_info(args.ffprobe, source) if experimental else []
-        if experimental and (sum(s['codec_type'] == 'video' for s in original_streams) != 1
-                       or any(s['codec_type'] not in ('video', 'audio', 'subtitle', 'attachment') for s in original_streams)):
-            raise ValueError('Hardware research sample requires one video and supported original track types')
+        if experimental:
+            dv_tracks.primary(original_streams)
         source_dispositions = nv.disposition_options({'streams': original_streams}) if experimental else []
+        from hdr10_trial import chroma_options
+        options += chroma_options(dv_tracks.primary(original_streams))
         # Keep all packets in the bounded, keyframe-starting reference; no seek
         # or trim after extraction can silently change RPU/frame correspondence.
-        stage(ff + ['-ss', str(start), '-i', source, '-t', str(args.seconds + 8), '-map', '0:v:0', '-map', '0:a?', '-map', '0:s?',
-                    '-map', '0:t?', '-map_metadata', '0', '-map_chapters', '-1', '-c', 'copy',
+        reference_maps=['-map','0'] if experimental else ['-map','0:V:0','-map','0:a?','-map','0:s?','-map','0:t?']
+        if whole_source:
+            clip=directory/('reference-clip'+source.suffix)
+            shutil.copyfile(source,clip)
+            guard()
+            source_identity=sha256(source)
+            if sha256(clip)!=source_identity:
+                raise ValueError('Whole-source DV reference differs from source')
+            report['whole_source_reference']=dict(sha256=source_identity,bytes=clip.stat().st_size)
+        else:
+            stage(ff + ['-ss', str(start), '-i', source, '-t', str(args.seconds + 8), *reference_maps,
+                    '-map_metadata', '0', '-map_chapters', '-1', '-c', 'copy',
                     '-avoid_negative_ts', 'make_zero', *source_dispositions, *progress, clip], 'copy reference clip', 0, 10)
         frames = frame_info(args.ffprobe, clip)
         if experimental:
             require_nvidia_frames(frames,allow_hdr10plus=combined)
             if combined and not any(hdr10plus_metadata(f) for f in frames):
                 raise ValueError('Combined research source has no decoded HDR10+ metadata')
-        video = next(s for s in stream_info(args.ffprobe, clip) if s['codec_type'] == 'video')
+        video = dv_tracks.primary(stream_info(args.ffprobe, clip))
         pts = sorted(float(f['best_effort_timestamp_time']) for f in frames)
         rate = video['r_frame_rate']
         numerator, denominator = map(int, rate.split('/'))
         if numerator <= 0 or denominator <= 0:
             raise ValueError('Unknown frame rate')
         step = denominator / numerator
-        if len(pts) < 2 or any(abs((b-a)-step) > .002 for a,b in zip(pts, pts[1:])):
+        irregular=not pts or any(abs((b-a)-step)>.002 for a,b in zip(pts,pts[1:]))
+        variable=False
+        if experimental and irregular and len(pts)>=2:
+            packet_rows=np.checked_json([args.ffprobe,'-v','error','-select_streams','V:0',
+                '-show_packets','-show_entries','packet=pts_time','-of','json',str(clip)])['packets']
+            packet_pts=sorted(float(p['pts_time']) for p in packet_rows)
+            # A truncated/reordered GOP is not evidence of genuine VFR. Require
+            # exact packet-to-decoded-picture coverage before retaining its clock.
+            variable=(len(packet_pts)==len(pts) and all(abs(a-b)<=.002 for a,b in zip(packet_pts,pts))
+                      and all(b>a for a,b in zip(pts,pts[1:])))
+        if irregular and not variable:
+            if whole_source:
+                raise ValueError('Whole-source DV reference has unresolved frame timing')
             # Stream-copy duration cuts can retain reordered frames beyond the
             # boundary. Use a complete prefix ending before a later keyframe,
             # and re-check the decoded timeline rather than dropping arbitrary RPUs.
-            packets = np.checked_json([args.ffprobe, '-v', 'error', '-select_streams', 'v:0',
+            packets = np.checked_json([args.ffprobe, '-v', 'error', '-select_streams', 'V:0',
                 '-show_packets', '-show_entries', 'packet=pts_time,flags', '-of', 'json', str(clip)])['packets']
             boundaries = [i for i,p in enumerate(packets) if i > 0 and 'K' in p.get('flags', '')]
             if not boundaries:
@@ -269,33 +326,47 @@ def run(args):
                 raise ValueError('Decoded keyframe-bounded sample timeline invalid')
             print(f'Prepared complete {len(pts)}-frame reference before sample trimming', flush=True)
         all_frame_count = len(frames)
-        count = round(args.seconds / step)
-        if len(frames) < count:
-            raise ValueError('Not enough complete frames for requested sample')
-        frames = frames[:count]
+        if whole_source:
+            if not frames:raise ValueError('Whole-source DV reference has no decoded frames')
+            count=len(frames)
+            end_time=max(float(f['best_effort_timestamp_time'])+float(f.get('duration_time') or step) for f in frames)
+            report['whole_source_reference']['frames']=count
+        elif variable:
+            frames,end_time=variable_sample_prefix(frames,args.seconds)
+            count=len(frames)
+        else:
+            count = max(1,round(args.seconds / step))
+            if len(frames) < count:
+                raise ValueError('Not enough complete frames for requested sample')
+            frames = frames[:count]
         pts = sorted(float(f['best_effort_timestamp_time']) for f in frames)
-        end_time = pts[-1] + step
-        if any(abs((b-a)-step) > .002 for a,b in zip(pts, pts[1:])):
+        if not variable and not whole_source:end_time = pts[-1] + step
+        if not variable and any(abs((b-a)-step) > .002 for a,b in zip(pts, pts[1:])):
             raise ValueError('Selected frame timeline is not continuous')
         report['sample_frames'] = len(frames)
-        report['sample_seconds'] = len(frames) * step
+        report['sample_seconds'] = end_time-pts[0]
+        report['variable_timing_detected']=variable
         print(f'Selected {len(frames)} presentation frames ({len(frames)*step:.3f}s)', flush=True)
-        reference_packets = np.checked_json([args.ffprobe, '-v', 'error', '-select_streams', 'v:0',
+        reference_packets = np.checked_json([args.ffprobe, '-v', 'error', '-select_streams', 'V:0',
             '-show_packets', '-show_entries', 'packet=pts_time,size', '-of', 'json', str(clip)])['packets']
         sample_video_bytes = sum(int(p['size']) for p in reference_packets
                                  if pts[0] <= float(p.get('pts_time', 'inf')) < end_time - .002)
-        stage(ff + ['-i', clip, '-map', '0:v:0', '-c', 'copy', '-bsf:v', 'hevc_mp4toannexb',
+        stage(ff + ['-i', clip, '-map', '0:V:0', '-c', 'copy', '-bsf:v', 'hevc_mp4toannexb',
                     '-f', 'hevc', *progress, raw], 'extract original HEVC', 10, 5)
         stage([args.dovi_tool, 'extract-rpu', '-i', raw, '-o', rpu], 'extract original RPU', 15, 5)
+        if experimental:
+            from dv_packet_rpu import extract
+            rpu,report['rpu_picture_alignment']=extract(args.ffprobe,clip,frames,directory,guard)
         if count < all_frame_count:
             trim_config = directory / 'rpu-frame-range.json'
             with trim_config.open('x', encoding='utf-8') as out:
                 json.dump({'remove': [f'{count}-{all_frame_count-1}']}, out)
             trimmed = directory / 'sample-rpu.bin'
-            stage([args.dovi_tool, 'editor', '-i', rpu, '-j', trim_config, '-o', trimmed],
-                  'align RPU to selected presentation frames', 20, 0)
-            rpu = trimmed
-        stage(ff + ['-threads', '2', '-i', clip, '-map', '0:v:0', '-an', '-sn', '-dn',
+            if not experimental:
+                stage([args.dovi_tool, 'editor', '-i', rpu, '-j', trim_config, '-o', trimmed],
+                      'align RPU to selected presentation frames', 20, 0)
+                rpu = trimmed
+        stage(ff + ['-threads', '2', '-i', clip, '-map', '0:V:0', '-an', '-sn', '-dn',
                     *options,
                     '-profile:v', 'main10', '-frames:v', str(count),
                     '-fps_mode', 'passthrough', '-f', 'hevc', *progress, encoded], f'{encoder} experimental encode', 20, 45)
@@ -317,15 +388,26 @@ def run(args):
         if experimental:
             from dv_full_file import timestamped_video_command
             timestamped = directory / 'timestamped-sample-video.mkv'
-            timestamp_command = timestamped_video_command(args.ffmpeg, injected, timestamped, rate, intel=intel)
+            timestamps=None
+            if variable:
+                from hdr10plus_preserve import write_decoded_timestamps
+                timestamps=directory/'decoded-timestamps.txt'
+                write_decoded_timestamps(({'pts_time':str(p)} for p in pts),timestamps,guard)
+            timestamp_command = timestamped_video_command(args.ffmpeg, injected, timestamped, rate, intel=intel,
+                                                          timestamps=timestamps)
             stage(timestamp_command,
                   'materialize sample video timestamps', 70, 0)
             video_input = ['-i', timestamped]
-        stage(ff + ['-copyts', '-itsoffset', str(pts[0]), *video_input, '-i', clip,
+        mux=ff + ['-copyts', '-itsoffset', str(pts[0]), *video_input, '-i', clip,
                     '-map', '0:v:0', '-map', '1:a?', '-map', '1:s?', '-map', '1:t?', '-map_metadata', '1',
                     '-map_chapters', '-1', '-t', str(end_time), '-c', 'copy', '-bsf:v', 'dovi_rpu=compression=none',
-                    '-avoid_negative_ts', 'disabled', *source_dispositions, *progress, final],
-              'mux candidate', 70, 10)
+                    '-avoid_negative_ts', 'disabled', *source_dispositions, *progress, final]
+        if experimental:
+            from dv_full_file import ordered_dv_mux_command
+            mux=ordered_dv_mux_command(args.ffmpeg,timestamped,clip,final,
+                {'streams':stream_info(args.ffprobe,clip)},start_offset=0 if variable else pts[0])
+            mux[-1:-1]=['-map_chapters','-1','-t',str(end_time)]
+        stage(mux,'mux candidate',70,10)
         guard.phase = 'validating'
         guard.status(80)
         result = mm.probe(final, args.ffprobe)
@@ -340,30 +422,40 @@ def run(args):
             final_streams = {'streams': stream_info(args.ffprobe, final)}
             if nv.stream_inventory({'streams': original_streams}) != nv.stream_inventory(clip_streams) or nv.stream_inventory(clip_streams) != nv.stream_inventory(final_streams):
                 raise ValueError('Non-video stream inventory/dispositions changed')
-            if nv.first_video(clip_streams).get('sample_aspect_ratio') != nv.first_video(final_streams).get('sample_aspect_ratio'):
+            if dv_tracks.primary(clip_streams['streams']).get('sample_aspect_ratio') != dv_tracks.primary(final_streams['streams']).get('sample_aspect_ratio'):
                 raise ValueError('Sample aspect ratio changed')
             passed, detail = verify_startup_interleaving(final, args.ffprobe)
             report['startup_interleaving'] = {'passed': passed, 'detail': detail}
             if not passed:
                 raise ValueError(detail)
         validate_timeline(frames, final_frames)
+        if variable:report['variable_timing_preserved']=True
         report['static_hdr_rounding'] = compare_static_hdr(frames, final_frames)
-        for source_frame, final_frame in zip(frames, final_frames):
+        for frame_index, (source_frame, final_frame) in enumerate(zip(frames, final_frames)):
             compare_static_hdr([source_frame],[final_frame])
             if combined and hdr10plus_metadata(source_frame)!=hdr10plus_metadata(final_frame):
                 raise ValueError('Per-frame HDR10+ metadata changed or missing')
             def dv_metadata(frame):
                 return [s for s in frame.get('side_data_list', []) if s.get('side_data_type') == 'Dolby Vision Metadata']
             if not dv_metadata(source_frame) or dv_metadata(source_frame) != dv_metadata(final_frame):
+                report['dv_frame_mismatch'] = dict(frame_index=frame_index,
+                    source_pts=source_frame.get('best_effort_timestamp_time'),
+                    output_pts=final_frame.get('best_effort_timestamp_time'),
+                    source_metadata=dv_metadata(source_frame),output_metadata=dv_metadata(final_frame))
                 raise ValueError('Per-frame Dolby Vision metadata changed or missing')
         for selector in ('a', 's', 't'):
             expected = [p for p in np.packet_signatures(args.ffprobe, clip, selector)
                         if selector == 't' or float(p.get('pts_time', 'inf')) < end_time]
             if expected != np.packet_signatures(args.ffprobe, final, selector):
                 raise ValueError(f'{selector} stream packets/timestamps changed')
+        if experimental:
+            report['verified_secondary_video_tracks']=dv_tracks.verify(
+                args.ffmpeg,args.ffprobe,clip,final,directory,guard,end_time=end_time,frames=len(frames),
+                verified_variable_timing=variable)
+            report['secondary_video_packets_unchanged']=True
         check_raw = directory / 'final-check.hevc'
         check_rpu = directory / 'final-rpu.bin'
-        stage(ff + ['-i', final, '-map', '0:v:0', '-c', 'copy', '-bsf:v', 'hevc_mp4toannexb',
+        stage(ff + ['-i', final, '-map', '0:V:0', '-c', 'copy', '-bsf:v', 'hevc_mp4toannexb',
                     '-f', 'hevc', *progress, check_raw], 'extract final verification bitstream', 80, 5)
         stage([args.dovi_tool, 'extract-rpu', '-i', check_raw, '-o', check_rpu], 'verify final RPU', 85, 5)
         if not rpu.stat().st_size:
@@ -380,8 +472,10 @@ def run(args):
         report['rpu_content_and_frame_order_unchanged'] = True
         if combined:report['hdr10plus_content_and_frame_order_unchanged']=True
         report['rpu_comparison_note'] = 'Compare every parsed field; only extension-block ordering and recalculated CRC are ignored. Frame order is never ignored.'
-        stage(ff + ['-v', 'error', '-xerror', '-threads', '2', '-i', final, '-map', '0:v:0',
-                    *(['-map', '0:a?'] if experimental else []), '-f', 'null', '-', *progress], 'decode validation', 90, 10)
+        stage(ff + ['-v', 'error', '-xerror', '-threads', '2', '-i', final, '-map', '0:V' if experimental else '0:V:0',
+                    *(['-map', '0:a?'] if experimental else []),
+                    *decode_sink_options(),
+                    '-f', 'null', '-', *progress], 'decode validation', 90, 10)
         report.update(status='verified-structure-awaiting-visual-review', frames=len(frames),
                       reference_sha256=sha256(raw),
                       original_rpu_sha256=sha256(rpu), final_rpu_sha256=sha256(check_rpu),

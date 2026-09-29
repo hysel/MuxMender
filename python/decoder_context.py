@@ -6,6 +6,18 @@ import subprocess
 X264_UUID=bytes.fromhex('dc45e9bde6d948b7962cd820d923eeef')
 
 
+def metadata_reader_options(threads=2):
+    """Keep stateful HEVC SEI in one frame context, with slice parallelism.
+
+    Frame threading in the qualified reader build can intermittently lose
+    static HDR side data. This changes decoding scheduling, never HDR values
+    or validation tolerances. Callers still compare every required frame.
+    """
+    if type(threads) is not int or not 1<=threads<=64:
+        raise ValueError('Invalid metadata reader thread count')
+    return ['-threads',str(threads),'-thread_type','slice']
+
+
 def x264_build_from_annexb(payload):
     builds=set()
     for nal in re.split(b'\x00\x00\x01',payload):
@@ -33,7 +45,7 @@ def x264_build_from_annexb(payload):
 def inspect_x264_build(ffmpeg,source):
     try:
         result=subprocess.run([ffmpeg,'-v','error','-nostdin','-i',str(source),
-            '-map','0:v:0','-c','copy','-frames:v','1','-bsf:v','h264_mp4toannexb',
+            '-map','0:V:0','-c','copy','-frames:v','1','-bsf:v','h264_mp4toannexb',
             '-f','h264','-'],capture_output=True,timeout=30)
     except (OSError,subprocess.SubprocessError):return None
     if result.returncode:return None

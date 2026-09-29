@@ -19,6 +19,53 @@ def packet_rows(path):
                 yield dict(item.split('=',1) for item in line.strip().split('|') if '=' in item)
 
 
+def duration_header_evidence(before, after, reference, output, guard=lambda: None):
+    """Prove an elapsed-length versus absolute-end header representation case.
+
+    Complete packet spans/counts must agree per timed stream. This supplements,
+    never replaces, decoded frame and copied-packet comparisons.
+    """
+    from auto_optimize import paired_streams, is_cover
+    pairs=[(a,b) for a,b in paired_streams(before,after)
+           if a.get('codec_type')!='attachment' and not is_cover(a)]
+    if not pairs:raise ValueError('No timed streams for duration proof')
+    def spans(path, indices):
+        result={index:None for index in indices}
+        for packet in packet_rows(path):
+            guard()
+            index=int(packet['stream_index'])
+            if index not in result:continue
+            start=Fraction(packet['pts_time']);duration=Fraction(packet['duration_time'])
+            if duration<=0:raise ValueError('Packet duration is unresolved')
+            old=result[index]
+            result[index]=(1,start,start+duration) if old is None else (
+                old[0]+1,min(start,old[1]),max(start+duration,old[2]))
+        if any(value is None for value in result.values()):raise ValueError('Incomplete packet duration inventory')
+        return result
+    left=spans(reference,[a['index'] for a,b in pairs])
+    right=spans(output,[b['index'] for a,b in pairs])
+    for a,b in pairs:
+        if left[a['index']]!=right[b['index']]:raise ValueError('Timed stream packet extent or count changed')
+    start=min(row[1] for row in left.values());end=max(row[2] for row in left.values())
+    elapsed=end-start
+    if start==0 or elapsed<=0:raise ValueError('Not an offset duration-header case')
+    # No widened timing tolerance: allow only the serialized microsecond tick.
+    tick=Fraction(1,1000000)
+    modes=[]
+    for data in (before,after):
+        header=Fraction(str(data['format']['duration']))
+        declared_start=Fraction(str(data['format']['start_time']))
+        if abs(declared_start-start)>tick:raise ValueError('Declared start differs from packet evidence')
+        mode=next((name for name,value in [('elapsed',elapsed),('absolute-end',end)] if abs(header-value)<=tick),None)
+        if mode is None:raise ValueError('Duration header matches neither packet span nor endpoint')
+        modes.append(mode)
+    if modes[0]==modes[1]:raise ValueError('Not a duration representation difference')
+    return dict(kind='elapsed-versus-absolute-end',headers=[str(data['format']['duration']) for data in (before,after)],
+                starts=[str(data['format']['start_time']) for data in (before,after)],
+                packet_start=str(start),packet_end=str(end),elapsed=str(elapsed),
+                streams=len(pairs),complete_packet_spans_equal=True)
+
+
 def aac_initialization_timestamp_case(reference, output, *, missing_initial_duration=False):
     """Recognize one anomalous initial AAC PTS, with all packet bytes intact.
 
@@ -89,6 +136,53 @@ def audio_hash_rows(path):
                 raise ValueError('Invalid decoded audio hash evidence')
             yield dict(pts=Fraction(values[2])*time_base,
                        duration=Fraction(values[3])*time_base,size=int(values[4]),hash=values[5])
+
+
+def missing_audio_duration_case(reference, output):
+    """Representation candidate only; requires independent decoded audio proof."""
+    count=0;missing=False
+    try:
+        for a,b in zip_longest(packet_rows(reference),packet_rows(output)):
+            if a is None or b is None or not a.get('data_hash') or a['data_hash']!=b.get('data_hash'):return None
+            for key in ('pts_time','dts_time'):
+                if abs(Fraction(a[key])-Fraction(b[key]))>Fraction(1,500):return None
+            left,right=a.get('duration_time'),b.get('duration_time')
+            if right in (None,'N/A') and left not in (None,'N/A'):
+                if Fraction(left)<=0:return None
+                missing=True
+            elif left!=right and abs(Fraction(left)-Fraction(right))>Fraction(1,500):return None
+            count+=1
+        return count if count and missing else None
+    except (KeyError,ValueError,TypeError,ZeroDivisionError):return None
+
+
+def reconstructed_audio_timestamp_case(reference, output):
+    """Candidate evidence only: identical payloads, interior absent source PTS.
+
+    Callers must restrict the codec and independently compare complete decoded
+    PCM, sample counts and presentation timing before accepting this case.
+    """
+    count=0;changed=False;pending=[];previous=None
+    try:
+        for a,b in zip_longest(packet_rows(reference),packet_rows(output)):
+            if a is None or b is None or not re.fullmatch(r'SHA256:[0-9a-fA-F]{64}',a.get('data_hash','')) or a['data_hash']!=b.get('data_hash'):return None
+            count+=1
+            for key in ('duration_time','pts_time','dts_time'):
+                left,right=a.get(key),b.get(key)
+                if left==right:continue
+                if key in ('pts_time','dts_time') and left in (None,'N/A') and right not in (None,'N/A'):
+                    if previous is None:return None
+                    value=Fraction(right)
+                    if value<previous:return None
+                    pending.append(value);changed=True
+                elif left in (None,'N/A') or right in (None,'N/A') or abs(Fraction(left)-Fraction(right))>Fraction(1,500):return None
+            if a.get('pts_time') not in (None,'N/A'):
+                anchor=Fraction(a['pts_time'])
+                if previous is not None and anchor<previous:return None
+                if pending and max(pending)>anchor+Fraction(1,500):return None
+                pending=[];previous=anchor
+        return count if changed and not pending else None
+    except (ValueError,TypeError,ZeroDivisionError,KeyError):return None
 
 
 def compare_decoded_audio(reference, output, expected_first_source=None, expected_first_output=None):

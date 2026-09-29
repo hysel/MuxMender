@@ -39,6 +39,18 @@ class RuntimeTests(unittest.TestCase):
         memory.return_value = 100*1024**2
         guard_ordered_mux_memory(process, command)
 
+    @patch('runtime_support.process_memory_bytes',return_value=1024**3+1)
+    def test_finite_interleaving_keeps_memory_guard(self,memory):
+        process=Mock()
+        with self.assertRaisesRegex(RuntimeError,'memory guard'):
+            guard_ordered_mux_memory(process,['ffmpeg','-max_interleave_delta','10000000'])
+        memory.assert_called_once_with(process)
+
+    @patch('runtime_support.process_memory_bytes',return_value=1024**3+1)
+    def test_matroska_mux_keeps_same_memory_guard(self,memory):
+        with self.assertRaisesRegex(RuntimeError,'memory guard'):
+            guard_ordered_mux_memory(Mock(),['/usr/bin/mkvmerge','-o','out.mkv','video.mkv'])
+
     def test_ordered_mux_guard_stops_owned_process(self):
         command = [sys.executable, '-c', 'import time; time.sleep(10)',
                    '-max_interleave_delta', '0', 'unused']

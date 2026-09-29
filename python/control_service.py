@@ -19,6 +19,12 @@ from app_version import VERSION
 from codec_selection import EVALUATION_POLICY
 
 
+def source_identity(path):
+    """Cheap change evidence in addition to the legacy size/mtime signature."""
+    s=Path(path).stat()
+    return [s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns]
+
+
 def handler(base, controls):
     class Handler(base):
         def reply(self, data, status=200):
@@ -88,11 +94,14 @@ class Controls(WorkspaceHistory):
         self.workers = []
         from resource_governor import Governor
         self.governor=Governor()
+        from gpu_activity import YieldController
+        self.gpu_yield=YieldController(self.root/'gpu-yield-lease.json')
         self.assignments={}
         self.thread = None
         self.lease = None
         self.ready = False
         self.drafts = {}
+        self.queue_clear_drafts = {}
         self.state = read(self.file) or dict(paused=False, failures=0, jobs=[])
         # Additive migration: keep original records and unknown fields intact.
         self.state.setdefault('view', {})
@@ -140,15 +149,17 @@ class Controls(WorkspaceHistory):
                     entries=entries[offset:offset+100],next_offset=offset+100 if len(entries)>offset+100 else None)
 
     def settings(self, data):
-        if not isinstance(data,dict) or set(data)-{'path','mode','codec','hardware','quality','minimum_savings','recursive','recheck','legacy_color','history_mode','age_unit','age_value'}:
+        if not isinstance(data,dict) or set(data)-{'path','mode','codec','hardware','quality','minimum_savings','savings_mode','recursive','recheck','legacy_color','history_mode','age_unit','age_value'}:
             raise ValueError('Unknown setting')
         mode=data.get('mode','analyze');codec=data.get('codec','auto')
         hardware=data.get('hardware','auto');quality=data.get('quality','auto')
-        if mode not in ('analyze','test','encode','replace','keep') or codec not in ('auto','hevc','av1'):
+        if mode not in ('analyze','test','encode','replace','keep') or codec not in ('auto','hevc','av1','h264'):
             raise ValueError('Unsupported operation or codec')
         if hardware not in ('auto','nvidia','amd','intel') or quality not in ('auto','transparent','balanced','compact'):
             raise ValueError('Unsupported hardware or quality preset')
         savings=data.get('minimum_savings',25)
+        savings_mode=data.get('savings_mode','size-aware')
+        if savings_mode not in ('size-aware','fixed'):raise ValueError('Unknown savings mode')
         if type(savings) not in (int,float) or not 0<=savings<=90: raise ValueError('Savings must be 0–90 percent; outputs must always be smaller')
         recursive=data.get('recursive',True)
         if type(recursive) is not bool: raise ValueError('Invalid recursion setting')
@@ -161,14 +172,14 @@ class Controls(WorkspaceHistory):
         if legacy_color not in ('inspect','bt709-limited'):raise ValueError('Invalid legacy color setting')
         if legacy_color!='inspect' and mode not in ('analyze','test'):
             raise ValueError('Color assumptions are allowed only for inspection or sample tests; not full conversion/replacement')
-        codecs=[c for c in self.codecs if c in ('hevc','av1')] if codec=='auto' else [codec]
+        codecs=[c for c in self.codecs if c in ('hevc','av1','h264')] if codec=='auto' else [codec]
         if mode=='replace' and self.replacement_root is None:raise ValueError('Replacement is not enabled in app settings')
         if mode in ('test','encode','replace') and (not codecs or any(c not in self.codecs for c in codecs)):
             raise ValueError('Selected codec must be playback-verified in app settings')
         from media_workflow import file_age_settings
         age=file_age_settings(data.get('age_unit','all'),data.get('age_value'))
         return dict(mode=mode,codec=codec,hardware=hardware,quality=quality,**age,
-                    minimum_savings=savings,recursive=recursive,codecs=codecs,recheck=history_mode=='all',
+                    minimum_savings=savings,savings_mode=savings_mode,recursive=recursive,codecs=codecs,recheck=history_mode=='all',
                     history_mode=history_mode,legacy_color=legacy_color)
 
     def history_index(self):
@@ -187,10 +198,12 @@ class Controls(WorkspaceHistory):
                      path in (j['source'],j.get('published_path'))]
             # Active claims and successful conversion/explicit keep decisions win
             # over failures from later redundant runs, including manual publication.
-            protected=next((j for j in reversed(related) if j['state'] in
-                            ('pending','running','replaced','awaiting-playback','kept-original')),None)
+            protected=next((j for j in reversed(related) if j['state'] in ('pending','running') or
+                            (j['state'] in ('replaced','awaiting-playback','kept-original') and
+                             (j.get('published_signature') if j['state']=='replaced' else j['signature'])==fingerprint and
+                             self.identity_matches(j,path))),None)
             if protected:return protected
-            latest=next((j for j in reversed(related) if j['signature']==fingerprint),None)
+            latest=next((j for j in reversed(related) if j['signature']==fingerprint and self.identity_matches(j,path)),None)
             if latest and latest['state'] in ('skipped','failed','interrupted'):
                 return None
             return dict(id=None,state='not-selected',reason='Retry only: no skipped, failed or interrupted result for this file version')
@@ -202,13 +215,14 @@ class Controls(WorkspaceHistory):
             if current!=path or stamp!=fingerprint: continue
             if state in ('pending','running'):
                 return previous
+            if not self.identity_matches(previous,path):continue
             if state=='skipped' and (previous.get('history_decision') or
                     previous.get('decision_code')=='already_efficient_for_settings' or
                     previous.get('reason','').startswith(('Unsupported input:','Full output did not save enough space'))):
                 # Automatic conclusions apply to their measured policy/settings,
                 # unlike an explicit keep or a completed replacement.
                 if previous.get('evaluation_policy')!=EVALUATION_POLICY:continue
-                keys=('codec','hardware','quality','minimum_savings','codecs','legacy_color')
+                keys=('codec','hardware','quality','minimum_savings','savings_mode','codecs','legacy_color')
                 if any(previous['settings'].get(k)!=settings.get(k) for k in keys):continue
             if (state=='skipped' and previous.get('reason','').startswith('Unsupported input:')
                     and previous.get('execution_version',previous.get('app_version'))!=VERSION):
@@ -231,7 +245,7 @@ class Controls(WorkspaceHistory):
                         result=read(report)
                         decision=result.get('decision',{})
                         policy=read(report.parent/'plan.json').get('evaluation_policy')
-                        keys=('codec','hardware','quality','minimum_savings','codecs','legacy_color')
+                        keys=('codec','hardware','quality','minimum_savings','savings_mode','codecs','legacy_color')
                         same_settings=all(previous['settings'].get(k)==settings.get(k) for k in keys)
                         if (result.get('state')=='trials-completed' and decision.get('cacheable') is True
                                 and decision.get('action')=='keep_original' and policy==EVALUATION_POLICY and same_settings):
@@ -239,6 +253,12 @@ class Controls(WorkspaceHistory):
             if state in ('analyzed','tested') and settings['mode']==previous['settings']['mode']:
                 return previous
         return None
+
+    def identity_matches(self,job,path):
+        expected=job.get('published_identity') if job['state']=='replaced' else job.get('source_identity')
+        if expected is None:return True  # Legacy history still checks its signature.
+        try:return source_identity(path)==expected
+        except OSError:return False
 
     def preview(self, data):
         from media_workflow import file_age_match
@@ -261,8 +281,10 @@ class Controls(WorkspaceHistory):
                 from validated_replace import target_for
                 target_for(path,self.media,self.replacement_root)
             stamp=signature(path)
+            from savings_policy import requirement
             with self.mutex: previous=self.history_match(str(path),stamp,settings,candidates=index.get(str(path),[]))
             files.append(dict(path=str(path),signature=stamp,
+                              savings_policy=requirement(stamp[0],settings['savings_mode'],settings['minimum_savings']) if stamp[0]>0 else None,
                               history_reason=('Already recorded: '+previous['state']+'. '+previous.get('reason','')) if previous else None))
         if not files:
             raise ValueError('No supported video files match this selection. '+
@@ -278,7 +300,7 @@ class Controls(WorkspaceHistory):
         return dict(preview_id=token,files=files,settings=settings,expires=draft['expires'],
                     age_filter=dict(**age_counts,checked_at=age_checked_at),
                     original_policy='Replace originals after full validation. Old originals are permanently removed.' if settings['mode']=='replace' else 'Keep originals. No replacement or deletion.',
-                    note='Preview lists files only. Analysis tests encoders against source geometry and metadata. HDR uses native preservation plus a common rendered-view quality metric. Dolby Vision, including combined Dolby Vision + HDR10+, is temporarily skipped; originals are retained.')
+                    note='Preview lists files only. Each conversion must meet its savings target and quality checks. Supported Dolby Vision Profile 8.1 uses NVIDIA HEVC preservation, including combined HDR10+. Other profiles require a qualified preservation path.')
 
     def save(self):
         write(self.file,self.state)
@@ -305,6 +327,7 @@ class Controls(WorkspaceHistory):
                     continue
                 identifier=uuid.uuid4().hex
                 self.state['jobs'].append(dict(id=identifier,source=row['path'],signature=row['signature'],
+                    source_identity=source_identity(row['path']),
                     settings=draft['settings'],state='kept-original' if draft['settings']['mode']=='keep' else 'pending',created=time.time(),
                     batch_id=batch_id,batch_folder=draft.get('folder'),app_version=VERSION,
                     **({'finished':time.time()} if draft['settings']['mode']=='keep' else {})))
@@ -331,7 +354,7 @@ class Controls(WorkspaceHistory):
                         if 'ValueError: Only progressive 8-bit 4:2:0 SDR is supported by measured auto mode' in log:
                             job['reason']='Unsupported input: this workflow requires progressive 8-bit SDR video. Original retained.'
             pause_reason='Queue paused. Resume when ready.' if self.state['paused'] else None
-            wait_reason=pause_reason or self.error
+            wait_reason=pause_reason or self.error or (self.gpu_yield.status.get('reason') if self.gpu_yield.status.get('block_admission') else None)
             if counts.get('pending') and not wait_reason:
                 if not self.ready:wait_reason='Waiting for the queue worker to become ready'
                 else:
@@ -346,6 +369,8 @@ class Controls(WorkspaceHistory):
                         total_replaced_saved_bytes=sum(j.get('saved_bytes',0) for j in self.state['jobs'] if j['state']=='replaced'),
                         lifetime_savings=self.lifetime_savings(),resources=dict(self.governor.status),
                         resource_profile=self.state.get('resource_profile','shared'),jobs=jobs,
+                        gpu_yield=dict(self.gpu_yield.status, enabled=self.state.get('gpu_yield',False),
+                                       configured=bool(self.gpu_yield.telemetry)),
                         app_version=VERSION,view=dict(self.state.get('view',{})),server_time=time.time())
 
     def lifetime_savings(self):
@@ -369,10 +394,21 @@ class Controls(WorkspaceHistory):
 
     def action(self, data):
         action=data.get('action')
+        if action in ('clear-queue-preview','clear-queue-confirm'):
+            return self.clear_waiting_queue(data)
         if action in ('archive-results','undo-archive','view-preferences'):return self.view_action(data)
         if action in ('inspect-recovery','retry-preview','cleanup-preview','cleanup-confirm'):return self.history_action(data)
         if action=='preview': return self.preview(data.get('settings'))
         if action=='submit': return self.submit(data.get('preview_id'),data.get('confirm_replace',False))
+        if action=='gpu-yield':
+            enabled=data.get('enabled')
+            if type(enabled) is not bool:raise ValueError('GPU yielding requires a boolean setting')
+            if enabled and (not sys.platform.startswith('linux') or not self.gpu_yield.telemetry):
+                raise ValueError('Configure the read-only Linux host GPU monitor before enabling automatic yielding')
+            with self.mutex:
+                if not self.ready:raise ValueError('Control worker is not ready')
+                self.state['gpu_yield']=enabled;self.save()
+            return dict(message='Automatic GPU yielding '+('enabled' if enabled else 'disabled')+'. Changes apply at the next resource check.')
         if action=='resource-profile':
             from resource_governor import PROFILES
             profile=data.get('profile')
@@ -389,6 +425,36 @@ class Controls(WorkspaceHistory):
             self.save()
         return dict(message='Paused after current job' if action=='pause' else 'Queue resumed')
 
+    def clear_waiting_queue(self, data):
+        """Cancel only confirmed pending requests; never touch processes/files."""
+        with self.mutex:
+            if not self.ready:raise ValueError('Control worker is not ready')
+            now=time.time()
+            self.queue_clear_drafts={key:value for key,value in self.queue_clear_drafts.items() if value['expires']>now}
+            if data['action']=='clear-queue-preview':
+                if len(self.queue_clear_drafts)>=20:raise ValueError('Too many confirmations; try again in two minutes')
+                ids={job['id'] for job in self.state['jobs'] if job['state']=='pending'}
+                token=secrets.token_urlsafe(24)
+                self.queue_clear_drafts[token]=dict(ids=ids,expires=now+120)
+                return dict(confirmation_id=token,count=len(ids),expires=now+120)
+            token=data.get('confirmation_id')
+            if not isinstance(token,str):raise ValueError('A queue-clear confirmation is required')
+            draft=self.queue_clear_drafts.get(token)
+            if draft is None:raise ValueError('Confirmation expired or already used; close and try again')
+            selected=[job for job in self.state['jobs'] if job['id'] in draft['ids'] and job['state']=='pending']
+            originals=[dict(job) for job in selected]
+            for job in selected:
+                job.update(state='cancelled',finished=now,reason='Cancelled before processing by Clear waiting queue. No video files changed.',
+                           decision_code='queue_cleared_by_user')
+            try:self.save()
+            except Exception:
+                for job,original in zip(selected,originals):job.clear();job.update(original)
+                raise
+            del self.queue_clear_drafts[token]
+            remaining=sum(job['state']=='pending' for job in self.state['jobs'])
+            return dict(cancelled=len(selected),remaining=remaining,
+                        message=f'{len(selected)} waiting jobs cancelled. {remaining} still waiting. Running jobs were left alone; history and video files were kept.')
+
     def build_command(self, job, folder):
         from media_workflow import automatic_arguments
         return [sys.executable,'-B','-m','auto_optimize',
@@ -397,7 +463,7 @@ class Controls(WorkspaceHistory):
 
     def step(self):
         with self.mutex:
-            if self.stop_event.is_set() or self.state['paused'] or self.busy():return
+            if self.stop_event.is_set() or self.state['paused'] or self.busy() or self.gpu_yield.status.get('block_admission'):return
             job=next((j for j in self.state['jobs'] if j['state']=='pending'),None)
             if job is None:return
             running=[j for j in self.state['jobs'] if j['state']=='running']
@@ -424,12 +490,16 @@ class Controls(WorkspaceHistory):
                 from validated_replace import target_for, destination_for, DestinationConflict
                 try:destination_for(target_for(source,self.media,self.replacement_root))
                 except DestinationConflict as exc:
-                    job.update(state='skipped',reason=str(exc),finished=time.time())
-                    self.state['failures']=0;self.save();return
+                    # Preflight has not selected a container yet. MP4 AAC may
+                    # need MP4 output; defer its exact conflict check until the
+                    # validated output is known. Publisher still checks twice.
+                    if source.suffix.lower() not in ('.mp4','.mov','.m4v'):
+                        job.update(state='skipped',reason=str(exc),finished=time.time())
+                        self.state['failures']=0;self.save();return
             folder=self.root/('request-'+job['id'])
             folder.mkdir(exist_ok=False)
             job.update(state='running',output=str(folder),started=time.time(),execution_version=VERSION,
-                       evaluation_policy=EVALUATION_POLICY);self.save()
+                       evaluation_policy=EVALUATION_POLICY,source_identity=source_identity(source));self.save()
             self.assignments[threading.get_ident()]=job
         with (folder/'worker.log').open('xb') as log:
             with self.mutex:
@@ -437,12 +507,19 @@ class Controls(WorkspaceHistory):
                     job.update(state='interrupted',reason='Service stopped before encoding');self.save();return
                 command=self.build_command(job,folder)
                 if os.name=='posix' and shutil.which('nice'):command=['nice','-n','10',*command]
-                child=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+                environment=dict(os.environ,MUXMENDER_VALIDATION_LOCK_ROOT=str(self.output/'.validation-resources'))
+                if sys.platform.startswith('linux'):environment['MUXMENDER_PAUSE_LEASE']=str(self.gpu_yield.lease)
+                child=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT,start_new_session=True,env=environment)
                 self.children[job['id']]=child
             code=child.wait()
             with self.mutex:self.children.pop(job['id'],None)
         state,reason='failed','Worker failed; see worker.log'
         results=list(folder.glob('auto-*/status.json'))
+        if len(results)==1:
+            cleanup=read(results[0].parent/'terminal-cleanup.json')
+            if cleanup:job['artifact_cleanup']=cleanup
+            elif read(results[0]).get('state')=='running' and code:
+                job['artifact_cleanup']=dict(state='needs-attention',error='Worker stopped before final cleanup; retained files need recovery review')
         if code and len(results)==1:
             recorded_error=read(results[0]).get('error')
             if isinstance(recorded_error,str) and recorded_error:
@@ -461,17 +538,22 @@ class Controls(WorkspaceHistory):
                     selection=read(results[0].parent/'selection.json') or result.get('decision',{})
                     job['evidence']=decision_evidence(results[0].parent,selection)
                     if stage=='validated-copy-awaiting-playback':
+                        from media_workflow import validated_output_container
                         candidate=Path(result.get('output',''))
                         hashes=[result.get(k) for k in ('source_sha256','output_sha256')]
                         valid_hashes=all(isinstance(h,str) and len(h)==64 and all(c in '0123456789abcdef' for c in h) for h in hashes)
                         if (not candidate.is_file() or candidate.is_symlink() or
                                 candidate.resolve().parent!=results[0].parent.resolve() or
                                 not candidate.resolve().is_relative_to(folder.resolve()) or
-                                candidate.suffix.lower()!='.mkv' or candidate.stat().st_size<=0 or
+                                not validated_output_container(result,candidate) or candidate.stat().st_size<=0 or
                                 result.get('source')!=job['source'] or not valid_hashes):
                             state,reason='failed','Validated-copy record is incomplete or its output is missing/unsafe; original retained'
                         else:
                             state,reason='awaiting-playback','Validated safe copy; original retained'
+                            job['publication_authorized']=result.get('publication_authorized') is not False
+                            if not job['publication_authorized']:
+                                reason='Validated copy retained; this conversion path still requires replacement qualification. Original unchanged.'
+                                job['decision_code']='replacement_qualification_required'
                             job['original_bytes']=job['signature'][0]
                             job['output_bytes']=candidate.stat().st_size
                     elif stage=='trials-completed':
@@ -479,6 +561,7 @@ class Controls(WorkspaceHistory):
                         state='tested' if decision.get('action')=='encode_copy' else 'skipped'
                         reason=decision.get('reason','Sample testing complete')
                         job['decision_code']=decision.get('reason_code')
+                        job['outcome_category']=decision.get('outcome_category')
                         if decision.get('reason_code')=='evaluation_inconclusive':state='failed'
                         if state=='skipped':job['history_decision']=True
                     elif stage=='full-output-rejected-insufficient-savings':
@@ -488,7 +571,7 @@ class Controls(WorkspaceHistory):
                         job['evidence']['full_size']={key:result[key] for key in
                             ('saved_percent','source_bytes','output_bytes','minimum_savings_percent','full_validation_performed')
                             if key in result}
-        if state=='awaiting-playback' and job['settings']['mode']=='replace':
+        if state=='awaiting-playback' and job['settings']['mode']=='replace' and job.get('publication_authorized') is not False:
             from validated_replace import replace_validated, DestinationConflict
             try:
                 with (folder/'publication.log').open('xb') as log:
@@ -496,7 +579,8 @@ class Controls(WorkspaceHistory):
                         if self.stop_event.is_set():raise RuntimeError('Service stopping; publication not started')
                         command=[sys.executable,'-B','-m','publish_worker','--source',str(source),'--media',str(self.media),
                                  '--writable',str(self.replacement_root),'--result',str(results[0].parent),'--folder',str(folder),
-                                 '--minimum',str(job['settings']['minimum_savings']),'--job',job['id']]
+                                 '--minimum',str(job['settings']['minimum_savings']),'--job',job['id'],
+                                 '--savings-mode',job['settings'].get('savings_mode','fixed')]
                         if os.name=='posix' and shutil.which('nice'):command=['nice','-n','10',*command]
                         child=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
                         self.children[job['id']]=child
@@ -505,10 +589,12 @@ class Controls(WorkspaceHistory):
                     if code:raise RuntimeError('Publication interrupted or failed; see publication.log and recovery journal')
                 receipt=read(results[0].parent/'replacement.json')
                 if receipt.get('state')!='replaced':raise RuntimeError('Missing confirmed replacement receipt')
+                if receipt.get('artifact_cleanup'):job['artifact_cleanup']=receipt['artifact_cleanup']
                 state,reason='replaced','Original replaced after full validation and verified publication.'
                 job['saved_bytes']=receipt['saved_bytes']
                 job['published_path']=receipt['target']
                 job['published_signature']=signature(Path(receipt['target']))
+                job['published_identity']=source_identity(receipt['target'])
                 job['published_sha256']=receipt['output_sha256']
             except DestinationConflict as exc:
                 state,reason='skipped',str(exc)
@@ -517,6 +603,8 @@ class Controls(WorkspaceHistory):
         with self.mutex:
             if self.stop_event.is_set() and state=='failed':
                 state,reason='interrupted','Service stopped; review retained outputs/recovery journal before retrying'
+            if job.get('artifact_cleanup',{}).get('state')=='needs-attention':
+                reason+=' Temporary-file cleanup needs attention: '+str(job['artifact_cleanup'].get('error','see cleanup report'))
             job.update(state=state,reason=reason,finished=time.time())
             self.state['failures']=self.state['failures']+1 if state=='failed' else 0
             # A failed video is terminal for that request, not for the queue.
@@ -544,11 +632,30 @@ class Controls(WorkspaceHistory):
                 for job in self.state['jobs']:
                     if job['state']=='running':
                         job.update(state='interrupted',reason='Interrupted during restart; review before resubmitting',finished=time.time())
+                        job['artifact_cleanup']=dict(state='needs-attention',error='Interrupted work may still have a child process or recovery files; no automatic deletion')
                         self.state['paused']=True
+                    elif job['state'] in ('failed','interrupted','skipped') and job.get('output'):
+                        # Reconcile only terminal runs. Never guess ownership of
+                        # outputs left by an abruptly killed active process.
+                        folder=Path(job['output'])
+                        expected=self.root/('request-'+job['id'])
+                        if folder!=expected or folder.is_symlink() or not folder.is_dir():continue
+                        for status_path in folder.glob('auto-*/status.json'):
+                            try:
+                                status=read(status_path)
+                                if status.get('state') not in ('stopped-original-retained','full-output-rejected-insufficient-savings','trials-completed'):continue
+                                if status.get('source')!=job['source'] or status.get('research_only'):continue
+                                from replacement_cleanup import cleanup_finished
+                                job['artifact_cleanup']=cleanup_finished(status_path.parent,execute=True)
+                            except (OSError,ValueError,KeyError,AttributeError,TypeError) as exc:
+                                job['artifact_cleanup']=dict(state='needs-attention',error=str(exc))
                 self.save();self.ready=True
             while not self.stop_event.is_set():
                 self.workers=[w for w in self.workers if w.is_alive()]
+                with self.mutex:
+                    yielding=self.gpu_yield.tick(self.state.get('gpu_yield',False))
                 allowed=self.governor.admit(self.state.get('resource_profile','shared'),len(self.workers))
+                if yielding['block_admission']:allowed=False
                 with self.mutex:
                     if allowed and not self.state['paused'] and any(j['state']=='pending' for j in self.state['jobs']) and not self.busy():
                         worker=threading.Thread(target=self.worker_step,daemon=True,name='media-job')
@@ -558,6 +665,9 @@ class Controls(WorkspaceHistory):
             self.error=str(exc)
         finally:
             self.ready=False
+            with self.mutex:
+                try:self.gpu_yield.tick(False)
+                except OSError:pass
             for worker in self.workers:worker.join()
             if self.lease:self.lease.close()
 
@@ -566,7 +676,10 @@ class Controls(WorkspaceHistory):
 
     def stop(self):
         self.stop_event.set()
-        with self.mutex:children=list(self.children.values())
+        with self.mutex:
+            try:self.gpu_yield.tick(False)
+            except OSError:pass
+            children=list(self.children.values())
         for child in children:
             if child.poll() is None:
                 try:os.killpg(child.pid,signal.SIGINT)

@@ -109,7 +109,7 @@ class AutoOptimizeTests(unittest.TestCase):
             with patch.object(ao.mm,'encoder_options',return_value=['-c:v',encoder]):
                 command=ao.encode_command('ffmpeg',Path('in'),Path('out'),
                     dict(codec='hevc',quality='balanced',encoder=encoder),None,data['streams'])
-            self.assertEqual(command[command.index('-pix_fmt')+1],'p010le')
+            self.assertEqual(command[command.index('-pix_fmt:v:0')+1],'p010le')
         after=copy.deepcopy(data);after['streams'][0]['codec_name']='hevc'
         ao.metadata_check(data,after,'hevc')
         after['streams'][0]['pix_fmt']='yuv420p'
@@ -129,7 +129,21 @@ class AutoOptimizeTests(unittest.TestCase):
         after['streams'][1]['disposition']['attached_pic']=0
         with self.assertRaises(ValueError):ao.metadata_check(data,after,'hevc')
         data['streams'][1]['disposition']['attached_pic']=0
-        with self.assertRaises(ValueError):ao.eligibility(data)
+        self.assertEqual(ao.eligibility(data)['index'],0)
+        self.assertIn(1,ao.copied_track_indices(data))
+
+    def test_vfr_nominal_label_change_needs_complete_timing_evidence(self):
+        before=source_data();after=copy.deepcopy(before)
+        before['streams'][0]['avg_frame_rate']='12/1'
+        after['streams'][0].update(codec_name='hevc',avg_frame_rate='1000/83')
+        with self.assertRaises(ValueError):
+            ao.stream_metadata_check(before,after,'hevc',verified_frame_count=540)
+        with self.assertRaises(ValueError):
+            ao.stream_metadata_check(before,after,'hevc',verified_variable_timing=True)
+        ao.stream_metadata_check(before,after,'hevc',verified_frame_count=540,verified_variable_timing=True)
+        after['streams'][0]['width']+=2
+        with self.assertRaises(ValueError):
+            ao.stream_metadata_check(before,after,'hevc',verified_frame_count=540,verified_variable_timing=True)
 
     def test_cover_packet_requires_one_identical_payload(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -151,14 +165,47 @@ class AutoOptimizeTests(unittest.TestCase):
             def extract(command,*_):Path(command[-1]).write_bytes(b'image')
             with patch.object(w,'execute',side_effect=extract):
                 command=w.preserve_covers(['ffmpeg','-map','0','out.mkv'],Path('source'),data,'safe')
-            self.assertEqual(command[command.index('-attach')+1],str(Path(folder)/'safe-cover-1.jpg'))
+            self.assertEqual(command[command.index('-attach')+1],str(Path(folder)/'safe-cover-1.bin'))
             self.assertIn('-0:1',command)
             self.assertEqual(command[-1],'out.mkv')
 
     def test_cover_before_movie_is_not_silently_selected(self):
         data=source_data()
-        data['streams'].insert(0,dict(codec_type='video',disposition={'attached_pic':1}))
-        with self.assertRaisesRegex(ValueError,'precedes'):ao.eligibility(data)
+        movie=data['streams'][0];movie['index']=1
+        data['streams'].insert(0,dict(index=0,codec_type='video',codec_name='mjpeg',disposition={'attached_pic':1},
+                                    tags={'filename':'cover.jpg','mimetype':'image/jpeg'}))
+        self.assertIs(ao.eligibility(data),movie)
+        after=copy.deepcopy(data)
+        after['streams'].reverse()
+        for index,stream in enumerate(after['streams']):stream['index']=index
+        after['streams'][0]['codec_name']='hevc'
+        ao.metadata_check(data,after,'hevc')
+        self.assertIn('[0:V:0]',ao.quality_graph('score.json','24/1'))
+
+    def test_interleaved_artwork_keeps_track_identity_after_attachment_move(self):
+        before=source_data()
+        cover=dict(index=1,codec_type='video',codec_name='mjpeg',disposition={'attached_pic':1},
+                   tags={'filename':'cover.jpg','mimetype':'image/jpeg'})
+        audio=dict(index=2,codec_type='audio',codec_name='ac3',disposition={'default':1},tags={'language':'eng'})
+        before['streams'] += [cover,audio]
+        ao.eligibility(before)
+        after=copy.deepcopy(before)
+        after['streams']=[after['streams'][0],after['streams'][2],after['streams'][1]]
+        for index,stream in enumerate(after['streams']):stream['index']=index
+        after['streams'][0]['codec_name']='hevc'
+        ao.metadata_check(before,after,'hevc')
+        self.assertEqual([(a['index'],b['index']) for a,b in ao.paired_streams(before,after)],[(0,0),(2,1),(1,2)])
+        after['streams'][1]['tags']['language']='fra'
+        with self.assertRaisesRegex(ValueError,'language'):ao.metadata_check(before,after,'hevc')
+        with tempfile.TemporaryDirectory() as folder:
+            work=ao.Workflow(SimpleNamespace(ffmpeg='ffmpeg'),Path(folder),lambda:None)
+            def extract(command,*_):Path(command[-1]).write_bytes(b'image')
+            with patch.object(work,'execute',side_effect=extract):
+                command=work.preserve_covers(['ffmpeg','-map','0','-disposition:2','default',
+                    '-map_metadata:s:2','1:s:2','out.mkv'],Path('source'),before,'order')
+            self.assertIn('-disposition:1',command)
+            self.assertEqual(command[command.index('-map_metadata:s:1')+1],'1:s:2')
+            self.assertIn('-metadata:s:2',command)
 
     def test_default_quality_policy_and_explicit_override(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -215,7 +262,7 @@ class AutoOptimizeTests(unittest.TestCase):
 
     def test_source_gate(self):
         ao.eligibility(source_data())
-        for key, value in [('pix_fmt', 'rgb24'), ('field_order', 'tt'),
+        for key, value in [('pix_fmt', 'invalid,format'), ('field_order', 'unknown'),
                            ('color_transfer', 'smpte2084'), ('color_range', 'unknown'),
                            ('side_data_list', [{'side_data_type': 'DOVI configuration record'}])]:
             data = source_data()
@@ -305,7 +352,7 @@ class AutoOptimizeTests(unittest.TestCase):
             source = base/'input'/'source.mkv'; source.write_bytes(b'original')
             with patch.object(ao.Workflow, 'probe', return_value=source_data()), patch.object(ao, 'probe_encoder') as gpu:
                 with self.assertRaises(ValueError):
-                    ao.main([str(source), '--output-dir', str(base/'output'), '--execute'])
+                    ao.main([str(source), '--output-dir', str(base/'output'), '--execute','--savings-mode','fixed'])
             gpu.assert_not_called()
 
     def test_low_space_aborts_before_gpu_probe(self):
@@ -318,7 +365,7 @@ class AutoOptimizeTests(unittest.TestCase):
                  patch.object(ao, 'probe_encoder') as gpu:
                 with self.assertRaises(RuntimeError):
                     ao.main([str(source), '--output-dir', str(base/'output'), '--execute',
-                             '--playback-verified-codecs', 'hevc'])
+                             '--playback-verified-codecs', 'hevc','--savings-mode','fixed'])
             gpu.assert_not_called()
             self.assertEqual(source.read_bytes(), b'original')
 

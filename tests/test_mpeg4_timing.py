@@ -2,7 +2,8 @@ import unittest
 import tempfile
 from pathlib import Path
 from fractions import Fraction
-from unittest.mock import patch
+from unittest.mock import patch, Mock
+from types import SimpleNamespace
 from mpeg4_timing import Bits, vol_clock, picture_clocks, missing_tail_timestamp, recover_tail_evidence
 
 
@@ -24,6 +25,39 @@ def vop(kind, tick, coded=True, seconds=0):
 
 
 class MPEG4TimingTests(unittest.TestCase):
+    def test_recovery_admission_uses_codec_not_extension(self):
+        from auto_optimize import Workflow
+        with tempfile.TemporaryDirectory() as folder:
+            for suffix in ('.avi','.mp4','.mkv','.mov'):
+                with self.subTest(suffix=suffix):
+                    source=Path(folder)/('original'+suffix)
+                    workflow=Workflow.__new__(Workflow)
+                    workflow.args=SimpleNamespace(source=source,ffmpeg='ffmpeg')
+                    workflow.directory=Path(folder)
+                    workflow.probe=Mock(return_value={'streams':[{'codec_type':'video','codec_name':'mpeg4'}],
+                                                    'format':{'duration':'2'}})
+                    workflow.execute=Mock(side_effect=RuntimeError('extraction reached'))
+                    with self.assertRaisesRegex(RuntimeError,'extraction reached'):
+                        workflow.recover_mpeg4_tail(source,Path(folder)/'frames.txt','source')
+                    command=workflow.execute.call_args.args[0]
+                    self.assertEqual(command[command.index('-bsf:v')+1],'dump_extra')
+                    with self.assertRaisesRegex(ValueError,'source clock recovery'):
+                        workflow.recover_mpeg4_tail(Path(folder)/'output.mkv',None,'output')
+                    workflow.probe.return_value['streams'][0]['codec_name']='h264'
+                    with self.assertRaisesRegex(ValueError,'not MPEG-4'):
+                        workflow.recover_mpeg4_tail(source,None,'source')
+
+    def test_group_clock_and_b_reordering(self):
+        group=b'\x00\x00\x01\xb3'+pack('00000'+'000000'+'1'+'000010'+'00')
+        raw=b'\x00\x00\x01\x20'+vol()+group+vop(0,0)+vop(1,80)+vop(2,40)
+        self.assertEqual([r['time'] for r in picture_clocks(raw)],
+                         [Fraction(2),Fraction(51,25),Fraction(52,25)])
+
+    def test_invalid_group_clock(self):
+        for minute in (60,63):
+            raw=b'\x00\x00\x01\xb3'+pack('00000'+format(minute,'06b')+'1'+'000000'+'00')
+            with self.assertRaisesRegex(ValueError,'Invalid MPEG-4 group'):picture_clocks(raw)
+
     def test_vol(self):
         self.assertEqual(vol_clock(vol()), (1000,10))
 

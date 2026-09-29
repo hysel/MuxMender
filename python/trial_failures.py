@@ -3,6 +3,13 @@ import re
 
 
 def structural_failure_code(message):
+    # Reproduced on AV1/MP4 references across CQ/preset settings and with
+    # reordering disabled. Do not spend the quality-search budget repeating
+    # the same broken reference clock. Other encoders remain eligible and
+    # the result remains an incomplete evaluation, never a size rejection.
+    duplicate=re.search(r'\[vost#[^\]\r\n]*/av1_nvenc[^\]\r\n]*\] Non-monotonic DTS; previous: (-?\d+), current: (-?\d+); Error submitting a packet to the muxer',message)
+    if duplicate and duplicate[1]==duplicate[2]:
+        return 'av1_duplicate_decode_timestamp'
     # These are layout/signaling failures that changing CQ/preset cannot repair.
     # Do not classify quality scores, frame loss, decode errors, resource errors,
     # arbitrary subprocess errors or timeouts: they may have another viable path.

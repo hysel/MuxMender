@@ -5,14 +5,25 @@ import subprocess
 
 
 class AutomaticHDRSkip(ValueError):
-    reason_code = 'dolby_vision_temporarily_disabled'
+    reason_code = 'dolby_vision_requires_preservation_route'
+
+
+def recover_empty_dv_declaration(video,evidence):
+    """Remove only a contradicted container declaration from in-memory routing."""
+    from hevc_inventory import absent_dv
+    if video.get('codec_name')!='hevc' or not absent_dv(evidence):return False
+    sides=video.get('side_data_list',[])
+    declared=[s for s in sides if s.get('side_data_type')=='DOVI configuration record']
+    if not declared:return False
+    video['side_data_list']=[s for s in sides if s.get('side_data_type')!='DOVI configuration record']
+    return True
 
 
 def enforce_automatic_policy(video, inspection=None):
-    """Temporary shared guardrail; never strip DV to process an HDR10 base layer."""
+    """Prevent the ordinary HDR path from silently dropping Dolby Vision."""
     observed=classify(video,[]) if inspection is None else inspection
     if observed.get('kind')=='Dolby Vision' or classify(video,[])['kind']=='Dolby Vision':
-        raise AutomaticHDRSkip('Dolby Vision conversion is temporarily disabled, including combined Dolby Vision + HDR10+. Original retained; no encoding or replacement performed.')
+        raise AutomaticHDRSkip('Dolby Vision requires its metadata-preserving route, not ordinary HDR encoding. Original retained.')
 
 
 def classify(video, frames):
@@ -40,11 +51,22 @@ def inspect(ffprobe, source, video, duration):
         raise ValueError('HDR inspection requires a finite positive duration')
     frames = []
     for fraction in (.15, .5, .85):
-        result = subprocess.run([str(ffprobe), '-v', 'error', '-select_streams', 'v:0',
+        result = subprocess.run([str(ffprobe), '-v', 'error', '-select_streams', 'V:0',
             '-read_intervals', f'{duration*fraction:.3f}%+#1', '-show_frames',
             '-of', 'json', str(source)], capture_output=True, text=True, timeout=30, check=True)
         window = json.loads(result.stdout).get('frames', [])
         if not window:
             raise ValueError('HDR inspection returned no decoded frames')
         frames.extend(window)
-    return classify(video, frames)
+    report=classify(video, frames)
+    # Recover absent container labels only from consistent decoded declarations.
+    # These are routing hints; full-frame metadata validation is still required.
+    from legacy_color import FIELDS, UNKNOWN
+    recovered={}
+    for key in FIELDS:
+        values={frame[key] for frame in frames if frame.get(key) not in UNKNOWN}
+        if video.get(key) not in UNKNOWN:values.add(video[key])
+        if len(values)>1:raise ValueError('Conflicting HDR color metadata: '+key)
+        if video.get(key) in UNKNOWN and values:recovered[key]=next(iter(values))
+    report['recovered_color']=recovered
+    return report

@@ -64,14 +64,15 @@ def _cache_path(ffmpeg, encoder, width, height, pixel_format, adapters, cache_di
 
 
 def probe_encoder(ffmpeg, encoder, width=720, height=480, ten_bit=False, timeout=30, pixel_format=None,
-                  *, adapters=None, cache_dir=None):
+                  *, adapters=None, cache_dir=None, field_order='progressive'):
     if width <= 0 or height <= 0 or timeout <= 0:
         raise ValueError('Positive dimensions and timeout required')
     pixel_format=pixel_format or ('p010le' if ten_bit else 'nv12')
-    allowed={'nv12','p010le','yuv444p16le'}|{f'yuv{c}p{d}' for c in ('420','422','444') for d in ('','10le','12le')}
-    if pixel_format not in allowed:raise ValueError('Unsupported probe pixel format')
+    from source_format import valid_pixel_format
+    if not valid_pixel_format(pixel_format):raise ValueError('Invalid probe pixel format')
+    interlaced=field_order in ('tt','bb','tb','bt')
     adapters = nvidia_adapters() if adapters is None and encoder.endswith('_nvenc') else (adapters or [])
-    cache = _cache_path(ffmpeg,encoder,width,height,pixel_format,adapters,cache_dir)
+    cache = None if interlaced else _cache_path(ffmpeg,encoder,width,height,pixel_format,adapters,cache_dir)
     if cache:
         try:
             entry=json.loads(cache.read_text(encoding='utf-8'))
@@ -79,9 +80,11 @@ def probe_encoder(ffmpeg, encoder, width=720, height=480, ten_bit=False, timeout
                 return dict(entry['result'],cached=True,checked_at=entry['checked_at'])
         except (OSError,ValueError,KeyError,TypeError):
             pass
+    field_filter=(',setfield='+('tff' if field_order.endswith('t') else 'bff')) if interlaced else ''
     command = [ffmpeg, '-hide_banner', '-nostdin', '-v', 'error', '-f', 'lavfi',
-               '-i', f'nullsrc=size={width}x{height}:rate=30,format={pixel_format}', '-frames:v', '4',
+               '-i', f'nullsrc=size={width}x{height}:rate=30,format={pixel_format}'+field_filter, '-frames:v', '4',
                '-pix_fmt', pixel_format, '-c:v', encoder,
+               *(['-flags:v','+ildct+ilme','-top','1' if field_order.endswith('t') else '0'] if interlaced else []),
                '-f', 'null', '-']
     result = dict(encoder=encoder, width=width, height=height, ten_bit=ten_bit,pixel_format=pixel_format,
                   status='unavailable', command=command, adapters=adapters, cached=False,
