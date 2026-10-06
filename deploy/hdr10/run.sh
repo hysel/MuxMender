@@ -11,7 +11,7 @@ name="muxmender-hdr10-$(date +%Y%m%d-%H%M%S)-$$"
 output="/mnt/FR4G/Apps/muxmender/output/$name"
 test ! -e "$output"
 install -d -o 3005 -g 3005 -m 0770 "$output"
-docker run -d --name "$name" --user 3005:3005 --network none --gpus "${MUXMENDER_GPU_REQUEST:-all}" \
+docker run -d --init --name "$name" --user 3005:3005 --network none --gpus "${MUXMENDER_GPU_REQUEST:-all}" \
   --read-only --cap-drop ALL --security-opt no-new-privileges --cpus 4 --memory 6g \
   --pids-limit 256 --tmpfs /tmp:rw,nosuid,nodev,size=256m \
   --mount "type=bind,src=$source_dir,dst=/source,readonly" \

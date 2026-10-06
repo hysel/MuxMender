@@ -14,6 +14,84 @@ from autonomous_queue import write
 
 
 class ControlTests(unittest.TestCase):
+    def test_output_and_hdr_choices_reach_shared_worker(self):
+        settings=self.controls.settings(dict(mode='test',output_preset='mobile720',hdr_policy='sdr'))
+        command=self.controls.build_command(dict(source=str(self.source),settings=settings),self.output)
+        self.assertEqual(command[command.index('--output-preset')+1],'mobile720')
+        self.assertEqual(command[command.index('--hdr-policy')+1],'sdr')
+        self.assertEqual(self.controls.settings({})['output_preset'],'original')
+        self.assertEqual(self.controls.settings({})['hdr_policy'],'preserve')
+        for data in (dict(output_preset='unknown'),dict(hdr_policy='discard')):
+            with self.assertRaises(ValueError):self.controls.settings(data)
+
+    def test_slow_history_refresh_does_not_block_poll_or_queue_actions(self):
+        entered=threading.Event();release=threading.Event();finished=threading.Event()
+        original=self.controls.lifetime_savings
+        def slow(jobs=None):
+            entered.set();release.wait(3)
+            try:return original(jobs)
+            finally:finished.set()
+        with patch.object(self.controls,'lifetime_savings',side_effect=slow) as history:
+            try:
+                first=self.controls.poll()
+                self.assertTrue(first['snapshot_stale'])
+                self.assertTrue(entered.wait(1))
+                for _ in range(10):self.assertTrue(self.controls.poll()['snapshot_refreshing'])
+                self.assertEqual(history.call_count,1)
+                # Filesystem reads run outside the queue mutex.
+                acquired=self.controls.mutex.acquire(timeout=.5)
+                self.assertTrue(acquired)
+                if acquired:self.controls.mutex.release()
+                self.controls.action(dict(action='pause'))
+                self.assertTrue(self.controls.state['paused'])
+            finally:
+                release.set();self.assertTrue(finished.wait(1))
+
+    def test_refresh_failure_retains_old_evidence_and_exposes_staleness(self):
+        self.controls.poll_cache=dict(self.controls.poll_cache,jobs=[dict(id='historical')])
+        self.controls.poll_updated=1
+        with patch.object(self.controls,'snapshot',side_effect=OSError('storage delay')):
+            self.controls._refresh_poll()
+        value=self.controls.poll()
+        self.assertTrue(value['snapshot_error'])
+        self.assertTrue(value['snapshot_stale'])
+        self.assertEqual(value['jobs'],[dict(id='historical')])
+
+    def test_resume_empty_or_terminal_only_queue_does_not_change_pause(self):
+        self.controls.action(dict(action='pause'))
+        self.controls.state['failures']=3
+        with self.assertRaisesRegex(ValueError,'No waiting jobs'):
+            self.controls.action(dict(action='resume'))
+        self.assertTrue(self.controls.state['paused'])
+        self.assertEqual(self.controls.state['failures'],3)
+        draft=self.draft(mode='test');self.controls.submit(draft['preview_id'])
+        for state in ('cancelled','failed','replaced','running'):
+            self.controls.state['jobs'][0]['state']=state
+            with self.assertRaisesRegex(ValueError,'No waiting jobs'):
+                self.controls.action(dict(action='resume'))
+            self.assertTrue(self.controls.state['paused'])
+
+    def test_resume_requires_waiting_work_and_paused_queue(self):
+        draft=self.draft(mode='test');self.controls.submit(draft['preview_id'])
+        with self.assertRaisesRegex(ValueError,'already running'):
+            self.controls.action(dict(action='resume'))
+        self.controls.action(dict(action='pause'))
+        self.controls.action(dict(action='resume'))
+        self.assertFalse(self.controls.state['paused'])
+
+    def test_processing_budget_survives_restart_and_is_frozen_at_submit(self):
+        draft=self.draft(mode='test',timeout_minutes=360)
+        self.controls.submit(draft['preview_id'])
+        self.assertEqual(self.controls.state['jobs'][0]['settings']['timeout_minutes'],360)
+        fresh=cs.Controls(self.media,self.output,lambda _:True,['hevc','av1'])
+        self.assertEqual(fresh.state['jobs'][0]['settings']['timeout_minutes'],360)
+        command=fresh.build_command(fresh.state['jobs'][0],Path('output'))
+        self.assertEqual(command[command.index('--timeout')+1],'21600')
+        self.controls.preview(dict(path='test.mkv',mode='test',timeout_minutes=60))
+        self.assertEqual(self.controls.state['jobs'][0]['settings']['timeout_minutes'],360)
+        for value in (0,1441,True,2.5,'360'):
+            with self.assertRaises(ValueError):self.controls.settings(dict(timeout_minutes=value))
+
     def test_gpu_sharing_requires_explicit_monitor_and_preserves_queue(self):
         self.controls.gpu_yield.telemetry=None
         with self.assertRaisesRegex(ValueError,'monitor'):
@@ -399,6 +477,9 @@ class ControlTests(unittest.TestCase):
             connection.request(method,path,body=json.dumps(body) if body is not None else None,headers=defaults)
             response=connection.getresponse();code=response.status;response.read();connection.close();return code
         try:
+            self.assertEqual(request('GET','/api'),200)
+            self.assertEqual(request('GET','/api',Authorization=''),401)
+            self.assertEqual(request('GET','/api',Host='evil:8767'),403)
             self.assertEqual(request('GET','/api/media'),200)
             self.assertEqual(request('GET','/api/controls',Authorization=''),401)
             self.assertEqual(request('GET','/api/media?path=..'),400)

@@ -1,0 +1,14 @@
+# Isolated qualification only. Never replaces or starts the production app.
+ARG BASE_IMAGE=muxmender-reader-integration-base:local
+FROM ${BASE_IMAGE}
+USER root
+COPY python/ /opt/muxmender/
+COPY qualified-reader/ /opt/muxmender-readers/
+COPY tools/benchmark_shared_gpu_reader.py /opt/muxmender-tools/benchmark_shared_gpu_reader.py
+RUN chmod 0555 /opt/muxmender-readers/ffprobe-cuda && chmod 0444 /opt/muxmender-readers/qualification.json
+ENV PYTHONPATH=/opt/muxmender:/opt/muxmender-runtime PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+USER 3005:3005
+# This isolated test shares a PID namespace for read-only observation. Tini is
+# not its PID 1, so explicitly register it as the subreaper for owned descendants.
+ENTRYPOINT ["/usr/bin/tini", "-s", "--", "python3", "-B", "/opt/muxmender-tools/benchmark_shared_gpu_reader.py"]
+CMD ["--binary", "/opt/muxmender-readers/ffprobe-cuda", "--receipt", "/opt/muxmender-readers/qualification.json", "--installed-profile", "--full-validation", "--output", "/work/generated-control"]

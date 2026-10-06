@@ -208,6 +208,8 @@ globalThis.fetch=async(url,options)=>({ok:true,json:async()=>{
  if(body.action==='preview')return {preview_id:'preview',settings:body.settings,files:[{path:'video.mkv',signature:[100,2]}],note:'Original retained'};
  if(body.action==='submit'){assert(body.preview_id==='preview','Submit exact preview');submitted++;return {queued:1}};
 }});
+// The script's first poll uses the deliberately unresolved startup mock.
+controlPollBusy=false;
 await refreshControls();await browseMedia();
 assert(controlElement('preview-job').disabled,'No operation before folder selection');
 assert(!collect(controlElement('media-browser')).some(x=>x.textContent.includes('<img onerror=evil>')),'Picker shows folders only');
@@ -219,6 +221,11 @@ assert(controlElement('source-path').value==='.' ,'Selected folder becomes scope
 controlElement('video-choice').value='video.mkv';controlElement('video-choice').change();
 assert(controlElement('source-path').value==='video.mkv','Individual video belongs to selected folder');
 for(const [id,value] of [['source-path','video.mkv'],['operation','test'],['codec-choice','auto'],['hardware-choice','auto'],['quality-choice','auto'],['minimum-savings','10']])controlElement(id).value=value;
+controlElement('timeout-minutes').value='120';
+controlElement('output-preset').value='original';
+controlElement('output-preset').selectedOptions=[{textContent:'Original resolution'}];
+controlElement('hdr-policy').value='preserve';
+controlElement('hdr-policy').selectedOptions=[{textContent:'Keep HDR'}];
 controlElement('source-depth').value='recursive';
 await controlElement('preview-job').click();
 assert(!controlElement('submit-job').disabled,'Preview enables confirmation');

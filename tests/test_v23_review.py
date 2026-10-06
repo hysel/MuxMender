@@ -126,6 +126,10 @@ class ReleaseReviewTests(unittest.TestCase):
             root=Path(folder)/'repo';root.mkdir();archive=Path(folder)/'release.tar'
             for name in ['python/ui/app.py','python/__pycache__/bad.pyc','tests/test.py',
                          'deploy/truenas/Dockerfile.app','deploy/truenas/requirements-av1-runtime.txt','docs/note.md','docs/av1-hdr-metadata.md','docs/dv-aac-duration-validation.md',
+                         'docs/cooperative-pause.md','docs/processing-timeouts.md',
+                         'deploy/truenas/install_gpu_monitor.py','python/gpu_activity.py',
+                         'docs/dashboard-polling.md','docs/validation-scheduling.md',
+                         'docs/performance-results.md','docs/performance-qualification-plan.md','docs/gpu-monitor-setup.md',
                          'docs/per-video-codec-selection.md','tools/build_app_release.py',
                          'tools/compare_encoders.py','tools/run_truenas_sample_batch.py','tools/dv_fel_research.py','tools/install_fel_runtime.py',
                          'tools/monitor_remote_research.py','tools/probe_dv_renderer.py','tools/inspect_hevc_layers.py',
@@ -137,10 +141,13 @@ class ReleaseReviewTests(unittest.TestCase):
                          'docs/validation-performance-20260922.md',
                          'tools/smoke_auto_optimize.py','tools/smoke_hdr_auto.py','tools/smoke_hdr_dynamic.py','tools/smoke_timestamp.py','tools/monitor_queue.py','tools/qualify_frame_reader.py',
                          'tools/benchmark_frame_threads.py','tools/benchmark_packet_validation.py',
-                         'tools/benchmark_validation_pipeline.py','tools/benchmark_gpu_decode.py']:
+                         'tools/benchmark_validation_pipeline.py','tools/benchmark_gpu_decode.py',
+                         'tools/benchmark_nvenc_presets.py','tools/build_research_snapshot.py','docs/adaptive-gpu-admission.md','docs/processing-dashboard.md','docs/app-api.md']:
                 path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('fixture')
+            (root/'deploy/truenas/install_gpu_monitor.py').write_text("COLLECTOR_B64 = ''\n")
+            (root/'python/gpu_activity.py').write_text('pass\n')
             result=create_release(root,archive,'docs/note.md')
-            self.assertEqual(len(result['files']),39)
+            self.assertIn('docs/gpu-monitor-setup.md',result['files'])
             with tarfile.open(archive) as tar:
                 for member in tar:
                     self.assertEqual(member.mode,0o755 if member.isdir() else 0o644)

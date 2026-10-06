@@ -28,6 +28,11 @@ resolution by default and checks audio, subtitles, chapters and HDR information
 where supported. Not every video will get smaller, and lossy encoding cannot
 promise an identical picture.
 
+Development also includes optional [resolution and bitrate presets](docs/output-presets.md).
+Lower-resolution copies lose detail intentionally; they are checked against a
+reference resized to that resolution. GPU and HDR transformations still need
+qualification before release. Original resolution remains the default.
+
 ## You decide what happens to the original
 
 **Safe-copy mode keeps it. Replacement mode permanently removes it only after
@@ -45,6 +50,8 @@ outputs are not swept away.
 ## Start with a small test
 
 The [getting-started guide](docs/GETTING-STARTED.md) walks through the app.
+The [built-in API](docs/app-api.md) uses the same address as the dashboard if
+you want to automate jobs or read progress from a script.
 You can also inspect one file from a terminal without converting it:
 
 ```powershell

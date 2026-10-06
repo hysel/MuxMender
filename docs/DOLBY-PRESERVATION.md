@@ -43,7 +43,7 @@ larger coordinate changes fail. This is not a claim of lossless visual quality.
 ## 2026-09-05 results
 
 The 30-second scene near five minutes passed the automated checks, user visual
-review, and user confirmation of Dolby Vision picture mode on a Sony Android
+review, and user confirmation of Dolby Vision picture mode on a Dolby Vision-capable Android
 TV. The actual sample is 719 frames / 29.988 seconds. See
 `reports/dv81-20260905-092939-94e00a88/publication.json` for like-for-like
 video-payload savings of 26.5056%. This supersedes the padded-reference size
@@ -51,7 +51,7 @@ calculation in that run's original validation report. Current code counts
 only the selected frame range. This result is not a whole-file estimate.
 
 The Plex library is configured as Other Videos. Browser playback on the PC
-alone did not establish Dolby Vision display output; the Sony TV test did.
+alone did not establish Dolby Vision display output; the Dolby Vision-capable TV test did.
 Further scenes and whole-file preservation remain to be tested.
 
 Two additional 719-frame sections were tested on 2026-09-05. Both passed
@@ -68,7 +68,7 @@ An explicit QP21/23 test of the same 22-minute scene passed automated checks
 and reduced video payload by 46.2625% relative to its source frame range.
 The final sample including audio/subtitles is 43,625,933 bytes. Plex filename:
 `DV-Test-22min-Tuned-QP21-23-dv81-20260905-103347-6eaa197d.mkv`.
-Visual and Sony Dolby Vision playback review of this new quality setting is
+Visual and TV Dolby Vision playback review of this new quality setting is
 pending. Previous approved samples are retained; default QP values are unchanged.
 Report: `reports/dv-tuning-20260905-103347-d9be197a/dv81-20260905-103347-6eaa197d/validation.json`.
 

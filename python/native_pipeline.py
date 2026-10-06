@@ -51,6 +51,17 @@ def frame_progress(line, expected_frames):
         return None
 
 
+def discard_audio_clock_options(metadata):
+    """Sample clock for discard-only decoding, never for delivered media.
+
+    Null muxing must not confuse copied packet timestamp quirks with corrupt
+    audio samples. Packet/timeline preservation is checked independently.
+    This does not conceal decoder diagnostics or alter decoded sample counts.
+    """
+    return ['-af','asetpts=N/SR/TB'] if any(
+        s.get('codec_type')=='audio' for s in metadata.get('streams',[])) else []
+
+
 def decode_maps_after_frame_audit(streams, verified_frames=None):
     """Finish audio after a current, complete video audit; otherwise decode both.
 
@@ -81,7 +92,9 @@ def strict_decode_line(line):
 def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None, observe=None, expected_frames=None, cwd=None, strict_decode=False, env=None, pass_fds=()):
     """Stream logs/progress to caller; cap both stalls and total elapsed time."""
     from muxmender import stop_process_tree
-    from job_tracking import stage_progress
+    from runtime_support import bounded_ffmpeg_threads
+    command=bounded_ffmpeg_threads(command)
+    from job_tracking import stage_progress,measured_operation
     from runtime_support import guard_ordered_mux_memory
     from cooperative_pause import configured_lease, OwnedStagePause, launch_owned
     lease = configured_lease(command, env)
@@ -105,6 +118,7 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None,
     last_frame = 0
     activity = EncoderActivity()
     log = []
+    pause_measurement = None
     display = TerminalProgress(label=f"Stage ({offset:g}-{offset + span:g}% overall)" if span else 'Current stage', machine=False)
     try:
         eof = False
@@ -124,6 +138,9 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None,
                 advanced += delta
                 pause_accounted = spent
                 if paused:
+                    if pause_measurement is None:
+                        pause_measurement=measured_operation('gpu_pause')
+                        pause_measurement.__enter__()
                     if time.monotonic()-last_pause_report >= 1:
                         stage_progress(last if last >= 0 else None, None,
                                        detail=f'Paused: {pause.reason}; {spent:.0f}s paused. GPU memory remains allocated.')
@@ -132,6 +149,9 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None,
                     time.sleep(.2)
                     continue
                 if pause_reported:
+                    if pause_measurement is not None:
+                        pause_measurement.__exit__(None,None,None)
+                        pause_measurement=None
                     display.samples.clear()
                     display.eta_seconds = None
                     display.started += spent-display_pause_accounted
@@ -188,6 +208,7 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None,
             if span:print(f"MUXMENDER_PROGRESS={offset + span:.1f}", flush=True)
         return "".join(log)
     finally:
+        if pause_measurement is not None:pause_measurement.__exit__(None,None,None)
         if pause:
             try:
                 pause.resume()  # SIGTERM must not wait behind our own SIGSTOP.

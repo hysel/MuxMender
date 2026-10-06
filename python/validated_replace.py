@@ -41,6 +41,10 @@ def destination_for(original, output_suffix='.mkv'):
     return destination
 
 
+from validation_resources import publication_limited
+
+
+@publication_limited
 def replace_validated(source, media, writable, result_dir, minimum_savings, job_id, stopped=lambda:False, *, savings_mode='fixed'):
     workflow_stage('publish')
     if not math.isfinite(minimum_savings) or not 0<=minimum_savings<100:

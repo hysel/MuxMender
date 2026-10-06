@@ -7,6 +7,19 @@ import time
 from job_tracking import progress
 
 
+class ProcessingTimeout(subprocess.TimeoutExpired):
+    """Preserve the subprocess timeout contract while providing a useful reason."""
+    def __init__(self, command, timeout, label, detail):
+        super().__init__(command, timeout)
+        self.label=label
+        self.detail=detail
+
+    def __str__(self):
+        return (f'{self.label}: reached the configured {self.timeout/60:g}-minute processing limit. '
+                f'{self.detail}. Increase Processing time limit per stage when submitting a retry; '
+                'the original was not approved for replacement.')
+
+
 def digest(path, guard=lambda:None):
     total=path.stat().st_size;done=0;last=0;started=time.monotonic()
     label='Verifying file checksum: '+path.name
@@ -55,24 +68,51 @@ from validation_resources import validation_limited
 
 
 @validation_limited
-def run_probe(command,path,label,timeout,guard,duration=None,start=0):
+def run_probe(command,path,label,timeout,guard,duration=None,start=0,env=None):
+    from cooperative_pause import configured_lease, OwnedStagePause, launch_owned
+    from job_tracking import measured_operation
+    lease=configured_lease(command,env)
     progress(label,detail='Starting validation reader')
     started=time.monotonic()
     with path.open('x',encoding='utf-8') as output, path.with_suffix(path.suffix+'.stderr').open('x') as errors:
-        child=subprocess.Popen(command,stdout=output,stderr=errors,text=True)
+        launch=launch_owned if lease else subprocess.Popen
+        options={} if env is None else dict(env=env)
+        child=launch(command,stdout=output,stderr=errors,text=True,**options)
+        pause=OwnedStagePause(child,lease) if lease else None
+        paused_seconds=0
+        pause_measurement=None
         try:
             while True:
                 guard()
+                if pause:
+                    paused=pause.update()
+                    spent=pause.elapsed()
+                    started+=spent-paused_seconds
+                    paused_seconds=spent
+                    if paused:
+                        if pause_measurement is None:
+                            pause_measurement=measured_operation('gpu_pause')
+                            pause_measurement.__enter__()
+                        progress(label,stage_percent=None,stage_eta=None,
+                                 detail=f'Paused: {pause.reason}. GPU memory remains allocated.')
+                        time.sleep(.2)
+                        continue
+                    if pause_measurement is not None:
+                        pause_measurement.__exit__(None,None,None)
+                        pause_measurement=None
                 percent,detail=probe_status(path,duration,start)
                 elapsed=time.monotonic()-started
                 eta=elapsed*(100-percent)/percent if percent is not None and 0<percent<100 and elapsed>=5 else None
                 progress(label,stage_percent=percent,stage_eta=eta,detail=detail)
                 remaining=timeout-(time.monotonic()-started)
-                if remaining<=0:raise subprocess.TimeoutExpired(command,timeout)
+                if remaining<=0:
+                    raise ProcessingTimeout(command,timeout,label,detail)
                 try:
                     code=child.wait(timeout=min(2,remaining));break
                 except subprocess.TimeoutExpired:pass
             if code:raise subprocess.CalledProcessError(code,command)
         except BaseException:
             child.kill();child.wait();raise
+        finally:
+            if pause_measurement is not None:pause_measurement.__exit__(None,None,None)
     progress(label,stage_percent=100,stage_eta=0,detail='Evidence collection complete; validation continues')

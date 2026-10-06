@@ -15,6 +15,9 @@ class BatchDashboardTests(unittest.TestCase):
             request=dict(batch=batch['id'],episode=row['review_id'],client='Chrome',status='Passed',note='Looks good')
             save_review([root],request)
             self.assertEqual(batches([root])[0]['episodes'][0]['reviews']['Chrome']['status'],'Passed')
+            save_review([root],dict(request,client='Dolby Vision-capable TV'))
+            self.assertEqual(batches([root])[0]['episodes'][0]['reviews']['Dolby Vision-capable TV']['status'],'Passed')
+            self.assertIn('Dolby Vision-capable TV',HTML)
             with self.assertRaises(ValueError):save_review([root],dict(request,batch='../elsewhere'))
             with self.assertRaises(ValueError):save_review([root],dict(request,status='Invented'))
     def test_uses_original_styles(self):

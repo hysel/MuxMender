@@ -47,10 +47,44 @@ class PacketValidationTests(unittest.TestCase):
     def test_one_probe_for_all_tracks_with_duration_progress(self):
         def probe(command,path,label,timeout,guard,duration,start):
             self.assertNotIn('-select_streams',command);self.assertEqual(duration,60)
-            path.write_text(row(1)+row(2))
+            path.write_text(row(1)+row(2)+row(3))
         with patch('packet_validation.run_probe',side_effect=probe) as call:
-            paths=collect_packets('ffprobe',Path('source'),self.root,'all',[1,2],60,lambda:None,60)
-        self.assertEqual(call.call_count,1);self.assertEqual(set(paths),{1,2})
+            paths=collect_packets('ffprobe',Path('source'),self.root,'all',[1,2,3],60,lambda:None,60)
+        self.assertEqual(call.call_count,1);self.assertEqual(set(paths),{1,2,3})
+
+    def test_small_track_set_keeps_complete_fields_and_progress(self):
+        def probe(command,path,label,timeout,guard,duration,start):
+            index=int(command[command.index('-select_streams')+1])
+            from performance import category
+            self.assertEqual(category(label),'track_validation')
+            self.assertEqual((timeout,duration,start),(60,120,2))
+            self.assertIn('packet=stream_index,pts_time,dts_time,duration_time,data_hash:packet_side_data=',command)
+            self.assertEqual(command[command.index('-show_data_hash')+1],'sha256')
+            path.write_text(row(index)+row(index,'b','2'))
+            path.with_suffix('.txt.stderr').write_text('')
+        with patch('packet_validation.run_probe',side_effect=probe) as call:
+            paths=collect_packets('ffprobe',Path('source'),self.root,'small',[7,2],60,lambda:None,120,2)
+        self.assertEqual(call.call_count,2)
+        for index,path in paths.items():self.assertEqual(path.read_text(),row(index)+row(index,'b','2'))
+
+    def test_selected_reader_errors_identity_and_hash_fail_closed(self):
+        for n,(text,error) in enumerate([(row(1),'demux error'),(row(2),''),('stream_index=1|pts_time=0\n','')]):
+            def probe(command,path,*args):
+                path.write_text(text);path.with_suffix('.txt.stderr').write_text(error)
+            with patch('packet_validation.run_probe',side_effect=probe),self.assertRaises(ValueError):
+                collect_packets('ffprobe',Path('source'),self.root,'bad-selected'+str(n),[1],60,lambda:None)
+
+    def test_selected_empty_subtitle_remains_supported(self):
+        def probe(command,path,*args):
+            path.write_text('');path.with_suffix('.txt.stderr').write_text('')
+        with patch('packet_validation.run_probe',side_effect=probe):
+            paths=collect_packets('ffprobe',Path('source'),self.root,'empty',[2],60,lambda:None)
+        self.assertEqual(paths[2].read_text(),'')
+
+    def test_selected_cancel_never_returns_partial_success(self):
+        with patch('packet_validation.run_probe',side_effect=InterruptedError('cancelled')):
+            with self.assertRaises(InterruptedError):
+                collect_packets('ffprobe',Path('source'),self.root,'cancel',[1,2],60,lambda:None)
 
     def test_video_only_requires_no_packet_probe(self):
         with patch('packet_validation.run_probe') as call:

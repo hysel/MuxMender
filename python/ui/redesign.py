@@ -20,18 +20,22 @@ main{max-width:1100px;padding-top:24px}.page-heading{display:flex;justify-conten
 
 SCRIPT = r'''<script>
 (function(){
- const pages={overview:['activity'], 'add-videos':['workflow'], results:['results','reports']};
+ const pages={overview:['queue-overview','activity'], 'add-videos':['workflow'], results:['results','reports']};
  const aliases={activity:'overview',workflow:'add-videos',reports:'results'};
  const names={overview:'Overview','add-videos':'Add videos',results:'Results'};
+ let currentView='overview';
  function go(value,focus=false){
-  const name=aliases[value]||value,selected=pages[name]?name:'overview';
+  const name=aliases[value]||value,selected=pages[name]?name:value==='main'?currentView:'overview';
+  currentView=selected;
   for(const [page,ids] of Object.entries(pages))for(const id of ids){const el=document.getElementById(id);if(el){el.dataset.workspaceView=page;el.classList.toggle('is-active',page===selected);el.hidden=page!==selected}}
   document.querySelectorAll('[data-workspace-link]').forEach(link=>{if(link.dataset.workspaceLink===selected)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current')});
   const title=document.getElementById('workspace-title');title.textContent=names[selected];
+  const description=document.getElementById('workspace-description');
+  if(description)description.textContent={overview:'Current jobs, server load and space recovered.','add-videos':'Choose your videos and what to do with them.',results:'See what changed, what stayed, and why.'}[selected];
   if(selected==='add-videos')document.getElementById('workflow').open=true;
   if(value==='reports')document.getElementById('reports').open=true;
   document.body.classList.add('workspace-enhanced');
-  if(focus){title.focus({preventScroll:true});title.scrollIntoView({block:'start',behavior:'instant'})}
+  if(focus){const target=value==='main'?document.getElementById('main'):title;target.focus({preventScroll:true});target.scrollIntoView({block:'start',behavior:'instant'})}
  }
  globalThis.showWorkspaceView=function(name){if(location.hash==='#'+name)go(name,true);else location.hash=name};
  document.querySelectorAll('[data-workspace-link]').forEach(link=>link.addEventListener('click',event=>{event.preventDefault();showWorkspaceView(link.dataset.workspaceLink)}));
@@ -65,4 +69,5 @@ def redesign(html):
     html=html[:start]+html[end:]
     end_results=html.index('</section>',html.index('<section class="panel" id="results"'))+len('</section>')
     html=html[:end_results]+report+html[end_results:]
-    return html.replace('</head>',STYLE+'</head>').replace('</body>',SCRIPT+'</body>')
+    from ui.human_workspace import refine
+    return refine(html.replace('</head>',STYLE+'</head>').replace('</body>',SCRIPT+'</body>'))

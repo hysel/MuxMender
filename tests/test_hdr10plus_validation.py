@@ -13,6 +13,21 @@ def frame():
 
 
 class HDR10PlusValidationTests(unittest.TestCase):
+    def test_static_fraction_reuse_is_bounded_and_never_caches_frame_approval(self):
+        from hdr10plus_validation import mastering_fraction,canonical_hdr_metadata
+        mastering_fraction.cache_clear()
+        a=frame();a['side_data_list']=[{'side_data_type':'Mastering display metadata','max_luminance':'10000000/10000'}]
+        validate_frames([a],[copy.deepcopy(a)],mode='hdr10')
+        b=copy.deepcopy(a);b['side_data_list'][0]['max_luminance']='999/1'
+        with self.assertRaisesRegex(ValueError,'HDR metadata changed'):
+            validate_frames([a],[b],mode='hdr10')
+        b['side_data_list'][0]['max_luminance']='invalid'
+        with self.assertRaisesRegex(ValueError,'Invalid mastering-display fraction'):
+            canonical_hdr_metadata(b['side_data_list'])
+        for number in range(600):mastering_fraction(str(number))
+        self.assertLessEqual(mastering_fraction.cache_info().currsize,256)
+        mastering_fraction.cache_clear()
+
     def test_mismatch_retains_field_evidence(self):
         a=frame();b=copy.deepcopy(a)
         b['side_data_list'][0]['bezier_curve_anchors']=['999/1023']

@@ -9,7 +9,7 @@ import math
 from fractions import Fraction
 
 # Bump when the measured search/evaluation policy changes, not for every UI release.
-EVALUATION_POLICY = 'source-driven-broader-sampling-9'
+EVALUATION_POLICY = 'source-driven-broader-sampling-10'
 
 
 def impossible_size_bound(references, samples, minimum_savings_percent):
@@ -133,7 +133,10 @@ def select_candidate(report, minimum_savings_percent=25.0):
                 reasons.append('invalid_output_size')
         row = dict(id=trial_id, codec=trial.get('codec'), rejected_reasons=sorted(set(reasons)))
         row['assessment']='inconclusive'
-        if (not structural_reasons and valid_sizes and not any(s.get('error') for s in samples)
+        partial_rejection=(trial.get('quality_early_screen') is True and
+            structural_reasons==['unmatched_reference_samples'] and
+            len(set(sample_ids))==len(sample_ids) and set(sample_ids).issubset(ids))
+        if ((not structural_reasons or partial_rejection) and valid_sizes and not any(s.get('error') for s in samples)
                 and any(s.get('quality_pass') is False and s.get('quality',{}).get('passed') is False
                         and s.get('preservation_pass') is True and s.get('decode_pass') is True for s in samples)):
             row['assessment']='quality_rejected'
@@ -142,8 +145,8 @@ def select_candidate(report, minimum_savings_percent=25.0):
             row['quality_failed_reference_ids']=[s.get('reference_id') for s in samples
                 if s.get('quality_pass') is False and s.get('quality',{}).get('passed') is False
                 and s.get('preservation_pass') is True and s.get('decode_pass') is True]
-            row['unevaluated_reference_ids']=[s.get('reference_id') for s in samples
-                if not s.get('quality')]
+            evaluated={s.get('reference_id') for s in samples if s.get('quality')}
+            row['unevaluated_reference_ids']=[i for i in ids if i not in evaluated]
             row['evidence_reasons']=row['rejected_reasons']
             row['rejected_reasons']=['measured_quality_below_threshold']
             row['detail']='A measured scene failed quality; untested scenes are not decoder or metadata failures.'

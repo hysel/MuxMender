@@ -2,9 +2,11 @@
 ARG BASE_IMAGE=muxmender-research-base:local
 FROM ${BASE_IMAGE}
 USER root
+# The selected local base may predate the app's built-in process reaper.
+RUN command -v tini >/dev/null || (apt-get update && apt-get install -y --no-install-recommends tini && apt-get clean)
 COPY python/ /opt/muxmender/
 ENV PYTHONPATH=/opt/muxmender PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,video,utility,graphics
 USER 3005:3005
 EXPOSE 8765
-ENTRYPOINT ["python3", "-B", "-m", "full_research_app"]
+ENTRYPOINT ["/usr/bin/tini", "--", "python3", "-B", "-m", "full_research_app"]

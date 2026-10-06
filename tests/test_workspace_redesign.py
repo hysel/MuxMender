@@ -33,6 +33,7 @@ assert.equal(node('activity').hidden,false);assert.equal(node('workflow').hidden
 showWorkspaceView('add-videos');assert.equal(node('workflow').hidden,false);assert.equal(node('workflow').open,true);assert.equal(node('activity').hidden,true);assert.equal(node('workflow').value,'preserve me');assert.equal(links[1].attrs['aria-current'],'page');
 showWorkspaceView('results');assert.equal(node('results').hidden,false);assert.equal(node('reports').hidden,false);assert.equal(node('reports').open,false);assert.equal(node('workflow').hidden,true);
 location.hash='#reports';assert.equal(node('reports').open,true);
+location.hash='#main';assert.equal(node('results').hidden,false,'Skip link must not change the selected view');
 location.hash='#activity';assert.equal(node('activity').hidden,false);assert.equal(node('results').hidden,true);
 assert.equal(node('lifetime-saved').hidden,false);assert.equal(node('resource-status').hidden,false);
 showWorkspaceView('overview');assert.equal(node('workspace-title').textContent,'Overview');

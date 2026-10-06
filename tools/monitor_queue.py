@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import time
 import os
+import sys
 import urllib.request
 from collections import Counter
 
@@ -26,10 +27,16 @@ def main():
     parser.add_argument('--interval',type=int,default=900)
     parser.add_argument('--keep-alive',action='store_true',help='Continue observing an empty queue')
     parser.add_argument('--max-checks',type=int,default=0,help='Stop after this many checks; zero is unlimited')
+    parser.add_argument('--job-root',type=Path,help='Mirror observer health into the development dashboard')
     args=parser.parse_args()
     if args.interval<60:parser.error('Interval must be at least 60 seconds')
     if args.max_checks<0:parser.error('Maximum checks cannot be negative')
     args.output_dir.mkdir(parents=True,exist_ok=False)
+    tracked=None
+    if args.job_root:
+        sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'python'))
+        from job_tracking import Job
+        tracked=Job(args.job_root,'Read-only production queue observer')
     previous={};first=True;checks=0
     while True:
         started=time.monotonic()
@@ -53,6 +60,13 @@ def main():
         print(json.dumps(event),flush=True)
         checks+=1
         done=(finished and not args.keep_alive) or (args.max_checks and checks>=args.max_checks)
+        if tracked:
+            tracked.save(state='completed' if done else 'stale' if event.get('error') else 'running',
+                phase='Queue observation finished' if done else 'Queue status unavailable' if event.get('error') else 'Observing production queue',
+                detail=json.dumps(dict(counts=event.get('counts'),error=event.get('error'),
+                    last_check=event['checked'],next_check=None if done else time.time()+args.interval,
+                    changes=len(event.get('changes',[])),automatic_code_fixes=False)),
+                progress_kind='observer',stage_percent=None,stage_eta=None)
         (args.output_dir/'monitor.json').write_text(json.dumps(dict(pid=os.getpid(),interval=args.interval,
             checks=checks,max_checks=args.max_checks,state='finished' if done else 'watching',
             last_check=event['checked'],next_check=None if done else time.time()+args.interval,

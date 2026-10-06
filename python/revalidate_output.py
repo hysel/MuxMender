@@ -43,7 +43,7 @@ def run(folder):
         for selector in ('a','s'):
             print('Hashing and comparing complete tracks: '+selector,flush=True)
             result[selector]=w.compare_media_packets(probe,source,output,selector)
-        if w.chapter_summary(probe,source,600)!=w.chapter_summary(probe,output,600):raise ValueError('Chapters changed')
+        result['chapter_preservation']=w.verify_chapters_preserved(probe,source,output,600)
         def attachments(path):
             return w.np.checked_json([probe,'-v','error','-select_streams','t','-show_streams','-show_data_hash','sha256',
                 '-show_entries','stream=codec_name,extradata_hash:stream_tags=filename,mimetype','-of','json',str(path)],timeout=60).get('streams',[])

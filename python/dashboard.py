@@ -142,6 +142,9 @@ def apply_outcome(data,directory,root):
     data['state']='playback-approved' if approved else ('verified' if str(report.get('status','')).startswith('verified') else report.get('status',data.get('state')))
     data['phase']='Playback approved' if approved else report.get('status',data.get('phase'))
     data['error']=report.get('error')
+    if data['state']=='failed' and not data['error']:
+        data['error']=data['execution_error'] or (
+            'Failure details are unavailable in the retained record. No validation pass was recorded; retry to collect fresh diagnostics.')
     if report.get('detail'):data['detail']=report['detail']
     output=report.get('output')
     if output:
@@ -193,6 +196,53 @@ class Catalog:
         self.cached_at = 0
         self.jobs = []
         self.logs = {}
+        self.poll_lock = threading.Lock()
+        self.poll_refreshing = False
+        self.poll_checked = 0
+        self.poll_error = False
+
+    def poll(self):
+        """Never hold an HTTP request open while walking historical artifacts."""
+        with self.poll_lock:
+            if not self.poll_refreshing and time.monotonic()-self.poll_checked >= 3:
+                self.poll_refreshing = True
+                threading.Thread(target=self._refresh_poll,daemon=True).start()
+            return dict(jobs=self.jobs,now=time.time(),catalog_updated=self.cached_at or None,
+                        catalog_refreshing=self.poll_refreshing,catalog_error=self.poll_error)
+
+    def _refresh_poll(self):
+        try:
+            if not self.cached_at or time.time()-self.cached_at >= 30:
+                self.snapshot()
+            else:
+                # Known running jobs need only their small heartbeat record.
+                # Finished history and recursive discovery refresh separately.
+                with self.lock:
+                    rows=[]
+                    for old in self.jobs:
+                        row=old
+                        if old.get('state')=='running':
+                            path=Path(old['directory'])
+                            if not path.is_absolute():path=self.root/path
+                            live=self.read(path/'job.json')
+                            if live.get('state')=='running':
+                                row=dict(old)
+                                for key in ('phase','updated','stage_percent','stage_eta','stage_started',
+                                            'workflow_stage','completed','total','unit','detail',
+                                            'performance_seconds','performance_scope','performance_category','performance_schema'):
+                                    if key in live:row[key]=live[key]
+                            elif live:
+                                self.cached_at=0  # Resolve final outcomes on next discovery.
+                        rows.append(row)
+                    self.jobs=rows
+            with self.poll_lock:self.poll_error=False
+        except Exception:
+            # Retain last-known data and expose failure; never fake fresh progress.
+            with self.poll_lock:self.poll_error=True
+        finally:
+            with self.poll_lock:
+                self.poll_checked=time.monotonic()
+                self.poll_refreshing=False
 
     def read(self, path):
         return read_json(path) if self.allowed_root(path) else {}
@@ -258,7 +308,11 @@ class Catalog:
                     state = 'skipped'
                 elif state == 'running' or (not job and status.get('pid')):
                     running = alive(job.get('pid', status.get('pid')))
-                    state = 'interrupted' if running is False else 'running' if running and time.time()-updated < 90 else 'stale'
+                    # A remote mirror's PID belongs to its observer, not the media worker.
+                    # Losing that observer cannot prove the remote conversion stopped.
+                    remote_mirror = job.get('monitor_scope') == 'Read-only remote status mirror; PID identifies the local observer'
+                    state = ('interrupted' if running is False and not remote_mirror else
+                             'running' if running and time.time()-updated < 90 else 'stale')
                 parsed = progress(log)
                 if (run/'status.json').is_file() and logpath.is_file() and (run/'status.json').stat().st_mtime > logpath.stat().st_mtime:
                     parsed = {}  # The log may still contain the previous stage's 100%/ETA.
@@ -313,6 +367,7 @@ class Catalog:
                     stage_started=job.get('stage_started'),
                     workflow_stage=job.get('workflow_stage'),
                     performance_seconds=job.get('performance_seconds',{}),
+                    performance_schema=job.get('performance_schema'),
                     performance_scope=job.get('performance_scope'),
                     progress_kind=job.get('progress_kind', 'legacy'),
                     completed=job.get('completed'), total=job.get('total'), unit=job.get('unit', 'steps'),
@@ -381,8 +436,11 @@ def make_handler(catalog, page=HTML, batch_provider=None, review_writer=None, al
             if url.path == '/':
                 body = page.encode()
                 kind = 'text/html; charset=utf-8'
+            elif url.path == '/api':
+                from app_api import describe
+                body = json.dumps(describe()).encode()
             elif url.path == '/api/jobs':
-                body = json.dumps(dict(jobs=catalog.snapshot(), now=time.time())).encode()
+                body = json.dumps(catalog.poll()).encode()
             elif url.path == '/api/app' and app_provider is not None:
                 body = json.dumps(app_provider()).encode()
             elif url.path == '/api/batches' and batch_provider is not None:

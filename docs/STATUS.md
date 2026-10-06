@@ -1,6 +1,19 @@
 # Project status
 
-## Current checkpoint: 28 September 2026
+## Current checkpoint: 29 September 2026
+
+Production was last observed on v44. The working tree prepares
+[v45](../deploy/truenas/RELEASE-20260929-v45.md): saved per-stage processing
+limits, shared adaptive HDR-reader settings, smaller evidence files, clearer
+retry labels and generic TV descriptions. Updating this repository does not
+deploy the app or change existing queued jobs.
+
+Targeted Linux regression: 208 passed, six skipped. Local UI/batch-review tests:
+16 passed. The faster frame-threaded HDR reader remains research-only pending
+qualification; there is no claimed full-job speed improvement. Quality and
+preservation checks remain unchanged. See [processing limits](processing-timeouts.md).
+
+## Historical checkpoint: 28 September 2026
 
 The working tree and observed production execution identify v41. See
 [supported use cases](SUPPORTED-USE-CASES.md) and the

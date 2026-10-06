@@ -81,9 +81,10 @@ def probe_encoder(ffmpeg, encoder, width=720, height=480, ten_bit=False, timeout
         except (OSError,ValueError,KeyError,TypeError):
             pass
     field_filter=(',setfield='+('tff' if field_order.endswith('t') else 'bff')) if interlaced else ''
-    command = [ffmpeg, '-hide_banner', '-nostdin', '-v', 'error', '-f', 'lavfi',
+    command = [ffmpeg, '-hide_banner', '-nostdin', '-v', 'error',
+               '-filter_threads','2','-filter_complex_threads','2','-threads','2','-f', 'lavfi',
                '-i', f'nullsrc=size={width}x{height}:rate=30,format={pixel_format}'+field_filter, '-frames:v', '4',
-               '-pix_fmt', pixel_format, '-c:v', encoder,
+               '-pix_fmt', pixel_format, '-c:v', encoder,'-threads','2',
                *(['-flags:v','+ildct+ilme','-top','1' if field_order.endswith('t') else '0'] if interlaced else []),
                '-f', 'null', '-']
     result = dict(encoder=encoder, width=width, height=height, ten_bit=ten_bit,pixel_format=pixel_format,

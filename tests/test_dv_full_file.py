@@ -6,6 +6,47 @@ from dv_full_file import rpu_digest, mux_command, timestamped_video_command, ord
 
 
 class FullDVTests(unittest.TestCase):
+    def test_packetized_truehd_uses_original_matroska_scale_not_a_new_audio_clock(self):
+        from dv_full_file import copied_matroska_packetizer_options
+        streams={'streams':[dict(codec_type='audio',codec_name='truehd')]}
+        source={'container':{'type':'Matroska','properties':{'timestamp_scale':1000000}}}
+        self.assertEqual(copied_matroska_packetizer_options(streams,source),
+                         ['--engage','force_passthrough_packetizer','--timestamp-scale','1000000'])
+        for scale in (None,True,0,-1,'1000000',1000000001):
+            changed={'container':{'type':'Matroska','properties':{'timestamp_scale':scale}}}
+            self.assertEqual(copied_matroska_packetizer_options(streams,changed),[])
+        self.assertEqual(copied_matroska_packetizer_options(streams,{}),[])
+        self.assertEqual(copied_matroska_packetizer_options(
+                         {'streams':[dict(codec_type='audio',codec_name='dts')]},source),[])
+
+    def test_packet_error_identifies_track_ordinal_and_changed_field(self):
+        from dv_full_file import compare_track_packets
+        packet=dict(stream_index=1,pts_time='0.040000',data_hash='SHA256:example')
+        streams=[dict(index=1,codec_type='audio',codec_name='dts')]
+        with self.assertRaisesRegex(ValueError,r'track 1, packet 1, pts_time'):
+            compare_track_packets([packet],[dict(packet,pts_time='0.043000')],streams)
+        self.assertEqual(compare_track_packets([packet],[dict(packet)],streams),{})
+    def test_full_frame_reader_uses_shared_admission(self):
+        from unittest.mock import patch,Mock
+        from dv_full_file import frame_evidence
+        guard=Mock();guard.phase='Inspect every source frame for HDR and DV metadata'
+        with patch('validation_resources.validation_slot') as slot,patch('dv_full_file._frame_evidence',return_value='evidence') as read:
+            self.assertEqual(frame_evidence('ffprobe','source','output',guard,120),'evidence')
+        slot.assert_called_once_with(['ffprobe','-show_frames'],guard)
+        read.assert_called_once_with('ffprobe','source','output',guard,120)
+
+    def test_hdr_json_retains_all_fields_with_bounded_slice_threads(self):
+        from unittest.mock import patch,Mock
+        from dv_full_file import _frame_evidence
+        guard=Mock();guard.phase='CPU inspection';guard.duration=600;guard.allow_hdr10plus=True
+        child=Mock();child.poll.return_value=0;child.returncode=0
+        with tempfile.TemporaryDirectory() as tmp,patch('dv_full_file.subprocess.Popen',return_value=child),patch('resource_governor.hdr_validation_threads',return_value=4):
+            command=_frame_evidence('ffprobe','source',Path(tmp)/'frames.json',guard,120)
+        self.assertEqual(command[command.index('-threads')+1],'4')
+        self.assertEqual(command[command.index('-thread_type')+1],'slice')
+        self.assertEqual(command[command.index('-of')+1],'json=compact=1')
+        self.assertNotIn('-show_entries',command)
+
     def test_matroska_mux_maps_identified_ids_and_preserves_source_roles(self):
         from dv_full_file import matroska_dv_mux_command
         with tempfile.TemporaryDirectory() as tmp:

@@ -64,7 +64,14 @@ def file_age_match(path, settings, now=None):
     return (True, None) if now-seconds <= birth <= now else (False, 'outside_age_window')
 
 
-def automatic_arguments(source, output, settings, *, min_free_gib=12, capability_cache_dir=None):
+def processing_timeout_minutes(value=120):
+    """User-selected execution budget per long stage, shared by app and CLI."""
+    if type(value) is not int or not 1 <= value <= 1440:
+        raise ValueError('Processing time limit must be 1–1440 whole minutes per stage')
+    return value
+
+
+def automatic_arguments(source, output, settings, *, min_free_gib=12, capability_cache_dir=None,source_evidence_cache_dir=None):
     mode=settings['mode']
     if mode not in ('analyze','test','encode','replace'):
         raise ValueError('This operation does not launch an encoding worker')
@@ -72,7 +79,15 @@ def automatic_arguments(source, output, settings, *, min_free_gib=12, capability
           '--minimum-savings-percent',format(float(settings['minimum_savings']),'.15g'),
           '--min-free-gib',str(min_free_gib)]
     if capability_cache_dir is not None:args+=['--capability-cache-dir',str(capability_cache_dir)]
+    if source_evidence_cache_dir is not None:args+=['--source-evidence-cache-dir',str(source_evidence_cache_dir)]
     args+=['--savings-mode',settings.get('savings_mode','fixed')]
+    from output_presets import preset
+    output_preset=preset(settings.get('output_preset','original'))
+    args+=['--output-preset',output_preset['id']]
+    hdr_policy=settings.get('hdr_policy','preserve')
+    if hdr_policy not in ('preserve','sdr'):raise ValueError('Unknown HDR handling choice')
+    args+=['--hdr-policy',hdr_policy]
+    args+=['--timeout',str(60*processing_timeout_minutes(settings.get('timeout_minutes',120)))]
     if settings.get('experimental_dv81'):
         if mode=='replace':raise ValueError('DV integration testing cannot replace originals')
         args+=['--experimental-dv81']
@@ -97,19 +112,26 @@ def main(argv=None):
     parser.add_argument('source',type=Path)
     parser.add_argument('--output-dir',type=Path,required=True)
     parser.add_argument('--capability-cache-dir',type=Path)
+    parser.add_argument('--source-evidence-cache-dir',type=Path)
     parser.add_argument('--mode',choices=('analyze','test','encode'),default='analyze')
     parser.add_argument('--hardware',choices=('auto','nvidia','amd','intel'),default='auto')
     parser.add_argument('--quality',choices=('auto','transparent','balanced','compact'),default='auto')
+    from output_presets import PRESETS
+    parser.add_argument('--output-preset',choices=tuple(PRESETS),default='original')
+    parser.add_argument('--hdr-policy',choices=('preserve','sdr'),default='preserve')
     parser.add_argument('--nvenc-maxrate-mbps',type=int,help='Optional measured NVENC peak-rate ceiling, 1..1000 Mbps')
     parser.add_argument('--experimental-dv81',action='store_true',help='Separate-copy DV integration qualification only')
     parser.add_argument('--playback-verified-codecs',nargs='+',choices=('hevc','av1','h264'),default=[])
     parser.add_argument('--minimum-savings-percent',type=float,default=25)
     parser.add_argument('--savings-mode',choices=('size-aware','fixed'),default='size-aware')
+    parser.add_argument('--timeout-minutes',type=int,default=120,
+                        help='Execution limit per long processing stage, 1–1440 minutes (default: 120); excludes validation-slot waiting')
     parser.add_argument('--legacy-color',choices=('inspect','bt709-limited'),default='inspect')
     parser.add_argument('--age-unit', choices=('all','hours','days','weeks'), default='all')
     parser.add_argument('--age-value', type=int)
     args=parser.parse_args(argv)
     try:
+        processing_timeout_minutes(args.timeout_minutes)
         age = file_age_settings(args.age_unit, args.age_value)
         selected, reason = file_age_match(args.source, age)
     except ValueError as exc:
@@ -121,10 +143,11 @@ def main(argv=None):
         parser.error('Select at least one playback-verified codec before testing or encoding')
     from auto_optimize import main as execute
     return execute(automatic_arguments(args.source,args.output_dir,dict(mode=args.mode,
-        hardware=args.hardware,quality=args.quality,codecs=args.playback_verified_codecs,
+        hardware=args.hardware,quality=args.quality,output_preset=args.output_preset,hdr_policy=args.hdr_policy,codecs=args.playback_verified_codecs,
         minimum_savings=args.minimum_savings_percent,savings_mode=args.savings_mode,legacy_color=args.legacy_color,
+        timeout_minutes=args.timeout_minutes,
         nvenc_maxrate_mbps=args.nvenc_maxrate_mbps,experimental_dv81=args.experimental_dv81),
-        capability_cache_dir=args.capability_cache_dir))
+        capability_cache_dir=args.capability_cache_dir,source_evidence_cache_dir=args.source_evidence_cache_dir))
 
 
 if __name__=='__main__':raise SystemExit(main())

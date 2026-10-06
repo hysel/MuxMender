@@ -74,7 +74,12 @@ death of a supervisor while its worker is suspended. UI control JavaScript passe
 syntax checking. Live host-monitor-to-production-app qualification is pending;
 the production queue and app have not been changed.
 
-## Host monitor setup (not installed automatically)
+## Host monitor setup
+
+Use the [bundled installer](gpu-monitor-setup.md). It includes the collector,
+registers automatic TrueNAS startup, and uses a directory that survives normal
+reboots. This remains a host installation step because ownership measurement
+needs the host process namespace.
 
 Run `python/gpu_activity.py` on the **TrueNAS host**, where NVIDIA PIDs and `/proc`
 refer to the same processes. Do not run the collector in an isolated PID namespace

@@ -4,8 +4,18 @@ Passing this module proves frame metadata preservation, not perceptual quality
 or permission to replace media. Callers must separately validate other tracks.
 """
 from fractions import Fraction
+from functools import lru_cache
 from itertools import zip_longest
 from media_metadata import equivalent_ratio
+
+SUPPORTED_HDR_PIXELS=frozenset(f'yuv{chroma}p{depth}'
+    for chroma in ('420','422','444') for depth in ('','10le','12le'))
+
+
+@lru_cache(maxsize=256)
+def mastering_fraction(value):
+    """Reuse exact static values, not frame evidence or validation outcomes."""
+    return Fraction(value)
 
 
 def preserve_json_pairs(items):
@@ -41,7 +51,7 @@ def canonical_hdr_metadata(items):
         if item.get('side_data_type') == 'Mastering display metadata':
             for key in fields & item.keys():
                 try:
-                    normalized[key]=Fraction(str(item[key]))
+                    normalized[key]=mastering_fraction(str(item[key]))
                 except (ValueError, ZeroDivisionError, TypeError) as exc:
                     raise ValueError('Invalid mastering-display fraction: '+key) from exc
         result.append(normalized)
@@ -60,8 +70,7 @@ def validate_frames(source, output, mode='hdr10plus'):
     for index, (a, b) in enumerate(zip_longest(source, output, fillvalue=missing)):
         if a is missing or b is missing:
             raise ValueError('Frame count changed')
-        supported={f'yuv{chroma}p{depth}' for chroma in ('420','422','444') for depth in ('','10le','12le')}
-        if a.get('pix_fmt') not in supported or a.get('color_transfer') != ('arib-std-b67' if mode=='hlg' else 'smpte2084'):
+        if a.get('pix_fmt') not in SUPPORTED_HDR_PIXELS or a.get('color_transfer') != ('arib-std-b67' if mode=='hlg' else 'smpte2084'):
             raise ValueError('HDR path requires matching transfer and supported native pixel format')
         for key in fields:
             if a.get(key) in (None, 'unknown', 'unspecified') or not (equivalent_ratio(a.get(key),b.get(key)) if key=='sample_aspect_ratio' else a.get(key)==b.get(key)):

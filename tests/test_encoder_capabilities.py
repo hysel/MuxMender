@@ -10,6 +10,9 @@ class EncoderCapabilitiesTests(unittest.TestCase):
         result=ec.probe_encoder('ffmpeg','av1_amf')
         self.assertEqual(result['status'],'working')
         self.assertIn('lavfi',result['command'])
+        self.assertEqual(result['command'][result['command'].index('-filter_threads')+1],'2')
+        self.assertEqual(result['command'][result['command'].index('-filter_complex_threads')+1],'2')
+        self.assertEqual(result['command'].count('-threads'),2)
         self.assertEqual(run.call_args.kwargs['timeout'],30)
     @patch('encoder_capabilities.subprocess.run')
     def test_failure_and_timeout_and_missing_tool(self, run):

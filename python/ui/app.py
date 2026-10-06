@@ -18,7 +18,7 @@ for old,new in [
     ('Transparent</option>','Highest quality preset</option>'),
     ('Encoding options · Automatic by default','Advanced settings · automatic by default'),
     ('id="preview-description"','id="preview-description" tabindex="-1"'),
-    ('<ul id="preview-files"></ul>','<ul id="preview-files"></ul><div id="replacement-confirmation" hidden><label for="confirm-replacement"><input type="checkbox" id="confirm-replacement"> I approve permanently replacing these originals after automated validation, without playback review.</label></div>'),
+    ('<ul id="preview-files"></ul>','<ul id="preview-files"></ul><div id="replacement-confirmation" hidden><p class="control-note">Lower-resolution presets permanently discard picture detail if you replace the original. A passing quality check compares against your selected resolution, not the original resolution. HDR-to-SDR conversion also removes HDR presentation.</p><label for="confirm-replacement"><input type="checkbox" id="confirm-replacement"> I approve permanently replacing these originals using the selected output and HDR settings after automated validation, without playback review.</label></div>'),
     ('Original files will never be replaced or deleted. A folder request is limited to 100 videos. Passing full copies still need playback review.','Safe-copy mode keeps originals. Replacement removes originals only after full validation and verified copying. Outputs use MKV; filename conflicts are skipped.'),
     ('<h3>Select a folder</h3>','<h3 id="picker-title">Select a folder</h3><p id="path-help" class="control-note">Browse your server’s media folder or enter a relative path. No upload is needed.</p>'),
     ('id="folder-picker" class="folder-picker"','id="folder-picker" class="folder-picker" role="region" aria-labelledby="picker-title"'),
@@ -68,11 +68,14 @@ HTML=HTML.replace('<div class="control-actions"><button id="archive-results"',
 from ui.redesign import redesign
 HTML=redesign(HTML)
 HTML=HTML.replace('<button id="toggle-updates"',
-    '<button id="clear-waiting-queue" type="button" disabled>Clear waiting queue</button><button id="toggle-updates"',1)
+    '<button id="clear-waiting-queue" type="button" disabled>Cancel jobs</button><button id="toggle-updates"',1)
 HTML=HTML.replace('<div id="current-work">',
     '<p id="queue-clear-feedback" role="status" aria-live="polite"></p><div id="current-work">',1)
 HTML=HTML.replace('</main>', '''<dialog id="queue-clear-dialog" aria-labelledby="queue-clear-title" aria-describedby="queue-clear-description">
-<h2 id="queue-clear-title">Clear waiting queue?</h2><p id="queue-clear-description"></p>
-<p>Running jobs will finish normally. History and all video files stay untouched. You can add cancelled videos again later.</p>
-<p id="queue-clear-error" role="alert"></p><div class="control-actions"><button id="queue-clear-cancel" type="button" autofocus>Keep queue</button><button id="queue-clear-confirm" type="button">Cancel waiting jobs</button></div></dialog></main>''',1)
-HTML=HTML.replace('</head>','<style>dialog{max-width:min(540px,calc(100vw - 32px));border:1px solid var(--border);border-radius:14px;padding:24px;background:var(--panel);color:var(--text)}dialog::backdrop{background:rgb(0 0 0 / .5)}</style></head>')
+<div class="queue-dialog-heading"><h2 id="queue-clear-title">Cancel jobs?</h2><button id="queue-clear-close" type="button" aria-label="Close cancel jobs dialog">×</button></div><p id="queue-clear-description"></p>
+<p>Active processing stops and waiting jobs are cancelled. The queue pauses. A replacement already committing finishes safely. History is kept; you can retry cancelled videos later.</p>
+<p id="queue-clear-error" role="alert"></p><div class="control-actions"><button id="queue-clear-cancel" type="button" autofocus>Go back</button><button id="queue-clear-confirm" type="button">Cancel jobs</button></div></dialog></main>''',1)
+HTML=HTML.replace('</head>','<style>dialog{max-width:min(540px,calc(100vw - 32px));border:1px solid var(--border);border-radius:14px;padding:24px;background:var(--panel);color:var(--text)}dialog::backdrop{background:rgb(0 0 0 / .5)}.queue-dialog-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}.queue-dialog-heading h2{margin:0}.queue-dialog-heading button{min-width:44px;min-height:44px;font-size:24px}</style></head>')
+
+from ui.workbench import restyle
+HTML=restyle(HTML)

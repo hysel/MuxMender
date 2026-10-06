@@ -194,12 +194,19 @@ def finalize(args):
         if output.exists() or output.is_symlink() or output.resolve().parent not in (root,run):
             raise ValueError('Final output must be a new file in the owned output directory')
         duration=float(before['format']['duration'])
+        from gpu_frame_reader import load_qualification,hdr_reader_request
+        from gpu_admission import stage_context
+        qualification=load_qualification() if duration>=60 else None
+        def collect_frames(path,destination,label,reader_video):
+            container=before['format'].get('format_name') if path==source else 'matroska,webm'
+            argv,options,plan=hdr_reader_request(args.ffprobe,path,reader_video,duration,mode,qualification,container=container)
+            progress('Selecting frame inspection backend',detail=plan['reason'])
+            with stage_context(reader_video):
+                run_probe(argv,destination,label+' · '+('GPU' if plan['backend']=='cuda' else 'CPU')+' reader',args.timeout,guard,duration,**options)
         source_frames=getattr(args,'reference_frames',None)
         if source_frames is None:
             source_frames=run/'source-frames.json'
-            from decoder_context import metadata_reader_options
-            run_probe([args.ffprobe,'-v','error',*metadata_reader_options(),'-select_streams','V:0','-show_frames','-of','json',str(source)],
-                      source_frames,'Checking original HDR metadata',args.timeout,guard,duration)
+            collect_frames(source,source_frames,'Checking original HDR metadata',video)
             if source_frames.with_suffix(source_frames.suffix+'.stderr').stat().st_size:
                 raise ValueError('Decoder errors in original HDR evidence')
         from hdr10plus_validation import hdr_metadata
@@ -273,9 +280,7 @@ def finalize(args):
         paths=[Path(source_frames)]
         for label,path in [('output',output)]:
             evidence=run/(label+'-frames.json');paths.append(evidence)
-            from decoder_context import metadata_reader_options
-            run_probe([args.ffprobe,'-v','error',*metadata_reader_options(),'-select_streams','V:0','-show_frames','-of','json',str(path)],
-                      evidence,'Checking HDR frames: '+label,args.timeout,guard,duration)
+            collect_frames(path,evidence,'Checking HDR frames: '+label,encoded_video)
             # ffprobe can return success despite decoder errors. Do not certify
             # concealed/damaged frames merely because counts happen to match.
             if evidence.with_suffix(evidence.suffix+'.stderr').stat().st_size:
@@ -289,7 +294,9 @@ def finalize(args):
         for index in indices:
             cover=any(s['index']==index and is_cover(s) for s in before['streams'])
             compare_packets(original[index],final[index],cover=cover)
+        from native_pipeline import discard_audio_clock_options
         command([args.ffmpeg,'-v','error','-nostdin','-xerror','-i',output,'-map','0:v:0','-map','0:a?',
+                 *discard_audio_clock_options(before),
                  '-fps_mode:v','passthrough','-enc_time_base:v','1:1000','-f','null','-'],'Checking complete decode')
         guard()
         result.update(output=str(output),source=str(source),copied_tracks_verified=True,

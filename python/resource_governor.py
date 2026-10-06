@@ -15,6 +15,25 @@ PROFILES={
 }
 
 
+def container_task_usage(root=Path('/sys/fs/cgroup')):
+    """Diagnostic cgroup-v2 task counts (threads included), not a media gate."""
+    try:
+        current = int((root / 'pids.current').read_text().strip())
+        limit_text = (root / 'pids.max').read_text().strip()
+        if current < 0:
+            return {}
+        values = {'container_tasks': current}
+        if limit_text != 'max':
+            limit = int(limit_text)
+            if limit <= 0:
+                return {}
+            values.update(container_task_limit=limit,
+                          container_tasks_available=max(0, limit-current))
+        return values
+    except (OSError, ValueError):
+        return {}
+
+
 def arc_memory(text):
     """Account only resident evictable ARC, never ghost/L2 or pinned buffers."""
     rows={parts[0]:int(parts[2]) for line in text.splitlines()
@@ -65,6 +84,98 @@ def hdr_validation_threads():
     return validation_thread_budget(governor.sample(include_gpu=False))
 
 
+def sdr_thread_budget(data):
+    """A qualified SDR stage can use four workers with measured allocation room.
+
+    This only selects a worker count, never media eligibility or quality policy.
+    Unknown container CPU/task pressure keeps the existing two-worker budget.
+    """
+    usage=data.get('container_cpu_percent')
+    if type(usage) not in (int,float) or not math.isfinite(usage) or usage<0:
+        return 2
+    tasks=data.get('container_tasks')
+    if type(tasks) is not int or tasks<0:
+        return 2
+    if 'container_task_limit' in data:
+        free=data.get('container_tasks_available')
+        if type(free) not in (int,float) or not math.isfinite(free) or free<32:
+            return 2
+    required=('cpus','cpu_percent','available_gib','host_available_gib',
+              'io_pressure','memory_pressure')
+    if any(type(data.get(k)) not in (int,float) or not math.isfinite(data[k])
+           or data[k]<0 for k in required):
+        return 2
+    allocated_usage=usage
+    usage=max(data['cpu_percent'],allocated_usage)
+    # SDR's measured bounded workers fit the eight-GiB research allocation.
+    # Requiring eight GiB *free* makes that allocation ineligible even at idle.
+    # Leave six GiB available, and reuse only the existing bounded ARC admission
+    # proof; installed RAM or the whole ARC size is never treated as free memory.
+    memory_ready=(data['available_gib']>=6 and
+                  (data['host_available_gib']>=12 or cache_assisted_start(data,8)))
+    return 4 if (data['cpus']>=8 and usage<=50 and data['cpus']*(1-allocated_usage/100)>=6
+                 and memory_ready and data['io_pressure']<5
+                 and data['memory_pressure']<.1) else 2
+
+
+def parallel_sdr_profile(video):
+    """The currently measured CPU-decoding/scoring scope, not media admission."""
+    return (video.get('codec_name') in ('h264','hevc') and
+            video.get('pix_fmt')=='yuv420p' and video.get('field_order')=='progressive' and
+            video.get('color_transfer') not in ('smpte2084','arib-std-b67'))
+
+
+class SDRWorkerBudget:
+    """Cache brief, read-only allocation samples; never add a GPU tool invocation."""
+    def __init__(self):
+        self.governor=Governor()
+        self.checked=-float('inf')
+        self.value=2
+
+    def threads(self, guard=lambda:None):
+        guard()
+        now=time.monotonic()
+        if now-self.checked<5:
+            return self.value
+        self.value=2
+        try:
+            self.governor.sample(include_gpu=False)
+        except (OSError,ValueError,TypeError):
+            self.checked=time.monotonic()
+            return self.value
+        time.sleep(.25)
+        guard()  # Never turn cancellation/source-protection errors into telemetry fallback.
+        try:self.value=self.select(self.governor.sample(include_gpu=False))
+        except (OSError,ValueError,TypeError):self.value=2
+        self.checked=time.monotonic()
+        return self.value
+
+    def select(self,data):
+        return sdr_thread_budget(data)
+
+
+class HDRQualityWorkerBudget(SDRWorkerBudget):
+    """Measured PQ scoring workers; decoder and frame-reader policy are separate."""
+    def select(self,data):
+        available=data.get('available_gib')
+        if type(available) not in (int,float) or not math.isfinite(available) or available<8:return 2
+        return sdr_thread_budget(data)
+
+
+def validation_capacity(data):
+    """A second heavy validator needs measured headroom, not installed RAM."""
+    keys=('cpus','cpu_percent','container_cpu_percent','available_gib',
+          'host_available_gib','io_pressure','memory_pressure','gpu_percent',
+          'vram_free_gib','gpu_temperature')
+    if any(k not in data or not math.isfinite(data[k]) or data[k]<0 for k in keys):return 1
+    usage=max(data['cpu_percent'],data['container_cpu_percent'])
+    return 2 if (data['cpus']>=12 and usage<=50 and data['cpus']*(1-usage/100)>=6
+                 and data['available_gib']>=12 and data['host_available_gib']>=16
+                 and data['io_pressure']<5 and data['memory_pressure']<.1
+                 and data['gpu_percent']<50 and data['vram_free_gib']>=4
+                 and data['gpu_temperature']<75) else 1
+
+
 class Governor:
     def __init__(self):
         self.previous=None;self.healthy_since=None;self.last_launch=0
@@ -73,6 +184,7 @@ class Governor:
 
     def sample(self, *, include_gpu=True):
         values={}
+        values.update(container_task_usage())
         try:
             counters=list(map(int,Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
             total=sum(counters);idle=counters[3]+counters[4]

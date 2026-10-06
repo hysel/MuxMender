@@ -10,8 +10,8 @@ Windows, not every GPU, driver, source or Plex client.
 | Hardware | Validated scope | Current entry point |
 |---|---|---|
 | NVIDIA RTX 5050 | Generated HEVC/AV1 SDR/PQ tests; full SDR test video SDR and repaired DV test film Profile 8.1 playback, including seeking | Normal SDR/HDR CLI; NVIDIA DV remains explicit research |
-| Intel Arc B580 | Generated HEVC/AV1 SDR/PQ/irregular timing; full SDR HEVC/AV1, HEVC HDR10, AV1 HDR10 and HEVC DV Profile 8.1 reviewed in Chrome and Sony TV | Normal AV1 HDR repair/verification route; opt-in AMD/Intel DV preservation |
-| AMD RX 7800 XT | One full Profile 8.1 episode, 53.7% smaller, user-confirmed Sony TV playback and DV mode | Opt-in preservation; regression against newer shared mux changes still required |
+| Intel Arc B580 | Generated HEVC/AV1 SDR/PQ/irregular timing; full SDR HEVC/AV1, HEVC HDR10, AV1 HDR10 and HEVC DV Profile 8.1 reviewed in Chrome and Dolby Vision-capable TV | Normal AV1 HDR repair/verification route; opt-in AMD/Intel DV preservation |
+| AMD RX 7800 XT | One full Profile 8.1 episode, 53.7% smaller, user-confirmed Dolby Vision-capable TV playback and DV mode | Opt-in preservation; regression against newer shared mux changes still required |
 
 The Intel test setup used driver 32.0.101.8992, FFmpeg/FFprobe 9.0.1 and Python
 3.13.15. No driver or tool updates were performed during validation.
@@ -39,7 +39,7 @@ plus source audit took 4,147 seconds (2.36x); later independent verification is
 additional. DV encode alone took 1,908 seconds (2.01x). Speeds use different scopes.
 No claim of identical visual quality is made.
 
-Both new full outputs passed Chrome/Sony review and subsequent Y-backed playback.
+Both new full outputs passed Chrome/Dolby Vision-capable TV review and subsequent Y-backed playback.
 Their original backups were deleted only after separate user approval and fresh
 replacement SHA-256 checks. Net savings for these two conversions are 13.899 GB
 (50.82%). Media and detailed local reports are not included in Git.

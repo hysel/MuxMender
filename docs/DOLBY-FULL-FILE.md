@@ -13,7 +13,7 @@ frames at transparent and balanced quality, including HDR/track/timing/seek/deco
 checks. Balanced video-only output contains just the video, with recovery outside
 the folder. Integrated DV passes 960 frames, full RPU/HDR/track/timing comparison,
 six seeks and full decode after its savings preflight. Transparent full-file
-outputs were already playback-approved on Chrome and Sony TV.
+outputs were already playback-approved on Chrome and Dolby Vision-capable TV.
 
 The two approved full videos were copied to their original Y paths with original
 release filenames and SHA-256 verification. The user then confirmed both new Y
@@ -40,7 +40,7 @@ smaller). HEVC encoding took 1,908 seconds (2.01x, encode only).
 
 New full files and two short research clips are ready in C:/MuxMender-Plex.
 On September 8 the user confirmed Chrome playback for both full outputs, resolved
-the forced-only AV1 subtitle selection, and then reported the Sony TV test passed
+the forced-only AV1 subtitle selection, and then reported the Dolby Vision-capable TV test passed
 in response to the HDR/DV, subtitles, sync and seeking checklist. These two full
 outputs are playback-approved on the tested clients. This does not establish
 identical visual quality or broad hardware/client certification. Intel AV1 HDR uses mandatory repair/full verification; DV preservation is
@@ -65,8 +65,8 @@ is an explicit 1..30-second Profile 8.1 research route, mutually exclusive with
 `--experimental-nvidia`. The general integrated AMD gate stays unchanged;
 the separate full-file Intel research addition is described above.
 A 240-frame DV test film sample passes complete RPU content/order, exact resolution/color,
-frame timing, original tracks, decode and seek checks. Chrome and Sony TV
-playback, sync, subtitles, seeking and Sony DV mode were approved by the user.
+frame timing, original tracks, decode and seek checks. Chrome and Dolby Vision-capable TV
+playback, sync, subtitles, seeking and TV Dolby Vision mode were approved by the user.
 The checked CFR/no-B-frame Intel route materializes raw HEVC PTS before muxing;
 per-frame source/output timing comparison remains mandatory. No new script added.
 Evidence: reports/intel-dv-research/dv81-20260907-202655-b97dde17/.
@@ -80,7 +80,7 @@ historical evidence; they are not the latest run status.
 ## DV test film full-file playback failure and interleaving investigation
 
 The corrected ordered remux was subsequently approved by the user on both
-Chrome and Sony TV: seeking works on both, and Dolby Vision mode and sound sync
+Chrome and Dolby Vision-capable TV: seeking works on both, and Dolby Vision mode and sound sync
 are correct on the TV. Evidence is in
 `reports/nvidia-dv-full-dv-case/dv-full-20260906-085358-cbfa0f53/ordered-remux-20260906-103728/validation.json`.
 Video packets/timestamps, original audio/subtitles, chapters and video metadata
@@ -90,7 +90,7 @@ new end-to-end code and sparse/empty-track coverage remain separate validation
 work before general NVIDIA DV enablement. Original media on Y remains active.
 
 The first full NVIDIA DV test film output passed structural checks and saved 33.97%,
-but the user reported slow Chrome seeking and a Sony TV client crash. The
+but the user reported slow Chrome seeking and a Dolby Vision-capable TV client crash. The
 restored original seeks successfully. The failed copy on Y was deleted only
 under explicit user authorization; the original and local diagnostics remain.
 
@@ -113,7 +113,7 @@ included in the post-encode space check.
 
 The 30-second scene near five minutes in DV test film passed user playback
 review: synchronized sound/video, Dolby Vision confirmed, and visual quality
-approved in response to the Sony TV test request. Video payload savings were
+approved in response to the Dolby Vision-capable TV test request. Video payload savings were
 53.29%; this is not a whole-file savings prediction. Automated checks passed
 for all 719 frames, including timing, parsed RPU content/order, static HDR,
 3840x1604 resolution, 10-bit BT.2020/PQ, audio/subtitles, and sample decoding.
@@ -123,7 +123,7 @@ Encoding ran at approximately 1.58x. Evidence:
 Full-file NVIDIA DV validation remains pending. The earlier DV series B failure
 is unresolved; the normal AMD-only preservation gate remains unchanged.
 
-## Current acceptance policy and Sony TV result
+## Current acceptance policy and Dolby Vision-capable TV result
 
 The goal is smaller files with acceptable visual quality and preserved tracks/
 metadata. Larger or equal-size outputs are never accepted as optimizations,
@@ -137,7 +137,7 @@ threshold. The completed container must independently meet the total-size
 threshold before expensive final verification and publication eligibility.
 The retained-output verifier also rejects oversized outputs immediately.
 
-The user reported the full DV series B output failed on the Sony TV: black screen,
+The user reported the full DV series B output failed on the Dolby Vision-capable TV: black screen,
 playback clock not advancing. The report/dashboard now record playback failure;
 automated structural success is retained as separate evidence. Its 179.38% growth
 also disqualifies it. The full episode and previously tested oversized samples

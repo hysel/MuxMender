@@ -39,13 +39,15 @@ class WorkspaceAccessibilityTests(unittest.TestCase):
             def handle_starttag(self,tag,attrs):
                 if tag=='details':self.depth+=1
                 identity=dict(attrs).get('id')
-                if identity in ('lifetime-saved','resource-status','resource-profile'):
+                if identity in ('lifetime-saved','resource-status','resource-profile','resource-cpu','resource-gpu','resource-ram'):
                     self.locations[identity]=self.depth
             def handle_endtag(self,tag):
                 if tag=='details':self.depth-=1
         parser=Parser();parser.feed(HTML)
         self.assertEqual(parser.locations['lifetime-saved'],0)
-        self.assertEqual(parser.locations['resource-status'],0)
+        for identity in ('resource-cpu','resource-gpu','resource-ram'):
+            self.assertEqual(parser.locations[identity],0)
+        self.assertGreater(parser.locations['resource-status'],0)
         self.assertGreater(parser.locations['resource-profile'],0)
 
     @unittest.skipUnless(shutil.which('node'),'Node required for interaction test')

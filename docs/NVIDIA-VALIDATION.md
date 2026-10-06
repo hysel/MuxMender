@@ -182,7 +182,7 @@ or establish support on other models.
 
 The AMD-only Profile 8.1 Dolby Vision preservation gate remains unchanged.
 NVIDIA Dolby Vision preservation is **not validated**. The user's prior AMD
-full-episode result (53.7% savings, Sony Android TV playback and DV-mode approval)
+full-episode result (53.7% savings, Dolby Vision-capable TV playback and DV-mode approval)
 is user-reported prior evidence and was not rechecked on this machine.
 
 Before real-media work, obtain a path from the user, inspect it read-only, and

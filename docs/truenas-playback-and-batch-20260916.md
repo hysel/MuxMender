@@ -1,6 +1,6 @@
 # TrueNAS playback result and bounded follow-up batch
 
-User confirmed Episode A AV1 playback passed on both Chrome and Sony.
+User confirmed Episode A AV1 playback passed on both Chrome and Dolby Vision-capable TV.
 This is user-reported playback evidence, not automated Plex telemetry.
 
 - Source: Series A S01E16 Episode A, 3,051,603,039 bytes.
