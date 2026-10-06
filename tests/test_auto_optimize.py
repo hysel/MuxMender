@@ -18,6 +18,44 @@ def source_data():
 
 
 class AutoOptimizeTests(unittest.TestCase):
+    def test_generated_sample_probe_cache_requires_content_identity(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);reference=root/'reference-0.mkv';reference.write_bytes(b'generated')
+            workflow=ao.Workflow(SimpleNamespace(ffprobe='ffprobe'),root,lambda:None)
+            with patch.object(workflow,'decoder_options',return_value=[]),patch('dv_header.recover',return_value=None),patch.object(ao.subprocess,'check_output',return_value=json.dumps(source_data())) as probe:
+                first=workflow.probe(reference);first['streams'][0]['width']=1
+                self.assertEqual(workflow.probe(reference)['streams'][0]['width'],1920)
+                self.assertEqual(probe.call_count,1)
+                reference.write_bytes(b'different')
+                workflow.probe(reference);self.assertEqual(probe.call_count,2)
+                output=root/'encoded.mkv';output.write_bytes(b'generated')
+                workflow.probe(output);workflow.probe(output)
+                self.assertEqual(probe.call_count,4,'Output validation must not use sample cache')
+                workflow.args.source=reference
+                workflow.probe(reference);workflow.probe(reference)
+                self.assertEqual(probe.call_count,6,'Original source must never use generated sample cache')
+
+    def test_reference_mutation_during_probe_is_not_cached(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);reference=root/'reference-0.mkv';reference.write_bytes(b'generated')
+            workflow=ao.Workflow(SimpleNamespace(ffprobe='ffprobe'),root,lambda:None)
+            def changed(*args,**kwargs):reference.write_bytes(b'changed');return json.dumps(source_data())
+            with patch.object(workflow,'decoder_options',return_value=[]),patch.object(ao.subprocess,'check_output',side_effect=changed):
+                with self.assertRaisesRegex(ValueError,'reference changed'):workflow.probe(reference)
+            self.assertFalse(workflow.sample_probe_cache)
+
+    def test_explicit_research_presets_keep_other_encoder_options(self):
+        for preset in ('p4','p5','p6','p7'):
+            with self.subTest(preset=preset),patch.object(ao.mm,'encoder_options',return_value=['-c:v','hevc_nvenc','-preset','p6','-cq','25']):
+                cmd=ao.encode_command('ffmpeg',Path('source'),Path('output'),
+                    dict(codec='hevc',quality='balanced',encoder='hevc_nvenc',nvenc_preset=preset),None,source_data()['streams'])
+                self.assertEqual(cmd[cmd.index('-preset')+1],preset)
+                self.assertEqual(cmd[cmd.index('-cq')+1],'25')
+        with patch.object(ao.mm,'encoder_options',return_value=['-preset','p6']):
+            with self.assertRaisesRegex(ValueError,'Explicit preset'):
+                ao.encode_command('ffmpeg',Path('source'),Path('output'),
+                    dict(codec='hevc',quality='balanced',encoder='hevc_nvenc',nvenc_preset='invalid'),None,source_data()['streams'])
+
     def test_explicit_nvenc_trials_use_same_range_as_adaptive_engine(self):
         with tempfile.TemporaryDirectory() as folder,patch.object(ao,'run',return_value=0) as run:
             (Path(folder)/'input').mkdir()

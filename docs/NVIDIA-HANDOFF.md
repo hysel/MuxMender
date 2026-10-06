@@ -33,7 +33,7 @@ HDR/RPU checks as applicable, full decode and seeking. Video-only output was
 checked to contain just its video, with recovery data outside the output folder.
 
 Full Intel Intel HDR case A AV1 HDR10 (58.13% smaller) and Intel DV series S03E02
-HEVC DV 8.1 (35.50% smaller) passed Chrome/Sony TV review and Y-backed playback.
+HEVC DV 8.1 (35.50% smaller) passed Chrome/Dolby Vision-capable TV review and Y-backed playback.
 Earlier approved Intel SDR and HEVC HDR10 and NVIDIA results are summarized in
 HARDWARE.md. These approvals do not certify every GPU, driver, media file or client.
 The bounded regression is not a new full-file encoding or new visual-quality test.

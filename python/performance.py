@@ -3,6 +3,9 @@
 
 def category(phase):
     label=str(phase).lower()
+    if label.startswith('waiting for validation resources'):return 'validation_wait'
+    if label.startswith(('checking original hdr metadata','checking hdr frames:')):return 'frame_validation'
+    if label.startswith('measuring shared hdr quality'):return 'quality_measurement'
     if label.startswith('verifying file checksum:'):return 'checksums'
     if label.startswith(('checking frame timing:', 'checking hdr frame timing:', 'comparing frame geometry')):return 'frame_validation'
     if label.startswith(('checking copied track:', 'checking all copied tracks:',
@@ -17,6 +20,6 @@ def category(phase):
     return 'other'
 
 
-def accumulate(totals, phase, seconds):
-    key=category(phase)
+def accumulate(totals, phase, seconds, override=None):
+    key=override or category(phase)
     totals[key]=totals.get(key,0.0)+max(0.0,seconds)

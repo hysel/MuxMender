@@ -60,7 +60,7 @@ No scaling, bitstream rewriting, driver installation or automatic fallback was
 added. Player-specific crop handling requires separate validation; claiming
 1080p preservation based only on crop metadata would weaken the current gate.
 
-The ordinary worker still rejects the padded 1080p AV1 output. The later Sony
+The ordinary worker still rejects the padded 1080p AV1 output. The later Dolby Vision-capable TV
 Direct Play result below is player-specific evidence, not a validator change.
 
 ### Container-aware decode follow-up
@@ -89,11 +89,11 @@ Web in Chrome on localhost, with 1080p AV1 (hw) input transcoded to 1080p H.264
 path, not native AV1 crop handling or Direct Play/Direct Stream compatibility.
 The worker's conservative rejection remains enabled.
 
-### Sony Direct Play follow-up
+### Dolby Vision-capable TV Direct Play follow-up
 
-The user reported the video-only diagnostic stalled on the Sony. A generated
+The user reported the video-only diagnostic stalled on the Dolby Vision-capable TV. A generated
 H.264 MP4 control with silent AAC stereo then Direct Played on both Chrome and
-Plex for Android (TV), identified as BRAVIA 4K VH2 in the dashboard.
+Plex for Android (TV) on the tested Dolby Vision-capable TV.
 
 A separate `test-output/AMD-AV1-1080p-With-Audio-20260908.mkv` was made by
 copying the diagnostic AV1 video and adding silent AAC stereo. All 720 video
@@ -101,7 +101,7 @@ packet hashes and packet timestamps/durations matched the video-only clip;
 stream dimensions, time base and crop metadata also matched. Full video/audio
 decode passed. Neither input nor source media was modified.
 
-The user's subsequent screenshot shows BRAVIA 4K VH2 Playing at 0:11 / 0:30,
+The user's subsequent screenshot shows the tested TV playing at 0:11 / 0:30,
 with both 1080p AV1 video and AAC stereo audio marked Direct Play. This confirms
 native delivery/playback startup of this padded AV1 fixture on that client.
 The result points to video-only handling as the likely cause of the earlier
@@ -112,8 +112,8 @@ No automatic silent-track insertion or geometry-check relaxation was added.
 ## Real-media playback and AV1 tuning follow-up
 
 The Series B S02E20 short diagnostic with the original DTS-HD MA / AC3 audio
-and PGS subtitle tracks played successfully per user review. The Sony BRAVIA
-4K VH2 dashboard showed Direct Play for AV1, DTS-HD MA and PGS without changing
+and PGS subtitle tracks played successfully per user review. The TV's Plex
+dashboard showed Direct Play for AV1, DTS-HD MA and PGS without changing
 settings. Chrome instead hardware-transcoded video, transcoded audio and burned
 PGS subtitles. These are client-specific playback results, not universal support.
 
@@ -139,7 +139,7 @@ reference contains two non-displayed open-GOP packets; production validation
 was not relaxed to accommodate the diagnostic cut.
 
 QP80 was copied to the Plex test folder for visual review as the highest-scoring
-space-saving trial. The user subsequently reported it plays well; the Sony
+space-saving trial. The user subsequently reported it plays well; the Dolby Vision-capable TV
 dashboard showed Direct Play for AV1, DTS-HD MA and PGS subtitles. This is the
 reviewed five-minute scene only, not full-episode approval.
 Scores on one scene are ranking aids, not proof of visual
@@ -199,7 +199,7 @@ Original size/mtime unchanged; no full-source hash comparison claimed for this
 preview. New reference, output and validation live under:
 `E:\MuxMender-TestOutputs\AMD-AV1-QP80-20260909-130434-9c3dfcc6`.
 The user confirmed on 2026-09-09 that S02E19 playback tests passed on both
-Chrome and the Sony TV. Delivery modes for this specific clip were not supplied;
+Chrome and the Dolby Vision-capable TV. Delivery modes for this specific clip were not supplied;
 do not infer Direct Play from playback success alone. This one clip does not
 establish whole-episode savings or support for other AMD models.
 

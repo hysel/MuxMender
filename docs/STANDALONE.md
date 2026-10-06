@@ -311,7 +311,7 @@ Transcodes must shrink the complete file (default minimum 5%). Larger/equal
 outputs are rejected even at a zero threshold. Quality is not automatically
 lowered to force a saving. Experimental full NVIDIA DV runs first test a
 bounded 30s sample and skip the full encode if that sample does not shrink.
-The current full DV series B result is rejected: larger and failed Sony TV playback.
+The current full DV series B result is rejected: larger and failed Dolby Vision-capable TV playback.
 See DOLBY-FULL-FILE.md for the remaining validation limits.
 
 ## Consolidated source layout
@@ -441,7 +441,7 @@ for backward compatibility; `--ordered-dv` is a mux-only diagnostic, not DV appr
 ### Integrated Intel HDR and Dolby Vision
 
 After the full AV1 HDR10 and HEVC Profile 8.1 outputs passed automated checks and
-Chrome/Sony TV playback, the normal standalone command now dispatches to those
+Chrome/Dolby Vision-capable TV playback, the normal standalone command now dispatches to those
 same audited pipelines. No extra scripts are needed:
 
 ```powershell

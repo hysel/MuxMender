@@ -11,6 +11,8 @@ class ReconstructedClockTests(unittest.TestCase):
     def test_workflow_requires_independent_pcm_proof(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);a=root/'source-packets';b=root/'output-packets'
+            (root/'source.mkv').write_bytes(b'source fixture')
+            (root/'copy.mkv').write_bytes(b'output fixture')
             def row(i,pts):return f'pts_time={pts}|dts_time={pts}|data_hash=SHA256:{str(i)*64}\n'
             a.write_text(row(1,'0')+row(2,'N/A')+row(3,'0.002'))
             b.write_text(row(1,'0')+row(2,'0.001')+row(3,'0.002'))
@@ -24,10 +26,12 @@ class ReconstructedClockTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'PCM changed'):
                     work.validate_copied_tracks(root/'source.mkv',root/'copy.mkv',info,info,'test')
             self.assertEqual(work.execute.call_count,2)
+            self.assertEqual(work.audited_audio_indices(root/'source.mkv',root/'copy.mkv'),set())
             work.copied_packets=Mock(side_effect=[{1:a},{1:b}])
             with patch('packet_validation.compare_decoded_audio',return_value={'pcm_identical':True}) as proof:
                 work.validate_copied_tracks(root/'source.mkv',root/'copy.mkv',info,info,'verified')
                 proof.assert_called_once()
+            self.assertEqual(work.audited_audio_indices(root/'source.mkv',root/'copy.mkv'),{1})
             info['streams'][1]['codec_name']='ac3'
             work.copied_packets=Mock(side_effect=[{1:a},{1:b}])
             with self.assertRaisesRegex(ValueError,'Copied packet timing changed'):

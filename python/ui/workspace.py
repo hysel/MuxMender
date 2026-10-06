@@ -22,8 +22,10 @@ globalThis.liveUpdatesPaused=false;
 function applyTheme(value){if(!['system','light','dark'].includes(value))value='system';document.documentElement?.setAttribute('data-theme',value);try{localStorage.setItem('muxmender-theme',value)}catch(e){}userEl('theme').value=value}
 try{applyTheme(localStorage.getItem('muxmender-theme')||'system')}catch(e){applyTheme('system')}
 userEl('theme').addEventListener('change',()=>applyTheme(userEl('theme').value));
-userEl('toggle-updates').addEventListener('click',()=>{globalThis.liveUpdatesPaused=!globalThis.liveUpdatesPaused;userEl('toggle-updates').setAttribute('aria-pressed',String(globalThis.liveUpdatesPaused));userEl('toggle-updates').textContent=globalThis.liveUpdatesPaused?'Resume live updates':'Pause live updates';userEl('connection-state').textContent=globalThis.liveUpdatesPaused?'Display paused · jobs continue':'Reconnecting…';if(!globalThis.liveUpdatesPaused){refreshUserJobs();if(typeof refreshControls==='function')refreshControls()}});
+userEl('toggle-updates').addEventListener('click',()=>{globalThis.liveUpdatesPaused=!globalThis.liveUpdatesPaused;userEl('toggle-updates').setAttribute('aria-pressed',String(globalThis.liveUpdatesPaused));userEl('toggle-updates').textContent=globalThis.liveUpdatesPaused?'Resume display updates':'Freeze display only';userEl('connection-state').textContent=globalThis.liveUpdatesPaused?'Display paused · jobs continue':'Reconnecting…';if(!globalThis.liveUpdatesPaused){refreshUserJobs();if(typeof refreshControls==='function')refreshControls()}});
 function userReason(job){const raw=String(job.reason||job.detail||job.error||'');const s=job.state;
+ if(s==='pending')return 'Waiting for its turn. See Current work for queue status.';
+ if(s==='running')return 'Work is in progress. See Current work for the current step.';
  if(s==='replaced')return 'Original replaced after automated checks and verified copying. No playback review was required.';
  if(/source audio preflight|quant_step_size/i.test(raw))return 'The source audio could not be decoded. Original kept. Check the source audio before retrying.';
  if(raw.startsWith('Unsupported input:'))return raw;
@@ -46,7 +48,13 @@ function userReason(job){const raw=String(job.reason||job.detail||job.error||'')
  if(s==='pending')return 'Waiting for its turn. Originals remain protected.';
  if(s==='running')return 'Processing a separate copy. The original is unchanged.';
  if(s==='interrupted')return 'Processing was interrupted. Inspect details and any publication recovery journal before retrying.';
- if(['failed','stale','unknown','completed-with-errors'].includes(s))return raw.startsWith('Replacement needs attention:')?raw+' Inspect the publication journal; the source path may already contain the new copy.':'Processing needs attention. Open details for the recorded reason.';
+ if(['failed','stale','unknown','completed-with-errors'].includes(s)){
+  if(raw.startsWith('Replacement needs attention:'))return raw+' Inspect the publication journal; the source path may already contain the new copy.';
+  if(/processing (?:time )?limit|timed out|timeout/i.test(raw))return 'A check reached your time limit. The original was kept. Review the limit before retrying.';
+  if(/out of memory|cannot allocate memory|oom/i.test(raw))return 'Processing ran out of available memory. Open details before retrying.';
+  if(/decoder|corrupt|invalid data|decode reported/i.test(raw))return 'A decoding check failed. Open details to see whether the problem was in the source or the new copy.';
+  return 'Processing needs attention. Open details for the recorded reason.';
+ }
  return raw||'Processing finished. Open details to check the outcome.';
 }
 function userStatus(state){return ({replaced:'Replaced',pending:'Queued',running:'Running',verified:'Ready for review','awaiting-playback':'Ready for review','playback-approved':'Playback approved',skipped:'Original kept','kept-original':'Original kept',analyzed:'Inspection complete',tested:'Samples tested',completed:'Finished — review details',failed:'Needs attention',interrupted:'Interrupted',stale:'Update overdue',unknown:'Needs attention'})[state]||'Needs attention'}
@@ -62,7 +70,8 @@ function sizeSummary(job){
  }
  return text;
 }
-function friendlyStage(value){const s=String(value||'');if(s==='full-encode')return 'Creating the full video copy';if(s==='full-decode')return 'Checking the full copy plays without decode errors';if(s.includes('Checking frame timing'))return 'Checking resolution and frame timing';if(s.includes('Checking copied track'))return 'Verifying audio or subtitles';if(s.includes('self-'))return 'Checking the quality measurement';if(s.includes('quality'))return 'Measuring visual quality';if(/nvenc|amf|qsv|vaapi/.test(s))return 'Comparing encoding options';return s.replaceAll('-',' ')||'Preparing the video'}
+function activityLabel(value){const s=String(value||'').toLowerCase();if(s.startsWith('waiting for ')&&s.includes('resources'))return 'Waiting for resources · this check has not started';if(s.endsWith(' · gpu reader')&&/^(checking hdr frame timing:|checking hdr frames:|checking original hdr metadata)/.test(s))return 'GPU validation · checking every frame and HDR metadata; not encoding';if(s==='inspect every source frame for hdr and dv metadata'||s.startsWith('checking original hdr metadata'))return 'CPU inspection · reading HDR and Dolby Vision metadata; not encoding';if(s.startsWith('checking hdr frame timing:')||s==='compare every decoded output frame and static hdr value')return 'CPU validation · checking decoded frames and HDR metadata';if(/^(hevc|av1|h264)_nvenc full encode$/.test(s))return 'GPU encoding · NVIDIA';if(s==='full-encode')return 'Encoding · creating a separate video copy';return ''}
+function friendlyStage(value){const s=String(value||'');const activity=activityLabel(s);if(activity)return activity;if(s==='full-decode')return 'Checking the full copy plays without decode errors';if(s.includes('Checking frame timing'))return 'Checking resolution and frame timing';if(s.includes('Checking copied track'))return 'Verifying audio or subtitles';if(s.includes('self-'))return 'Checking the quality measurement';if(s.includes('quality'))return 'Measuring visual quality';if(/nvenc|amf|qsv|vaapi/.test(s))return 'Comparing encoding options';return s.replaceAll('-',' ')||'Preparing the video'}
 function workflowStep(value){const s=String(value||'').toLowerCase();if(/publish|publication|staged|flushing/.test(s))return 'Replacement · copying and verifying publication';if(s==='full-encode')return 'Encoding · creating a separate full copy';if(/full-|frame|track|timestamp|digest|hash|verif/.test(s))return 'Validation · checking integrity and preservation';return 'Inspection / sample trials · testing candidates'}
 function stagePresentation(job){
  const labels={inspect:'Inspect',compare:'Compare options',encode:'Encode',validate:'Validate',publish:'Replace',cleanup:'Clean up'};
@@ -83,22 +92,42 @@ function progressFreshness(job,now=Date.now()/1000,connected=true,displayPaused=
  if(!Number.isFinite(job.updated))return 'Waiting for the first worker progress update';
  return '';
 }
+const activeDetailViews=new Set();
 function renderActiveCard(job){
  const card=userNode('article',null,'active-job'),view=stagePresentation(job);
- card.append(userNode('h3',resultName(job)),userNode('p',sizeSummary(job),'result-meta'),userNode('p',view.title,'stage-title'));
- const steps=userNode('ol',null,'stage-list');steps.setAttribute('aria-label','Workflow stages');
- view.steps.forEach((stage,index)=>{const item=userNode('li',(index+1)+'. '+view.labels[stage]);if(index===view.index){item.setAttribute('aria-current','step');item.className='current-step'}steps.append(item)});
- card.append(steps,userNode('p',view.check,'check-progress'),userNode('p',friendlyStage(job.phase),'control-note'));
- const timing=userNode('p',null,'result-meta');
- timing.textContent=(Number.isFinite(job.started)?'Elapsed '+Math.max(0,Math.floor((Date.now()/1000-job.started)/60))+' min':'')+
-   (Number.isFinite(job.stage_eta)?' · Current check ETA '+Math.max(1,Math.ceil(job.stage_eta/60))+' min':'');
- card.append(timing);
+ card.append(userNode('h3',resultName(job)),userNode('p',sizeSummary(job),'result-meta'));
  const freshness=progressFreshness(job,Date.now()/1000,catalogConnected,globalThis.liveUpdatesPaused===true);
+ const measuredPercent=Number.isFinite(job.stage_percent)&&job.stage_percent>=0&&job.stage_percent<=100?job.stage_percent:null;
+ const percent=freshness?null:measuredPercent;
+ const head=userNode('div',null,'job-progress-head');
+ head.append(userNode('p',view.title,'stage-title'),userNode('p',freshness?'Progress unavailable':percent===null?'Measuring…':percent===100?'Check complete · finishing':percent.toFixed(0)+'% of current check','check-progress'));
+ const track=userNode('div',null,'job-progress-track'),fill=userNode('div',null,'job-progress-fill');
+ track.setAttribute('role','progressbar');track.setAttribute('aria-label','Current check for '+resultName(job));
+ track.setAttribute('aria-valuemin','0');track.setAttribute('aria-valuemax','100');
+ if(percent!==null){track.setAttribute('aria-valuenow',String(percent));track.setAttribute('aria-valuetext',percent.toFixed(0)+'% of the current check; not overall video progress');fill.style.width=percent+'%';if(percent===100)track.classList.add('is-complete')}
+ else{track.classList.add(freshness?'is-stale':'is-measuring');track.setAttribute('aria-valuetext',freshness||'Working; a percentage has not been reported');fill.style.width=freshness?(measuredPercent??0)+'%':'100%'}
+ fill.setAttribute('aria-hidden','true');track.append(fill);
+ card.append(head,track,userNode('p',friendlyStage(job.phase),'job-phase'));
+ const steps=userNode('ol',null,'stage-list');steps.setAttribute('aria-label','Workflow stages');
+ view.steps.forEach((stage,index)=>{const item=userNode('li',(index+1)+'. '+view.labels[stage]);if(index===view.index){item.setAttribute('aria-current','step');item.className='current-step'}else if(index<view.index){item.className='completed-step';item.setAttribute('aria-label',view.labels[stage]+' step finished')}steps.append(item)});
+ const timing=userNode('p',null,'job-timing');
+ timing.textContent=(Number.isFinite(job.started)?'Elapsed '+Math.max(0,Math.floor((Date.now()/1000-job.started)/60))+' min':'')+
+   (!freshness&&Number.isFinite(job.stage_eta)?' · Current check ETA '+Math.max(1,Math.ceil(job.stage_eta/60))+' min':'');
+ card.append(timing);
  if(freshness)card.append(userNode('p',freshness,'attention'));
- const detail=userNode('details');detail.append(userNode('summary','Technical details'));
+ const detail=userNode('details'),summary=userNode('summary','Details');
+ summary.setAttribute('aria-label','Steps and details for '+resultName(job));detail.append(summary,steps);
+ const detailKey=job.requestId||job.id||job.source;
+ detail.open=activeDetailViews.has(detailKey);
+ detail.addEventListener('toggle',()=>{if(detail.open)activeDetailViews.add(detailKey);else activeDetailViews.delete(detailKey)});
  if(job.detail)detail.append(userNode('p',job.detail,'control-note'));
  detail.append(userNode('p','Percent and ETA apply to the current check only. Stages contain multiple checks; their durations are not equal.','control-note'));
  const measured=Object.entries(job.performance_seconds||{}).filter(([,v])=>Number.isFinite(v)&&v>0);
+ if(measured.length&&job.performance_schema>=2){
+  const waiting=['validation_wait','gpu_wait','publication_wait'].reduce((n,k)=>n+(job.performance_seconds[k]||0),0),paused=job.performance_seconds.gpu_pause||0,total=measured.reduce((n,[,v])=>n+v,0);
+  detail.append(userNode('p','Observed time: '+Math.round(Math.max(0,total-waiting-paused)/60)+' min outside measured waits/pauses · '+Math.round(waiting/60)+' min waiting for resources'+(job.performance_schema>=3?' · '+Math.round(paused/60)+' min yielding to other apps':''),'result-meta'));
+ }
+ if(measured.length&&!(job.performance_schema>=2))detail.append(userNode('p','Legacy timings: validation waiting was not measured separately.','control-note'));
  for(const [name,seconds] of measured)detail.append(userNode('p',name.replaceAll('_',' ')+': '+Math.round(seconds)+' sec'));
  card.append(detail);return card;
 }
@@ -118,12 +147,13 @@ function resultMeta(job){const t=outcomeTime(job),label=Number.isFinite(job.fini
 function receiveControls(body){requestJobs=body.jobs||[];queueState=body;
  renderOutcomeSummary(requestJobs);
  receiveHistory(body);
+ if(typeof renderWorkspaceSummary==='function')renderWorkspaceSummary(body);
  const savings=body.lifetime_savings;if(savings){const bytes=savings.saved_bytes||0;userEl('lifetime-saved').textContent=(bytes/(bytes>=1e12?1e12:1e9)).toFixed(2)+(bytes>=1e12?' TB':' GB');userEl('lifetime-detail').textContent=savings.replaced_files+' files replaced'+(Number.isFinite(savings.percent)?' · '+savings.percent.toFixed(1)+'% smaller overall':'')}
  renderUserResults()}
 function renderUserResults(force=false){const rows=mergedResults(),running=rows.filter(j=>j.state==='running'),active=running[0],current=userEl('current-work');current.replaceChildren();
- if(active){for(const active of running)current.append(renderActiveCard(active));}else current.append(userNode('p',queueState.wait_reason|| (queueState.paused?(queueState.pause_reason||'Queue paused. Resume when ready.'):(queueState.error|| (rows.some(j=>j.state==='pending')?'Videos are queued. Checking worker availability…':'No video is running. Use Set up to start.')))));
+ if(active){for(const active of running)current.append(renderActiveCard(active));}else current.append(userNode('p',queueState.wait_reason|| (queueState.paused?(queueState.pause_reason||'Queue paused. Resume when ready.'):(queueState.error|| (rows.some(j=>j.state==='pending')?'Videos are queued. Checking worker availability…':'You’re all caught up. Choose Add videos to start another batch.')))));
  const counts=queueState.counts||{},total=Object.values(counts).reduce((a,b)=>a+b,0),processed=total-(counts.pending||0)-(counts.running||0);
- current.append(userNode('p',processed+' of '+total+' requests processed · '+(counts.analyzed||0)+' inspected · '+((counts.skipped||0)+(counts['kept-original']||0))+' kept · '+(counts.failed||0)+' failed','result-meta'));
+ current.append(userNode('p',processed+' of '+total+' requests finished · '+(counts.analyzed||0)+' inspected · '+((counts.skipped||0)+(counts['kept-original']||0))+' kept · '+(counts.failed||0)+' failed','result-meta'));
  if(counts.pending&&active)current.append(userNode('p','Queued videos: '+(queueState.wait_reason||'Waiting for an available worker slot')+'. Running work finishes normally.','control-note'));
  const batch=userEl('result-batch').value;if(batch){const selected=rows.filter(j=>(j.batch_id||'folder:'+String(j.source||'').replaceAll('\\','/').split('/').slice(0,-1).join('/'))===batch),finished=selected.filter(j=>!['pending','running'].includes(j.state)).length;current.append(userNode('p','Selected batch: '+finished+' of '+selected.length+' requests finished. Skips and failures count as finished, not successful.','result-meta'))}
  if(requestJobs.length&&requestJobs.every(j=>j.settings?.mode==='analyze'))current.append(userNode('p','Inspection only — no videos will be converted.','control-note'));
@@ -133,6 +163,6 @@ function renderUserResults(force=false){const rows=mergedResults(),running=rows.
 }
 userEl('result-search').addEventListener('input',()=>{resultLimit=20;renderUserResults(true)});userEl('result-filter').addEventListener('change',()=>{resultLimit=20;renderUserResults(true)});userEl('show-results').addEventListener('click',()=>{resultLimit+=20;renderUserResults(true)});
 userEl('result-sort').addEventListener('change',()=>{resultLimit=20;renderUserResults(true)});
-let userTimer=null;
-async function refreshUserJobs(){try{if(globalThis.liveUpdatesPaused)return;const r=await fetch('/api/jobs',{signal:AbortSignal.timeout(8000)});if(!r.ok)throw Error('Connection lost. Displayed results may be out of date.');const body=await r.json();catalogJobs=body.jobs||[];connectionUpdate('catalog',true);renderUserResults()}catch(e){connectionUpdate('catalog',false)}finally{clearTimeout(userTimer);userTimer=setTimeout(refreshUserJobs,10000)}}wireHistory();refreshUserJobs();
+let userTimer=null,userPollBusy=false;
+async function refreshUserJobs(){if(userPollBusy)return;userPollBusy=true;let received=false;try{if(globalThis.liveUpdatesPaused)return;const r=await fetch('/api/jobs',{signal:AbortSignal.timeout(30000)});if(!r.ok)throw Error('Connection lost. Displayed results may be out of date.');const body=await r.json();received=true;catalogJobs=body.jobs||[];connectionUpdate('catalog',true);renderUserResults();if(body.catalog_error)userEl('connection-state').textContent='Connected · progress refresh failed; showing last-known data';else if(!body.catalog_updated)userEl('connection-state').textContent='Connected · loading job progress; processing is unaffected'}catch(e){if(received){console.error(e);userEl('connection-state').textContent='Display update failed · retrying; processing is unaffected'}else{connectionUpdate('catalog',false);renderUserResults()}}finally{userPollBusy=false;clearTimeout(userTimer);userTimer=setTimeout(refreshUserJobs,10000)}}wireHistory();refreshUserJobs();
 </script>'''

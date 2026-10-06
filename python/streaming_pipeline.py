@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 import uuid
+import xml.etree.ElementTree as ET
 from dataclasses import replace
 
 import muxmender as mm
@@ -63,6 +64,58 @@ def full_range(args, info):
 def chapter_summary(ffprobe, path, timeout):
     data = np.checked_json([ffprobe, '-v', 'error', '-show_chapters', '-of', 'json', str(path)], timeout=timeout)
     return [(round(float(c['start_time']), 6), round(float(c['end_time']), 6), c.get('tags', {})) for c in data.get('chapters', [])]
+
+
+def chapter_xml_signature(text):
+    """Preserve the full native chapter tree, ignoring formatting only."""
+    if '<!ENTITY' in text.upper():
+        raise ValueError('Chapter entity declarations are unsupported')
+    root = ET.fromstring(text.lstrip('\ufeff'))
+    if root.tag != 'Chapters':
+        raise ValueError('Invalid native chapter document')
+    def node(element):
+        return (element.tag, tuple(sorted(element.attrib.items())),
+                (element.text or '').strip(), tuple(node(child) for child in element))
+    return node(root)
+
+
+def verify_chapters_preserved(ffprobe, source, output, timeout, mkvextract='mkvextract'):
+    """Validate stored chapters, not an inferred final endpoint.
+
+    FFprobe synthesizes missing chapter ends from container duration. A remux
+    can change that derived endpoint without changing any stored chapter. Only
+    identical native Matroska trees may resolve such a mismatch; no timestamp
+    tolerance, missing tool fallback or chapter edits are accepted.
+    """
+    before = chapter_summary(ffprobe, source, timeout)
+    after = chapter_summary(ffprobe, output, timeout)
+    if before == after:
+        return dict(method='reported-chapters', unchanged=True)
+    if [(start, tags) for start, end, tags in before] != [(start, tags) for start, end, tags in after]:
+        raise ValueError('Chapters changed: count, start timestamp or tags')
+    signatures = []
+    documents = []
+    for path in (source, output):
+        info = np.checked_json([ffprobe, '-v', 'error', '-show_entries',
+                                'format=format_name', '-of', 'json', str(path)], timeout=timeout)
+        if 'matroska' not in info.get('format', {}).get('format_name', '').split(','):
+            raise ValueError('Chapters changed: native Matroska proof unavailable')
+        result = subprocess.run([mkvextract, str(path), 'chapters'],
+                                capture_output=True, text=True, encoding='utf-8',
+                                check=True, timeout=timeout)
+        signatures.append(chapter_xml_signature(result.stdout))
+        documents.append(ET.fromstring(result.stdout.lstrip('\ufeff')))
+    if signatures[0] != signatures[1]:
+        raise ValueError('Chapters changed: stored chapter tree differs')
+    atoms = list(documents[0].iter('ChapterAtom'))
+    if len(atoms) != len(before):
+        raise ValueError('Chapters changed: unresolved chapter endpoint mapping')
+    for atom, original, converted in zip(atoms, before, after):
+        if original[1] != converted[1] and atom.find('ChapterTimeEnd') is not None:
+            raise ValueError('Chapters changed: explicitly stored end timestamp mismatch')
+    return dict(method='exact-native-matroska-tree', unchanged=True,
+                reported_endpoints_before=[end for start, end, tags in before],
+                reported_endpoints_after=[end for start, end, tags in after])
 
 
 def pipe_encode(producer_command, consumer_command, seconds, timeout, stall, guard=None):
@@ -251,8 +304,8 @@ def run(args, source):
         guard.status(90)
         guard()
         check_timeout = max(60, min(7200, seconds * 2))
-        if full and chapter_summary(args.ffprobe, source, check_timeout) != chapter_summary(args.ffprobe, output, check_timeout):
-            raise RuntimeError('Chapter timestamps or metadata changed')
+        if full:
+            verify_chapters_preserved(args.ffprobe, source, output, check_timeout)
         actual = mm.probe(output, args.ffprobe)
         if (actual.width, actual.height, actual.color_primaries, actual.color_transfer, actual.color_space) != (info.width, info.height, 'bt2020', 'smpte2084', 'bt2020nc'):
             raise RuntimeError('Resolution/color verification failed')

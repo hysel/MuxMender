@@ -20,7 +20,7 @@ def save_review(roots, request):
         row=next((r for r in batch['episodes'] if r['review_id']==request.get('episode')),None)
         if row is None:raise ValueError('Unknown episode')
         client=request.get('client');status=request.get('status');note=request.get('note','')
-        if client not in ('Chrome','Sony TV','Plex') or status not in ('Passed','Failed','Not tested'):
+        if client not in ('Chrome','Dolby Vision-capable TV','Plex') or status not in ('Passed','Failed','Not tested'):
             raise ValueError('Invalid playback review')
         if not isinstance(note,str) or len(note)>1000:raise ValueError('Note too long')
         path=Path(batch['id']).parent/'playback-reviews.json'

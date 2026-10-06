@@ -1,5 +1,7 @@
 import copy
 import unittest
+import tempfile
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 import auto_optimize as ao
@@ -11,6 +13,44 @@ from codec_selection import select_candidate
 
 
 class AutomaticHDRTests(unittest.TestCase):
+    def test_full_hdr_reference_precedes_full_encode_in_shared_engine(self):
+        import inspect
+        code=inspect.getsource(ao.run)
+        self.assertLess(code.index('workflow.prepare_full_hdr_reference(source,data)'),
+                        code.index("workflow.encode_preserving_color(source,output,settings,info,data,'full-encode'"))
+        prepare=code.index('workflow.prepare_full_hdr_reference(source,data)')
+        encode=code.index("workflow.encode_preserving_color(source,output,settings,info,data,'full-encode'")
+        self.assertIn("workflow_stage('inspect')",code[prepare-120:prepare])
+        self.assertIn("workflow_stage('encode')",code[prepare:encode])
+
+    def test_hdr_preparation_caches_only_complete_current_source_evidence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);source=root/'generated-source.mkv';source.write_bytes(b'source')
+            w=ao.Workflow(SimpleNamespace(hdr_mode='pq'),root,lambda:None)
+            frames=root/'complete-frames.jsonl'
+            with patch.object(w,'frame_file',return_value=frames) as read, \
+                 patch.object(w,'compare_frame_files',return_value=24) as verify:
+                self.assertEqual(w.prepare_full_hdr_reference(source,{'format':{'duration':'1'}}),frames)
+            read.assert_called_once();verify.assert_called_once_with(frames,frames)
+            self.assertEqual(w.frame_cache[str(source.resolve())],frames)
+
+    def test_hdr_preparation_does_not_cache_timeout_corruption_or_changed_source(self):
+        for failure in ('timeout','malformed','changed'):
+            with self.subTest(failure=failure),tempfile.TemporaryDirectory() as folder:
+                root=Path(folder);source=root/'generated-source.mkv';source.write_bytes(b'source')
+                w=ao.Workflow(SimpleNamespace(hdr_mode='pq'),root,lambda:None)
+                frames=root/'frames';key=str(source.resolve())
+                def read(*args):
+                    w.frame_cache[key]=frames
+                    if failure=='timeout':raise RuntimeError('configured processing limit')
+                    if failure=='changed':source.write_bytes(b'changed-source')
+                    return frames
+                with patch.object(w,'frame_file',side_effect=read), \
+                     patch.object(w,'compare_frame_files',side_effect=ValueError('malformed evidence') if failure=='malformed' else None,return_value=24):
+                    with self.assertRaises((ValueError,RuntimeError)):
+                        w.prepare_full_hdr_reference(source,{'format':{'duration':'1'}})
+                self.assertNotIn(key,w.frame_cache)
+
     def test_prefix_quality_reports_named_frame_progress_for_both_passes(self):
         with patch('native_pipeline.stage') as stage, \
              patch('job_tracking.progress') as progress, \

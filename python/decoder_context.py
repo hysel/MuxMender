@@ -6,6 +6,13 @@ import subprocess
 X264_UUID=bytes.fromhex('dc45e9bde6d948b7962cd820d923eeef')
 
 
+def hdr_reader_options(duration):
+    """Bound shared-host CPU use and reduce evidence I/O without omitting fields."""
+    from resource_governor import hdr_validation_threads
+    threads=hdr_validation_threads() if float(duration)>=300 else 2
+    return metadata_reader_options(threads)+['-show_frames','-of','json=compact=1']
+
+
 def metadata_reader_options(threads=2):
     """Keep stateful HEVC SEI in one frame context, with slice parallelism.
 

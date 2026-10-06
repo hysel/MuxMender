@@ -32,9 +32,9 @@ def check_dependencies(ffmpeg, filters):
         if not shutil.which(name):raise ValueError('HDR preservation dependency missing: '+name)
 
 
-def quality_graph(name, frame_rate, frame_count=None):
+def quality_graph(name, frame_rate, frame_count=None, *, threads=2):
     from auto_optimize import quality_graph as ordinary_graph
-    ordinary_graph(name,frame_rate)  # Validate filename and rate before filter interpolation.
+    ordinary_graph(name,frame_rate,threads=threads)  # Validate before filter interpolation.
     rate=Fraction(frame_rate)
     clock=f'settb=AVTB,setpts=N*{rate.denominator}/({rate.numerator}*TB)'
     # Explicit peak prevents each encoder's metadata choosing a different curve.
@@ -45,7 +45,7 @@ def quality_graph(name, frame_rate, frame_count=None):
         raise ValueError('Quality prefix requires a positive frame count')
     prefix=f'trim=end_frame={frame_count},' if frame_count is not None else ''
     return (f'[0:V:0]{prefix}{render},{clock}[d];[1:V:0]{prefix}{render},{clock}[r];'
-            f'[d][r]libvmaf=n_threads=2:log_fmt=json:log_path={name}')
+            f'[d][r]libvmaf=n_threads={threads}:log_fmt=json:log_path={name}')
 
 
 def measure_prefix_quality(ffmpeg, reference, output, directory, count, rate, guard):

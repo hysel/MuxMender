@@ -7,13 +7,13 @@ This is not a restart checkpoint and does not release GPU memory.
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path,PurePosixPath
 import signal
 import sys
 import time
 import subprocess
 
-MEDIA_TOOLS = {'ffmpeg', 'ffprobe', 'mkvmerge', 'dovi_tool', 'hdr10plus_tool'}
+MEDIA_TOOLS = {'ffmpeg', 'ffprobe', 'ffprobe-cuda', 'mkvmerge', 'dovi_tool', 'hdr10plus_tool'}
 
 
 def launch_owned(command, **kwargs):
@@ -70,7 +70,7 @@ def configured_lease(command, env=None):
     # Do not stop Python orchestration: its nested watchdogs must stay alive.
     if not command or Path(str(command[0])).name not in MEDIA_TOOLS:
         return None
-    if not Path(path).is_absolute():
+    if not PurePosixPath(path).is_absolute():
         raise ValueError('Pause lease must use an absolute work-directory path')
     return path
 

@@ -19,7 +19,7 @@ import mux_integrity as nvidia_mux
 import job_tracking as jobs
 import dv_preservation_test as dv
 import dv_tracks
-from streaming_pipeline import RunGuard, chapter_summary
+from streaming_pipeline import RunGuard, chapter_summary, verify_chapters_preserved
 from run_logged import Tee
 import validate_nvidia as nv
 from mux_integrity import verify_startup_interleaving, verify_seek_interleaving
@@ -48,11 +48,15 @@ def compare_track_packets(before, after, streams):
     for index, packets in left.items():
         if len(packets) != len(right[index]):
             raise ValueError('Track packet count changed')
-        for a, b in zip(packets, right[index]):
+        for ordinal, (a, b) in enumerate(zip(packets, right[index]),1):
             if a == b:
                 continue
             if {k:v for k,v in a.items() if k != 'duration_time'} != {k:v for k,v in b.items() if k != 'duration_time'}:
-                raise ValueError('Track packet bytes, sequence or timestamps changed')
+                fields=sorted(k for k in a.keys() | b.keys()
+                              if k!='duration_time' and a.get(k)!=b.get(k))
+                key=fields[0]
+                raise ValueError('Track packet bytes, sequence or timestamps changed: '
+                    f'track {index}, packet {ordinal}, {key}: {a.get(key)!r} -> {b.get(key)!r}')
             stream = info[index]
             if stream.get('codec_type') != 'audio' or stream.get('codec_name') != 'aac' or stream.get('time_base') != '1/1000':
                 raise ValueError('Unexpected packet duration change')
@@ -92,6 +96,16 @@ def frame_evidence_timeout(duration):
 
 
 def frame_evidence(ffprobe, source, output, guard, timeout=None):
+    from validation_resources import validation_slot
+    from job_tracking import measured_operation,progress
+    with measured_operation('validation_wait'):
+        with validation_slot([ffprobe,'-show_frames'],guard):
+            progress(guard.phase,detail='CPU inspection: collecting complete frame metadata')
+            with measured_operation('frame_validation'):
+                return _frame_evidence(ffprobe,source,output,guard,timeout)
+
+
+def _frame_evidence(ffprobe, source, output, guard, timeout=None):
     from runtime_support import frame_evidence_percent, TerminalProgress
     timeout=frame_evidence_timeout(getattr(guard,'duration',None)) if timeout is None else timeout
     if not math.isfinite(timeout) or timeout<=0:raise ValueError('Invalid frame-audit timeout')
@@ -99,13 +113,16 @@ def frame_evidence(ffprobe, source, output, guard, timeout=None):
     fields = ('side_data_type,red_x,red_y,green_x,green_y,blue_x,blue_y,'
               'white_point_x,white_point_y,min_luminance,max_luminance,max_content,max_average')
     from decoder_context import metadata_reader_options
-    command = [ffprobe, '-v', 'error', *metadata_reader_options(), '-select_streams', 'V:0',
+    from resource_governor import hdr_validation_threads
+    duration=getattr(guard,'duration',None)
+    threads=hdr_validation_threads() if duration is not None and float(duration)>=300 else 2
+    command = [ffprobe, '-v', 'error', *metadata_reader_options(threads), '-select_streams', 'V:0',
                '-show_frames', '-show_entries',
                'frame=best_effort_timestamp_time,interlaced_frame,repeat_pict,width,height,pix_fmt,sample_aspect_ratio,color_range,color_space,color_transfer,color_primaries,chroma_location:frame_side_data=' + fields,
                '-of', 'compact', str(source)]
     if getattr(guard,'allow_hdr10plus',False):
-        command=[ffprobe,'-v','error',*metadata_reader_options(),'-select_streams','V:0',
-                 '-show_frames','-of','json',str(source)]
+        command=[ffprobe,'-v','error',*metadata_reader_options(threads),'-select_streams','V:0',
+                 '-show_frames','-of','json=compact=1',str(source)]
     started = last = time.monotonic()
     with Path(output).open('xb') as out, Path(str(output)+'.log').open('xb') as err:
         process = subprocess.Popen(command, stdout=out, stderr=err)
@@ -388,6 +405,21 @@ def ordered_dv_mux_command(ffmpeg, video, source, output, streams, start_offset=
     return command
 
 
+def copied_matroska_packetizer_options(streams,identified):
+    """Preserve already packetized TrueHD Matroska audio, not codec-derived clocks.
+
+    This changes transport only. All complete packet/PCM/frame/metadata and
+    quality checks remain mandatory. Other source layouts retain their route.
+    """
+    container=identified.get('container',{})
+    scale=container.get('properties',{}).get('timestamp_scale')
+    if (container.get('type')=='Matroska' and type(scale) is int and 0<scale<=1000000000
+            and any(s.get('codec_type')=='audio' and s.get('codec_name')=='truehd'
+                    for s in streams['streams'])):
+        return ['--engage','force_passthrough_packetizer','--timestamp-scale',str(scale)]
+    return []
+
+
 def matroska_dv_mux_command(video,source,output,streams,identified,start_offset=0,mkvmerge='mkvmerge'):
     """Two-input Matroska mux with original non-video tracks and bounded memory.
 
@@ -409,7 +441,8 @@ def matroska_dv_mux_command(video,source,output,streams,identified,start_offset=
     video_ids=[t['id'] for i,t in enumerate(tracks) if t['type']=='video' and i!=primary_position]
     order=','.join('0:0' if i==primary_position else '1:'+str(t['id']) for i,t in enumerate(tracks))
     flags=primary.get('disposition',{});tags=primary.get('tags',{})
-    command=[mkvmerge,'-o',str(output),'--disable-lacing','--track-order',order,
+    command=[mkvmerge,'-o',str(output),*copied_matroska_packetizer_options(streams,identified),
+             '--disable-lacing','--track-order',order,
              '--no-audio','--no-subtitles','--no-attachments','--no-chapters','--no-global-tags',
              '--language','0:'+tags.get('language','und'),'--track-name','0:'+tags.get('title',''),
              '--default-track-flag','0:'+str(int(bool(flags.get('default')))),
@@ -640,8 +673,7 @@ def run(args, *, qualified_preflight=None):
                         report.setdefault('aac_duration_rounding', {})[index] = dict(packets=count, decoded_pcm_identical=True, presentation=proof)
                 elif source_packets != final_packets:
                     raise ValueError(f'Original {selector} packets changed')
-            if chapter_summary(args.ffprobe, args.source, 60) != chapter_summary(args.ffprobe, final, 60):
-                raise ValueError('Chapters changed')
+            report['chapter_preservation'] = verify_chapters_preserved(args.ffprobe, args.source, final, 60)
             def first_frame(path):
                 from decoder_context import metadata_reader_options
                 return np.checked_json([args.ffprobe, '-v', 'error', *metadata_reader_options(), '-select_streams', 'V:0',
@@ -819,7 +851,7 @@ def verify_existing(parent, *, output=None, ffmpeg='ffmpeg', ffprobe='ffprobe',
         for index in rounding:
             report['decoded_pcm_checks'][index]=decoded_track_proof(ff,source,output,index,directory,
                                                                   lambda command,label:stage(command,label,15))
-        if chapter_summary(ffprobe,source,60)!=chapter_summary(ffprobe,output,60): raise ValueError('Chapters changed')
+        report['chapter_preservation'] = verify_chapters_preserved(ffprobe,source,output,60)
         passed,detail=verify_startup_interleaving(output,ffprobe)
         if not passed: raise ValueError(detail)
         report['startup_interleaving']=detail

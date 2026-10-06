@@ -1,7 +1,9 @@
-"""One demux/hash pass per file, with bounded-memory per-track evidence.
+"""Bounded-memory, complete per-track packet evidence.
 
-Video packet hashes are collected but not compared (video is re-encoded). Track
-interleaving may change in a remux, so comparisons remain ordered *per stream*.
+Small track sets use selected reads to avoid hashing re-encoded video. Larger
+sets retain one combined pass to bound storage rereads. Track interleaving may
+change in a remux, so comparisons remain ordered *per stream*. The separate
+complete duration-header proof is unaffected.
 """
 from contextlib import ExitStack
 import re
@@ -239,6 +241,32 @@ def split_packet_evidence(combined, directory, label, indices, guard=lambda:None
 def collect_packets(ffprobe, source, directory, label, indices, timeout, guard,
                     duration=None, start=0):
     if not indices:return {}
+    if any(type(i) is not int or i<0 for i in indices):
+        raise ValueError('Invalid copied stream index')
+    indices=sorted(set(indices))
+    if len(indices)<=2:
+        paths={}
+        for position,index in enumerate(indices,1):
+            guard()
+            target=Path(directory)/(label+f'-stream-{index}.txt')
+            command=[ffprobe,'-v','error','-select_streams',str(index),
+                     '-show_packets','-show_data_hash','sha256','-show_entries',
+                     'packet=stream_index,pts_time,dts_time,duration_time,data_hash:packet_side_data=',
+                     '-of','compact=p=0',str(source)]
+            run_probe(command,target,f'Checking copied track: {label} · {position}/{len(indices)}',
+                      timeout,guard,duration,start)
+            errors=target.with_suffix(target.suffix+'.stderr')
+            if not errors.is_file() or errors.stat().st_size:
+                raise ValueError('Selected packet reader did not produce clean error evidence: '+errors.name)
+            for number,row in enumerate(packet_rows(target)):
+                if number%4096==0:guard()
+                if row.get('stream_index')!=str(index):
+                    raise ValueError('Selected packet stream identity changed')
+                if not re.fullmatch(r'SHA256:[0-9a-fA-F]{64}',row.get('data_hash','')):
+                    raise ValueError(f'Missing/invalid packet hash for stream {index}')
+            paths[index]=target
+        guard()
+        return paths
     combined=Path(directory)/(label+'-all-packets.txt')
     # Excluding packet side-data fields keeps each packet on one compact line.
     # No decoding is requested here; existing full decode/frame checks remain.

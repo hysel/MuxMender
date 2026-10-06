@@ -16,7 +16,7 @@ run_name="muxmender-hdr10plus-$(date +%Y%m%d-%H%M%S)-$$"
 output_dir="/mnt/FR4G/Apps/muxmender/output/$run_name"
 if [ -e "$output_dir" ]; then echo 'Output already exists; refusing reuse.' >&2; exit 1; fi
 install -d -o 3005 -g 3005 -m 0770 "$output_dir"
-docker run -d --name "$run_name" --user 3005:3005 --network none \
+docker run -d --init --name "$run_name" --user 3005:3005 --network none \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   --cpus 4 --memory 6g --pids-limit 256 --tmpfs /tmp:rw,nosuid,nodev,size=256m \
   --mount "type=bind,src=$source_dir,dst=/source,readonly" \

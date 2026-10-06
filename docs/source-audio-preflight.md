@@ -43,3 +43,11 @@ No additional mandatory full source-video decode was introduced. Full preflight
 reads do add upfront I/O, particularly for a file later found not worth encoding;
 their purpose is early fault detection and evidence reuse, not a claimed speedup
 for every input.
+# Discard-output timestamps
+
+The decode-only preflight assigns sample-count timestamps to its discarded audio
+output. This avoids a false failure when the null muxer objects to duplicate
+source timestamps. It does not resample audio, change the source, or change the
+encoded deliverable. Strict decoder errors still fail, and the separate
+source/output timing and audio-preservation checks remain required. Generated
+duplicate-timestamp and truncated-audio tests cover these two outcomes.

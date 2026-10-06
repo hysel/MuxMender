@@ -10,7 +10,7 @@ import muxmender as mm
 import native_pipeline as np
 from mux_integrity import conversion_preflight, require_original_dimensions
 from library_planner import scan, classify, probe_with_frame_color
-from streaming_pipeline import chapter_summary
+from streaming_pipeline import chapter_summary, verify_chapters_preserved
 
 
 def save(path,data):
@@ -190,7 +190,7 @@ def convert(request,ctx):
         for selector in ('a','s'):
             result['packet_validation_'+selector]=compare_media_packets(ffprobe,reference,output,selector,ctx.guard)
             ctx.guard()
-        if chapter_summary(ffprobe,reference,600)!=chapter_summary(ffprobe,output,600): raise ValueError('Chapters changed')
+        result['chapter_preservation']=verify_chapters_preserved(ffprobe,reference,output,600)
         def attachments(path):
             data=np.checked_json([ffprobe,'-v','error','-select_streams','t','-show_streams','-show_data_hash','sha256',
                 '-show_entries','stream=codec_name,extradata_hash:stream_tags=filename,mimetype','-of','json',str(path)],timeout=60)

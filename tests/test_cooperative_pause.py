@@ -37,6 +37,35 @@ class LeaseTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform.startswith('linux'), 'Signals are tested on Linux only')
 class LinuxPauseTests(unittest.TestCase):
+    def test_frame_reader_timeout_excludes_yield_and_reaches_eof(self):
+        from task_progress import run_probe
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);lease=root/'lease.json'
+            lease.write_text(json.dumps({'pause':True,'expires_at':time.time()+1.2}))
+            command=[sys.executable,'-c','import time;time.sleep(.15);print("done",flush=True)']
+            with patch('cooperative_pause.configured_lease',return_value=str(lease)),patch('task_progress.progress') as report:
+                run_probe.__wrapped__(command,root/'frames.json','Frame audit',.8,lambda:None)
+            self.assertEqual((root/'frames.json').read_text().strip(),'done')
+            self.assertTrue(any('Paused:' in str(c) for c in report.call_args_list))
+
+    def test_frame_reader_cancel_reaps_suspended_owned_child(self):
+        from task_progress import run_probe
+        from cooperative_pause import launch_owned
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);lease=root/'lease.json'
+            lease.write_text(json.dumps({'pause':True,'expires_at':time.time()+30}))
+            started=time.monotonic();children=[]
+            def launch(*args,**kwargs):
+                child=launch_owned(*args,**kwargs);children.append(child);return child
+            def guard():
+                if time.monotonic()-started>.3:raise InterruptedError('Test cancellation')
+            with patch('cooperative_pause.configured_lease',return_value=str(lease)),patch('cooperative_pause.launch_owned',side_effect=launch):
+                with self.assertRaisesRegex(InterruptedError,'Test cancellation'):
+                    run_probe.__wrapped__([sys.executable,'-c','import time;time.sleep(60)'],
+                                          root/'frames.json','Frame audit',5,guard)
+            self.assertIsNotNone(children[0].returncode)
+            self.assertLess(time.monotonic()-started,3)
+
     def test_suspended_worker_dies_with_supervisor(self):
         import signal
         code = ('import sys,time,signal\nfrom cooperative_pause import launch_owned\n'
@@ -68,8 +97,10 @@ class LinuxPauseTests(unittest.TestCase):
             lease = root/'lease'
             command = [sys.executable, '-c', 'import time\nfor i in range(1,7):\n print("frame="+str(i),flush=True);time.sleep(.1)\n']
             lease.write_text(json.dumps({'pause': True, 'expires_at': time.time()+1.5}))
-            with patch('job_tracking.stage_progress') as report, patch('cooperative_pause.configured_lease', return_value=str(lease)):
+            with patch('job_tracking.stage_progress') as report, patch('cooperative_pause.configured_lease', return_value=str(lease)),patch('job_tracking.measured_operation') as measurement:
                 stage(command, 1, timeout=1.2, stall=.8)
+            measurement.assert_called_once_with('gpu_pause')
+            measurement.return_value.__exit__.assert_called_once()
             details = [c.kwargs.get('detail', '') for c in report.call_args_list]
             self.assertTrue(any(s.startswith('Paused:') for s in details))
             self.assertTrue(any(s.startswith('Resumed;') for s in details))

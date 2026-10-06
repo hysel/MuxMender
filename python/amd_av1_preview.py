@@ -16,7 +16,7 @@ import workflow_worker as worker
 from library_planner import probe_with_frame_color, classify
 from mux_integrity import conversion_preflight, verify_av1_display_geometry
 from job_tracking import tracked_call, phase
-from streaming_pipeline import chapter_summary
+from streaming_pipeline import chapter_summary, verify_chapters_preserved
 
 
 def reject_integrity_warning(line):
@@ -190,8 +190,7 @@ def validate_output(args, source, reference, output, directory, ctx, result, ful
             return np.checked_json([args.ffprobe, '-v', 'error', '-show_streams', '-show_data_hash',
                                     'sha256', '-of', 'json', str(path)], timeout=120)['streams']
         verify_tracks(tracks(source), tracks(output))
-        if chapter_summary(args.ffprobe, source, 600) != chapter_summary(args.ffprobe, output, 600):
-            raise ValueError('Chapters changed')
+        result['chapter_preservation']=verify_chapters_preserved(args.ffprobe, source, output, 600)
         phase(directory, 'Checksum original after validation', 95)
         result['source_sha256_after'] = checksum(source, ctx, 95, 5)
         if result['source_sha256_before'] != result['source_sha256_after']:

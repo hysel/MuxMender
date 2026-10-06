@@ -9,10 +9,16 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from tools.monitor_remote_research import REMOTE_TRACKED,entry_key
+from tools.monitor_remote_research import REMOTE_TRACKED,entry_key,unavailable_status
 
 
 class MonitorIdentityTests(unittest.TestCase):
+    def test_pending_launch_is_not_confused_with_lost_active_progress(self):
+        entry=dict(pending_launch=True)
+        self.assertEqual(unavailable_status(entry,{},RuntimeError())['state'],'queued')
+        self.assertEqual(unavailable_status(entry,dict(remote_registered=True),RuntimeError())['state'],'stale')
+        self.assertEqual(unavailable_status({}, {},RuntimeError())['state'],'stale')
+
     def test_same_server_jobs_have_distinct_identity(self):
         a=dict(host='research',title='first');b=dict(host='research',title='second')
         self.assertNotEqual(entry_key(a),entry_key(b))
@@ -23,6 +29,36 @@ class MonitorIdentityTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'linux', 'Remote reader tests run on Linux only')
 class DevelopmentMonitorTests(unittest.TestCase):
+    def test_cross_container_uses_worker_heartbeat_not_unrelated_pid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            parent=root/'reports'/'parent';parent.mkdir(parents=True)
+            child=root/'cases'/'child';child.mkdir(parents=True)
+            (parent/'job.json').write_text(json.dumps(dict(state='running',started=1,updated=10,pid=0)))
+            record=dict(state='running',started=2,updated=time.time(),stage_percent=42)
+            (child/'job.json').write_text(json.dumps(record))
+            for stamp in (record['updated'],0):
+                record['updated']=stamp
+                (child/'job.json').write_text(json.dumps(record))
+                capture=io.StringIO()
+                with contextlib.redirect_stdout(capture):
+                    exec(REMOTE_TRACKED,{'ROOTS':[str(root)],'CROSS_NAMESPACE':True})
+                result=json.loads(capture.getvalue())[0]
+                self.assertEqual(result['updated'],stamp)
+                self.assertEqual(result['completed'],0)
+
+    def test_zombie_pid_is_not_a_live_worker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            (root/'job.json').write_text(json.dumps(dict(state='running',started=1,updated=time.time(),pid=os.getpid())))
+            read=Path.read_text
+            def status(path,*args,**kwargs):
+                if path==Path('/proc',str(os.getpid()),'stat'):return '1 (fixture) Z 0 0'
+                return read(path,*args,**kwargs)
+            with patch.object(Path,'read_text',status):result=self.snapshot(root)
+            self.assertEqual(result['updated'],0)
+            self.assertEqual(result['completed'],0)
+
     def test_service_pid_is_used_for_cross_container_observation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)

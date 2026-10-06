@@ -11,6 +11,32 @@ import re
 from pathlib import Path
 
 
+def bounded_ffmpeg_threads(command, *, decoder_threads=2):
+    """Bound implicit FFmpeg worker pools; preserve every explicit thread option.
+
+    This does not change codec presets, pixel formats, timestamps or filters.
+    In particular, keep explicit metadata-reader thread modes intact.
+    """
+    if type(decoder_threads) is not int or decoder_threads not in (1, 2, 4):
+        raise ValueError('Decoder worker budget must be one, two or four threads')
+    command=list(command)
+    if not command or Path(str(command[0])).name.lower() not in ('ffmpeg','ffmpeg.exe'):return command
+    additions=[]
+    for flag in ('-filter_threads','-filter_complex_threads'):
+        if flag not in command:additions.extend((flag,'2'))
+    result=[command[0],*additions];scope=1
+    def has_threads(values):return any(str(v)=='-threads' or str(v).startswith('-threads:') for v in values)
+    for i,arg in enumerate(command[1:],1):
+        if arg=='-i':
+            if not has_threads(command[scope:i]):result.extend(('-threads',str(decoder_threads)))
+            scope=i+2
+        result.append(arg)
+    gpu_encoder=any((str(v) in ('-c:v','-codec:v','-vcodec') or str(v).startswith(('-c:v:','-codec:v:')))
+                    and str(command[i+1]).endswith('_nvenc') for i,v in enumerate(command[:-1]))
+    if gpu_encoder and not has_threads(command[scope:-1]):result[-1:-1]=['-threads:v','2']
+    return result
+
+
 def frame_evidence_percent(path, duration):
     """Read only a bounded tail of an in-progress JSON/compact ffprobe audit."""
     if not duration or not math.isfinite(duration) or duration <= 0:

@@ -6,10 +6,11 @@ class EncoderActivity:
     def __init__(self):
         self.frames = 0
         self.microseconds = 0
+        self.units = 0
 
     def update(self, line):
         key, separator, value = line.strip().partition('=')
-        if not separator or key not in ('frame', 'out_time_us', 'out_time_ms'):
+        if not separator or key not in ('frame', 'out_time_us', 'out_time_ms','MUXMENDER_ACTIVITY'):
             return False
         try:
             number = int(value)
@@ -17,7 +18,7 @@ class EncoderActivity:
             return False
         if number < 0 or number >= 2**62:
             return False
-        attribute = 'frames' if key == 'frame' else 'microseconds'
+        attribute = 'frames' if key == 'frame' else 'units' if key=='MUXMENDER_ACTIVITY' else 'microseconds'
         if number <= getattr(self, attribute):
             return False
         setattr(self, attribute, number)

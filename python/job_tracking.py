@@ -7,10 +7,31 @@ import threading
 import time
 import uuid
 import traceback
+from contextlib import contextmanager
 from app_version import VERSION
 from performance import accumulate
 
 _active = None
+_thread_progress=threading.local()
+
+
+@contextmanager
+def isolated_progress(observer):
+    """Let a parent report parallel work without competing stage updates."""
+    previous=getattr(_thread_progress,'observer',None)
+    previous_phase=getattr(_thread_progress,'phase',None)
+    _thread_progress.observer=observer;_thread_progress.phase=None
+    try:yield
+    finally:
+        _thread_progress.observer=previous;_thread_progress.phase=previous_phase
+
+
+def local_progress(values):
+    observer=getattr(_thread_progress,'observer',None)
+    if observer is None:return False
+    if 'phase' in values:_thread_progress.phase=values['phase']
+    observer(values)
+    return True
 
 
 class Job:
@@ -21,14 +42,16 @@ class Job:
         self.last_timing = time.monotonic()
         self.data = dict(title=title, state='running', pid=os.getpid(), started=time.time(),
                          phase='Starting task', stage_started=time.time(), app_version=VERSION,
-                         performance_seconds={}, performance_scope='Observed job wall time by stage; not CPU time or an end-to-end speedup')
+                         performance_seconds={}, performance_schema=3,
+                         performance_scope='Observed job wall time; resource admission and native-stage GPU-sharing pauses are separate. Not CPU time.')
         self.save()
 
     def save(self, **changes):
         with self.lock:
             now=time.monotonic()
             if self.data.get('state')=='running':
-                accumulate(self.data['performance_seconds'], self.data.get('phase',''), now-self.last_timing)
+                accumulate(self.data['performance_seconds'], self.data.get('phase',''), now-self.last_timing,
+                           self.data.get('performance_category'))
             self.last_timing=now
             if 'phase' in changes and changes['phase'] != self.data.get('phase'):
                 changes['stage_started']=time.time()
@@ -43,6 +66,7 @@ class Job:
 
 
 def phase(directory, label, percent):
+    if local_progress(dict(phase=label,percent=percent)):return
     if _active:
         try:
             _active.save(linked_run=str(Path(directory).resolve()), phase=label, percent=percent,
@@ -54,11 +78,14 @@ def phase(directory, label, percent):
 def progress(label, completed=0, total=None, stage_percent=None, stage_eta=None,
              directory=None, detail=None, unit='steps', **changes):
     """Explicit overall work count and independent current-stage progress."""
+    if local_progress(dict(phase=label,stage_percent=stage_percent,detail=detail,**changes)):return
     if not _active:
         return
     values = dict(progress_kind='structured', phase=label, completed=completed,
                   total=total, unit=unit, stage_percent=stage_percent,
                   stage_eta=stage_eta, detail=detail,
+                  stage_updated=time.time() if stage_percent is not None else None,
+                  eta_scope='Current stage only; later muxing/verification time is not included',
                   percent=100 * completed / total if total else None)
     if directory:
         values['linked_run'] = str(Path(directory).resolve())
@@ -71,6 +98,7 @@ def progress(label, completed=0, total=None, stage_percent=None, stage_eta=None,
 
 def stage_progress(percent, eta, detail=None):
     """Update current-stage telemetry without resetting completed-work progress."""
+    if local_progress(dict(stage_percent=percent,stage_eta=eta,detail=detail)):return
     if _active:
         try:
             values=dict(stage_percent=percent, stage_eta=eta, stage_updated=time.time(),
@@ -88,6 +116,37 @@ def workflow_stage(name):
     if _active:
         try:_active.save(workflow_stage=name,stage_percent=None,stage_eta=None)
         except OSError:pass
+
+
+@contextmanager
+def measured_operation(category):
+    """Explicit, non-overlapping elapsed time; phase labels remain presentation."""
+    if category not in ('validation_wait','gpu_wait','gpu_pause','publication_wait','publication',
+                        'frame_validation','quality_measurement','encoding'):
+        raise ValueError('Unknown measured operation')
+    if getattr(_thread_progress,'observer',None) is not None:
+        yield
+        return
+    job=_active
+    previous=job.data.get('performance_category') if job else None
+    try:
+        if job:
+            try:job.save(performance_category=category)
+            except OSError:pass
+        yield
+    finally:
+        if job:
+            try:job.save(performance_category=previous)
+            except OSError:pass
+
+
+def current_phase():
+    if getattr(_thread_progress,'observer',None) is not None:return getattr(_thread_progress,'phase',None)
+    return _active.data.get('phase') if _active else None
+
+
+def current_workflow_stage():
+    return _active.data.get('workflow_stage') if _active else None
 
 
 def tracked_call(function, title, folder=None):

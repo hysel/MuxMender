@@ -6,12 +6,44 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from job_tracking import Job
+from job_tracking import Job,measured_operation
 from performance import category
 from resource_governor import Governor,validation_thread_budget
 
 
 class PerformanceTests(unittest.TestCase):
+    def test_explicit_wait_and_execution_are_not_double_counted(self):
+        with tempfile.TemporaryDirectory() as folder,patch('job_tracking.time.monotonic',return_value=0) as clock:
+            job=Job(folder,'Timing')
+            with patch('job_tracking._active',job):
+                with measured_operation('validation_wait'):
+                    clock.return_value=10
+                    with measured_operation('frame_validation'):
+                        clock.return_value=30;job.save(phase='Unrelated progress label')
+                    clock.return_value=31
+                job.save(state='completed')
+            self.assertEqual(job.data['performance_seconds']['validation_wait'],11)
+            self.assertEqual(job.data['performance_seconds']['frame_validation'],20)
+            self.assertEqual(sum(job.data['performance_seconds'].values()),31)
+            self.assertIsNone(job.data['performance_category'])
+
+    def test_operation_restored_on_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            job=Job(folder,'Timing')
+            with patch('job_tracking._active',job),self.assertRaises(RuntimeError):
+                with measured_operation('quality_measurement'):raise RuntimeError('expected')
+            self.assertIsNone(job.data['performance_category'])
+
+    def test_gpu_pause_is_separate_from_quality_time(self):
+        with tempfile.TemporaryDirectory() as folder,patch('job_tracking.time.monotonic',return_value=0) as clock:
+            job=Job(folder,'Timing')
+            with patch('job_tracking._active',job),measured_operation('quality_measurement'):
+                clock.return_value=4
+                with measured_operation('gpu_pause'):clock.return_value=14
+                clock.return_value=20
+            self.assertEqual(job.data['performance_seconds']['quality_measurement'],10)
+            self.assertEqual(job.data['performance_seconds']['gpu_pause'],10)
+
     def test_hdr_reader_thread_budget_respects_shared_host_limits(self):
         good=dict(cpus=12,cpu_percent=35,available_gib=16,host_available_gib=32,io_pressure=0,memory_pressure=0)
         self.assertEqual(validation_thread_budget(good),4)
@@ -29,6 +61,8 @@ class PerformanceTests(unittest.TestCase):
             ('Checking all copied tracks: full','track_validation'),('Reading media metadata: movie','metadata'),
             ('reference-0','sample_extraction'),('random movie name','other')]:
             self.assertEqual(category(phase),expected)
+        self.assertEqual(category('Waiting for validation resources'),'validation_wait')
+        self.assertEqual(category('Checking original HDR metadata'),'frame_validation')
 
     def test_timings_are_monotonic_not_double_counted_and_stop_on_finish(self):
         with tempfile.TemporaryDirectory() as folder,patch('job_tracking.time.monotonic',return_value=0) as clock:

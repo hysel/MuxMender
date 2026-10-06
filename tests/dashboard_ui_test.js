@@ -1,7 +1,7 @@
 // Pure DOM-model tests; no browser, external packages, or network needed.
 // Execute in a Node vm context with the dashboard script passed as `source`.
 class Element {
-  constructor(tag='div') { this.tag=tag; this.children=[]; this.style={}; this.attrs={}; this.value=''; this.hidden=false; this.textContent=''; this.classList={toggle(){}}; }
+  constructor(tag='div') { this.tag=tag; this.children=[]; this.style={}; this.attrs={}; this.dataset={}; this.value=''; this.hidden=false; this.textContent=''; this.classList={toggle(){},add(){}}; }
   append(...items) { for(const item of items){item.remove?.();item.parentNode=this;this.children.push(item)} }
   replaceChildren(...items) { for(const item of this.children)item.parentNode=null;this.children=[];this.append(...items); }
   remove() { if(this.parentNode){this.parentNode.children=this.parentNode.children.filter(n=>n!==this);this.parentNode=null} }
@@ -14,6 +14,10 @@ class Element {
 }
 const elements=new Map();
 const document={createElement:tag=>new Element(tag),querySelector:s=>{if(!elements.has(s))elements.set(s,new Element());return elements.get(s)},querySelectorAll:()=>[]};
+document.getElementById=id=>document.querySelector('#'+id);
+document.body=new Element('body');
+const window={addEventListener(){}};
+const location={hash:''};
 document.querySelector('#filter').value='all';
 function collect(node){return [node,...node.children.filter(x=>x instanceof Element).flatMap(collect)]}
 function assert(value,message){if(!value)throw Error(message)}

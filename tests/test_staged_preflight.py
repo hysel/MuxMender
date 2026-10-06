@@ -7,13 +7,15 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+import sys
 from unittest.mock import patch
 from auto_optimize import Workflow
 from media_metadata import preflight_metadata
 
 
 class StagedPreflightTests(unittest.TestCase):
-    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'),'FFmpeg integration dependencies unavailable')
+    @unittest.skipUnless(sys.platform.startswith('linux') and shutil.which('ffmpeg') and shutil.which('ffprobe'),
+                         'Real media integration runs on the Linux research host only')
     def test_generated_audio_subtitle_file_through_real_preflight(self):
         ffmpeg=shutil.which('ffmpeg');ffprobe=shutil.which('ffprobe')
         subtitles=self.root/'generated.srt'

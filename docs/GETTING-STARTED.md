@@ -61,6 +61,10 @@ replaced, or the original was kept—and why.
 
 ## Understand progress and savings
 
+Long stages have a user-selected [processing time limit](processing-timeouts.md).
+Set it under Encoding options before queuing; the default is 120 minutes per
+stage. Changing it does not alter existing jobs or weaken validation.
+
 The [dashboard guide](processing-dashboard.md) explains the steps. Percentages
 describe the current check, not the whole job. Some steps need time to gather
 enough information for an estimate.

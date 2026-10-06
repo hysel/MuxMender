@@ -60,7 +60,7 @@ async function reviewEpisode(batch,r){
  const dialog=el('dialog');dialog.style.cssText='border:1px solid #e2e6eb;border-radius:12px;padding:24px;max-width:440px;width:90%';
  dialog.append(el('h2','Playback review · '+r.episode));
  const client=el('select'),status=el('select'),note=el('textarea');
- for(const name of ['Chrome','Sony TV','Plex'])client.append(el('option',name));
+ for(const name of ['Chrome','Dolby Vision-capable TV','Plex'])client.append(el('option',name));
  for(const name of ['Not tested','Passed','Failed'])status.append(el('option',name));
  for(const [label,input] of [['Player',client],['Result',status],['Notes',note]]){const wrap=el('label',label);wrap.style.cssText='display:grid;gap:8px;margin:14px 0';input.style.cssText='padding:10px;border:1px solid #d3d9df;border-radius:6px';wrap.append(input);dialog.append(wrap)}note.maxLength=1000;
  const load=()=>{const existing=r.reviews?.[client.value];status.value=existing?.status||'Not tested';note.value=existing?.note||''};client.onchange=load;load();

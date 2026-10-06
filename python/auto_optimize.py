@@ -4,8 +4,10 @@ import hashlib
 import itertools
 import json
 import math
+import os
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 from fractions import Fraction
@@ -19,7 +21,7 @@ from codec_selection import select_candidate, impossible_size_bound, EVALUATION_
 from dvd_av1_batch import save
 from encoder_capabilities import probe_encoder, nvidia_adapters, codec_order
 from job_tracking import tracked_call, progress, workflow_stage
-from native_pipeline import stage,decode_maps_after_frame_audit
+from native_pipeline import stage,decode_maps_after_frame_audit,discard_audio_clock_options
 from source_format import valid_pixel_format
 import legacy_color
 import hdr_inspection
@@ -137,18 +139,21 @@ def quality_summary(data, expected_frames, mean_floor, p5_floor):
                 caveat='Objective SDR screening only, not proof of perceptual transparency')
 
 
-def quality_graph(name, frame_rate, *, separate_fields=False):
+def quality_graph(name, frame_rate, *, separate_fields=False, threads=2, reference_filter=''):
     """Pair frame ordinals only AFTER count/geometry/timing validation.
 
     Millisecond container rounding can otherwise make framesync pick the previous
     reference frame. This clock exists only in the metric filter, never in output.
     """
+    if type(threads) is not int or threads not in (1, 2, 4):
+        raise ValueError('Quality worker budget must be one, two or four threads')
     rate = Fraction(frame_rate)
     if rate <= 0 or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.' for c in name):
         raise ValueError('Invalid quality graph parameters')
     if separate_fields:rate*=2
     clock = ('separatefields,' if separate_fields else '')+f'settb=AVTB,setpts=N*{rate.denominator}/({rate.numerator}*TB)'
-    return f'[0:V:0]{clock}[d];[1:V:0]{clock}[r];[d][r]libvmaf=n_threads=2:log_fmt=json:log_path={name}'
+    reference_prefix=reference_filter+',' if reference_filter else ''
+    return f'[0:V:0]{clock}[d];[1:V:0]{reference_prefix}{clock}[r];[d][r]libvmaf=n_threads={threads}:log_fmt=json:log_path={name}'
 
 
 def quality_command(ffmpeg, output, reference, graph):
@@ -226,7 +231,7 @@ def metadata_check(before, after, codec, *, verified_frame_count=None, verified_
             raise ValueError('Duration changed')
 
 
-def encode_command(ffmpeg, source, output, settings, info, streams):
+def encode_command(ffmpeg, source, output, settings, info, streams, *, video_only=False):
     video=main_video(dict(streams=streams))
     ten_bit=video.get('pix_fmt')=='yuv420p10le'
     extra={}
@@ -248,8 +253,8 @@ def encode_command(ffmpeg, source, output, settings, info, streams):
         options = list(options)
         options[options.index('-cq') + 1] = str(settings['nvenc_cq'])
     if 'nvenc_preset' in settings:
-        if not settings['encoder'].endswith('_nvenc') or settings['nvenc_preset'] != 'p7':
-            raise ValueError('Adaptive preset must be NVENC p7')
+        if not settings['encoder'].endswith('_nvenc') or settings['nvenc_preset'] not in ('p4','p5','p6','p7'):
+            raise ValueError('Explicit preset must be NVENC p4, p5, p6 or p7')
         options = list(options)
         options[options.index('-preset') + 1] = settings['nvenc_preset']
     if settings.get('nvenc_tune') is not None:
@@ -271,13 +276,16 @@ def encode_command(ffmpeg, source, output, settings, info, streams):
         # Optional, measured qualification setting. CQ can otherwise encounter
         # a runtime-chosen ceiling; this is not a target bitrate or approval.
         options = [*options, '-maxrate:v:0', str(ceiling * 1000000)]
+    from output_presets import encoder_options as output_options
+    options += output_options(video,settings.get('output_preset','original'))
     command = [ffmpeg, '-hide_banner', '-nostdin', '-n', '-xerror', '-copyts', '-noautorotate', '-i', str(source),
-               '-map', '0', '-map_metadata', '0', '-map_chapters', '0', '-c', 'copy',
+               '-map', '0:'+str(video['index']) if video_only else '0',
+               '-map_metadata', '0', '-map_chapters', '0', '-c', 'copy',
                *options, '-pix_fmt:v:0', encoder_pixel_format(video,settings['encoder']), '-fps_mode:v:0', 'passthrough',
                '-enc_time_base:v:0','demux',
                '-avoid_negative_ts', 'disabled']
     # Explicit flags avoid muxer auto-selection of default tracks.
-    for i, stream in enumerate(streams):
+    for i, stream in enumerate([video] if video_only else streams):
         flags = '+'.join(k for k, value in stream.get('disposition', {}).items() if value) or '0'
         command += [f'-disposition:{i}', flags]
     if Path(output).suffix.lower() in ('.mp4','.mov'):
@@ -347,24 +355,71 @@ class Workflow:
         self.args, self.directory, self.guard = args, directory, guard
         self.serial = 0
         self.packet_reference_cache = {}
+        self.sample_probe_cache = {}
         self.color_intermediates = {}
         self.hdr_mode=getattr(args,'hdr_mode',None)
         self.frame_cache={}
         self.hdr_intermediates={}
         self.aac_priming_outputs={}
         self.source_packet_cache=None
+        self.audio_audits={}
+        self.source_pcm_cache={}
         self.output_suffix='.mkv'
+        self.performance_video=None
+        self.worker_budget=None
+        self.frame_reader_qualification=None
+        self.frame_reader_checked=False
+
+    @staticmethod
+    def audit_identity(path):
+        stat=Path(path).stat()
+        return (stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns,stat.st_ctime_ns)
+
+    def remember_audio_audit(self,reference,output,index,expected=None):
+        """Only called after complete strict PCM decoding and packet comparison."""
+        key=(str(reference.resolve()),str(output.resolve()))
+        identity=(self.audit_identity(reference),self.audit_identity(output))
+        if expected is not None and identity!=expected:
+            raise ValueError('Media changed during complete audio validation')
+        record=self.audio_audits.setdefault(key,dict(identity=identity,indices=set()))
+        if record['identity']!=identity:
+            raise ValueError('Media changed during decoded audio validation')
+        record['indices'].add(index)
+
+    def audited_audio_indices(self,reference,output):
+        record=self.audio_audits.get((str(reference.resolve()),str(output.resolve())))
+        if not record:return set()
+        if record['identity']!=(self.audit_identity(reference),self.audit_identity(output)):
+            raise ValueError('Media changed after complete audio validation')
+        return record['indices']
+
+    def performance_threads(self):
+        from resource_governor import parallel_sdr_profile, SDRWorkerBudget
+        if self.hdr_mode or not parallel_sdr_profile(self.performance_video or {}):
+            return 2
+        if self.worker_budget is None:self.worker_budget=SDRWorkerBudget()
+        return self.worker_budget.threads(self.guard)
 
     def encode_preserving_color(self, source, output, settings, info, before, label, duration):
         from aac_priming import inspect, finalize
         tracks=inspect(self,source,before,label)
-        if not tracks:return self._encode_preserving_color(source,output,settings,info,before,label,duration)
+        if not tracks:
+            try:
+                return self._encode_preserving_color(source,output,settings,info,before,label,duration)
+            except RuntimeError as exc:
+                # Only a copied audio timestamp regression qualifies. Never
+                # swallow cancellation, decoder, encoder or validation errors.
+                from matroska_audio_recovery import eligible, recover
+                if not eligible(source, output, before, label, self.hdr_mode, str(exc)):
+                    raise
+                return recover(self, source, output, settings, info, before, label, duration, str(exc))
         encoded=output.with_name(output.stem+'-before-aac-priming'+output.suffix)
         self._encode_preserving_color(source,encoded,settings,info,before,label,duration)
         finalize(self,source,encoded,output,before,tracks,label,duration)
         self.aac_priming_outputs[output.resolve()]=set(tracks)
 
-    def _encode_preserving_color(self, source, output, settings, info, before, label, duration):
+    def _encode_preserving_color(self, source, output, settings, info, before, label, duration, *, video_only=False):
+        settings=dict(settings,output_preset=getattr(self.args,'output_preset','original'))
         if self.hdr_mode:
             from hdr_auto import encode_preserved
             return encode_preserved(self,source,output,settings,info,before,label,duration)
@@ -372,7 +427,7 @@ class Workflow:
         missing=[key for key in ('color_primaries','color_transfer','color_space')
                  if video.get(key) in legacy_color.UNKNOWN]
         encoded=output.with_name(output.stem+'-before-color-finalization'+output.suffix) if missing else output
-        command=encode_command(self.args.ffmpeg,source,encoded,settings,info,before['streams'])
+        command=encode_command(self.args.ffmpeg,source,encoded,settings,info,before['streams'],video_only=video_only)
         resolved=getattr(self.args,'resolved_color',None)
         if resolved:
             # Decoder AVFrame tags can override encoder context tags. Materialize
@@ -386,8 +441,11 @@ class Workflow:
                 value=resolved[key]
                 if key=='color_range':value={'tv':'limited','pc':'full'}[value]
                 values.append(option+'='+value)
-            if values:command[-1:-1]=['-filter:v:0','setparams='+':'.join(values)]
-        self.execute(self.preserve_covers(command,source,before,label),label,duration)
+            if values:
+                existing=command.index('-filter:v:0')+1 if '-filter:v:0' in command else None
+                if existing is not None:command[existing]+=',setparams='+':'.join(values)
+                else:command[-1:-1]=['-filter:v:0','setparams='+':'.join(values)]
+        self.execute(command if video_only else self.preserve_covers(command,source,before,label),label,duration)
         if not missing:return
         encoded_data=self.probe(encoded)
         # Do not rewrite an already-correct bitstream. Some hardware-generated
@@ -448,7 +506,9 @@ class Workflow:
         return command[:-1]+options+command[-1:]
 
     def execute(self, command, label, duration, *, strict_decode=False):
-        command=list(command)
+        from runtime_support import bounded_ffmpeg_threads
+        threads=self.performance_threads() if Path(str(command[0])).stem.lower()=='ffmpeg' else 2
+        command=bounded_ffmpeg_threads(command,decoder_threads=threads)
         if str(command[0])==str(getattr(self.args,'ffmpeg','ffmpeg')):
             for index in reversed(range(len(command)-1)):
                 if command[index]=='-i':command[index:index]=self.decoder_options(command[index+1])
@@ -461,15 +521,42 @@ class Workflow:
                 log.write(line)
                 return False
             from artifact_manifest import command_outputs
-            with command_outputs(self.directory,command):
+            from gpu_admission import stage_context
+            with command_outputs(self.directory,command),stage_context(self.performance_video):
                 return stage(command, duration, 0, 100, timeout=self.args.timeout, stall=120,
                              guard=self.guard, observe=observe, cwd=self.directory, strict_decode=strict_decode)
 
     def probe(self, source):
         progress('Reading media metadata: '+source.name, directory=self.directory)
-        raw = subprocess.check_output([self.args.ffprobe, '-v', 'error', '-show_streams',
+        # Job-local reuse for generated references only. Content hashes, not
+        # filenames or timestamps alone, authorize reuse. Original and output
+        # metadata reads remain independent; JSON parsing returns fresh data.
+        source=Path(source)
+        cacheable=(not source.is_symlink() and source.is_file() and
+                   source.resolve().parent==self.directory.resolve() and
+                   source.name.startswith('reference-') and
+                   source.stat().st_size<=8*1024*1024 and
+                   (getattr(self.args,'source',None) is None or source.resolve()!=Path(self.args.source).resolve()))
+        options=tuple(self.decoder_options(source))
+        key=(str(source.resolve()),options)
+        identity=self.audit_identity(source) if cacheable else None
+        content_hash=digest(source,self.guard) if cacheable else None
+        cached=self.sample_probe_cache.get(key) if cacheable else None
+        if cached and cached['identity']==identity and cached['hash']==content_hash:
+            self.guard()
+            raw=cached['raw']
+        else:
+            raw = subprocess.check_output([self.args.ffprobe, '-v', 'error', '-show_streams',
                '-show_chapters', '-show_format', '-show_data_hash', 'sha256', '-of', 'json', *self.decoder_options(source),str(source)],
                text=True, timeout=60)
+            if cacheable:
+                self.guard()
+                if identity!=self.audit_identity(source) or content_hash!=digest(source,self.guard):
+                    self.sample_probe_cache.pop(key,None)
+                    raise ValueError('Generated reference changed during metadata inspection')
+                # Never store a malformed ffprobe response.
+                json.loads(raw)
+                self.sample_probe_cache[key]=dict(identity=identity,hash=content_hash,raw=raw)
         data=json.loads(raw)
         from dv_header import recover
         header_recovery=recover(data,source,self.args.ffprobe,getattr(self.args,'ffmpeg',None))
@@ -489,23 +576,51 @@ class Workflow:
                 elif video[key]!=value:raise ValueError('Reference color metadata changed: '+key)
         return data
 
+    def prepare_full_hdr_reference(self, source, metadata):
+        """Fail within the user's read budget before full encoding, not after it."""
+        if not self.hdr_mode:return None
+        key=str(source.resolve())
+        self.guard()
+        before=source.stat()
+        identity=(before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns)
+        try:
+            path=self.frame_file(source,'full-source-before-encode',metadata['format'])
+            # Parse the complete evidence now; a partial/malformed reader result
+            # must never reach the finalizer as a reusable source reference.
+            self.compare_frame_files(path,path)
+            self.guard()
+            after=source.stat()
+            if identity!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns):
+                raise ValueError('Source changed while checking original HDR metadata')
+            self.frame_cache[key]=path
+            return path
+        except BaseException:
+            self.frame_cache.pop(key,None)
+            raise
+
     def frame_file(self, source, label, metadata=None):
         metadata=metadata if metadata is not None else self.probe(source)['format']
         path = self.directory/(label+'-frames.jsonl')
         if self.hdr_mode:
-            from resource_governor import hdr_validation_threads
-            from decoder_context import metadata_reader_options
-            threads=hdr_validation_threads() if float(metadata['duration'])>=300 else 2
-            run_probe([self.args.ffprobe,'-v','error',*metadata_reader_options(threads),'-select_streams','V:0',
-                       '-show_frames','-of','json',*self.decoder_options(source),str(source)],path,'Checking HDR frame timing: '+label,
-                      self.args.timeout,self.guard,float(metadata['duration']),float(metadata.get('start_time',0)))
+            from gpu_frame_reader import load_qualification,hdr_reader_request
+            if not self.frame_reader_checked and float(metadata['duration'])>=60:
+                self.frame_reader_qualification=load_qualification()
+                self.frame_reader_checked=True
+            video=main_video(self.probe(source)) if self.frame_reader_qualification else None
+            command,options,plan=hdr_reader_request(self.args.ffprobe,source,video,metadata['duration'],
+                self.hdr_mode,self.frame_reader_qualification,self.decoder_options(source),metadata.get('format_name'))
+            progress('Selecting frame inspection backend',detail=plan['reason'])
+            from gpu_admission import stage_context
+            with stage_context(video):
+                run_probe(command,path,'Checking HDR frame timing: '+label+' · '+('GPU' if plan['backend']=='cuda' else 'CPU')+' reader',
+                          self.args.timeout,self.guard,float(metadata['duration']),float(metadata.get('start_time',0)),**options)
             if path.with_suffix(path.suffix+'.stderr').stat().st_size:
                 raise ValueError('HDR frame decoder reported errors: '+label)
             self.frame_cache[str(source.resolve())]=path
             return path
         # Bound CPU contention between queue workers. Do not drop side-data or
         # frames: identical validation fields and full EOF draining are retained.
-        run_probe([self.args.ffprobe, '-v', 'error', '-threads', '2', '-select_streams', 'V:0', '-show_frames',
+        run_probe([self.args.ffprobe, '-v', 'error', '-threads', str(self.performance_threads()), '-select_streams', 'V:0', '-show_frames',
                 '-show_entries', 'frame=best_effort_timestamp_time,width,height,pix_fmt,sample_aspect_ratio,interlaced_frame,top_field_first,repeat_pict,color_primaries,color_transfer,color_space,color_range',
                 '-of', 'compact=p=0', *self.decoder_options(source),str(source)],path,'Checking frame timing: '+label,
                 self.args.timeout,self.guard,float(metadata['duration']),float(metadata.get('start_time',0)))
@@ -616,7 +731,7 @@ class Workflow:
             if any(s.get('codec_type')=='data' for s in metadata['streams']) and 'mov' in metadata['format'].get('format_name','').split(','):
                 self.output_suffix='.mov'
             summary.update(priming_tracks=sorted(tracks),stage='audio-decode');save(path,summary)
-            self.preflight_source_audio(source,metadata)
+            self.preflight_source_audio(source,metadata,source_hash)
             if getattr(self.args,'encode_best',False):
                 summary['stage']='copied-track-read';save(path,summary)
                 indices=copied_track_indices(metadata)
@@ -637,7 +752,28 @@ class Workflow:
             raise
         save(path,summary)
 
-    def preflight_source_audio(self, source, metadata):
+    def discard_decode(self,command,label,duration):
+        """Retry a reset diagnostic clock with original timestamps, still strict.
+
+        Filters can reinitialize and restart their synthetic sample counter.
+        Delivered media and independent packet/timeline checks are untouched.
+        """
+        try:
+            self.execute(command,label,duration,strict_decode=True)
+            return False
+        except RuntimeError as exc:
+            import re
+            error=re.fullmatch(r'Strict decode reported an error: \[null @ 0x[0-9a-fA-F]+\] Application provided invalid, non monotonically increasing dts to muxer in stream [0-9]+: -?[0-9]+ >= -?[0-9]+\s*',str(exc))
+            if (not error or command[-3:]!=['-f','null','-'] or '-af' not in command
+                    or command[command.index('-af')+1]!='asetpts=N/SR/TB'):
+                raise
+            retry=list(command);index=retry.index('-af');del retry[index:index+2]
+            progress('Rechecking complete decode with original timestamps',
+                     detail='Discard-only sample clock reset; all decoder and preservation checks remain required')
+            self.execute(retry,label+'-original-clock',duration,strict_decode=True)
+            return True
+
+    def preflight_source_audio(self, source, metadata, source_hash=None):
         """Catch damaged source audio before codec trials or full encoding.
 
         Read the complete tracks, not seeked samples (AVI seeking can itself
@@ -647,36 +783,82 @@ class Workflow:
         indices=[s['index'] for s in metadata['streams'] if s.get('codec_type')=='audio']
         if not indices:return
         evidence=self.directory/'source-audio-preflight.json'
+        cache=None;context=None
+        cache_root=getattr(self.args,'source_evidence_cache_dir',None) or os.environ.get('MUXMENDER_SOURCE_EVIDENCE_ROOT')
+        if cache_root and source_hash:
+            try:
+                from source_evidence_cache import SourceEvidenceCache
+                disjoint(source,Path(cache_root))
+                executable=Path(shutil.which(str(self.args.ffmpeg)) or self.args.ffmpeg).resolve(strict=True)
+                with executable.open('rb') as stream:
+                    executable_hash=hashlib.file_digest(stream,'sha256').hexdigest()
+                version=subprocess.check_output([str(executable),'-version'],text=True,
+                    stderr=subprocess.STDOUT,timeout=10)
+                code=hashlib.sha256()
+                for name in ('auto_optimize.py','native_pipeline.py','runtime_support.py'):
+                    code.update(Path(__file__).with_name(name).read_bytes())
+                context=dict(schema='complete-source-audio-v1',source_sha256=source_hash,
+                    tracks=indices,ffmpeg_sha256=executable_hash,ffmpeg_version=version,
+                    decoder_options=self.decoder_options(source),validation_code=code.hexdigest())
+                cache=SourceEvidenceCache(cache_root)
+                proof=cache.load(context)
+                if proof:
+                    self.guard()
+                    save(evidence,dict(proof,cache_reused=True,source_sha256=source_hash))
+                    progress('Reusing verified source audio check',detail='Exact source checksum, decoder and validation policy match; output checks remain independent')
+                    return
+            except (OSError,ValueError,subprocess.SubprocessError):cache=None
         try:
-            self.execute([self.args.ffmpeg,'-hide_banner','-nostdin','-v','error','-xerror',
+            clock_retry=self.discard_decode([self.args.ffmpeg,'-hide_banner','-nostdin','-v','error','-xerror',
                           '-threads','2','-i',str(source),
                           *[item for index in indices for item in ('-map',f'0:{index}')],
+                          # This discard-only decoder check is about sample integrity.
+                          # Source timestamps are validated independently against the
+                          # output; do not let the null muxer reject duplicate DTS.
+                          *discard_audio_clock_options(metadata),
                           '-progress','pipe:1','-nostats','-f','null','-'],
-                         'source-audio-preflight-decode',float(metadata['format']['duration']),strict_decode=True)
+                         'source-audio-preflight-decode',float(metadata['format']['duration']))
         except RuntimeError as exc:
             save(evidence,dict(state='failed',stage='source-audio-preflight',
                                tracks=indices,original_retained=True,error=str(exc)))
             raise RuntimeError('Source audio preflight failed before conversion; original retained. '+str(exc)) from exc
-        save(evidence,dict(state='passed',tracks=indices,complete_decode=True,strict_decode=True))
+        proof=dict(state='passed',tracks=indices,complete_decode=True,strict_decode=True,
+                   original_clock_retry=clock_retry)
+        save(evidence,proof)
+        if cache:
+            try:cache.store(context,proof)
+            except (OSError,ValueError):pass  # Optional acceleration never approves an output.
 
-    def validate(self, reference, output, before, codec, label, reference_frames):
-        actual = self.probe(output)
-        frames = self.frame_file(output, label, actual['format'])
-        count = self.compare_frame_files(reference_frames, frames)
-        self.check_metadata(reference,output,before,actual,codec,label,
+    def validate(self, reference, output, before, codec, label, reference_frames,*,output_frames=None,output_metadata=None):
+        actual = self.probe(output) if output_metadata is None else output_metadata
+        frames = self.frame_file(output, label, actual['format']) if output_frames is None else output_frames
+        from output_presets import geometry,expected_frame_rows,expected_metadata
+        identifier=getattr(self.args,'output_preset','original')
+        target=geometry(main_video(before),identifier)
+        if target['resized']:
+            if self.hdr_mode:raise ValueError('HDR resizing requires qualified dynamic metadata handling')
+            count=compare_frame_rows(expected_frame_rows(compact_rows(reference_frames,'width'),target),
+                                     compact_rows(frames,'width'))
+        else:count = self.compare_frame_files(reference_frames, frames)
+        self.check_metadata(reference,output,expected_metadata(before,identifier),actual,codec,label,
                             verified_frame_count=count,verified_hdr_frames=bool(self.hdr_mode),
                             verified_variable_timing=True)
         self.validate_copied_tracks(reference,output,before,actual,label)
+        self.validate_output_preset(output,actual,label)
         maps,reused=decode_maps_after_frame_audit(actual,count)
+        covered=self.audited_audio_indices(reference,output) if reused else set()
+        maps=[mapping for mapping in maps if mapping not in {f'0:{i}' for i in covered}]
         if maps:
-            self.execute([self.args.ffmpeg, '-hide_banner', '-nostdin', '-v', 'error', '-xerror',
+            self.discard_decode([self.args.ffmpeg, '-hide_banner', '-nostdin', '-v', 'error', '-xerror',
                           '-i', str(output), *[item for mapping in maps for item in ('-map',mapping)],
+                          *discard_audio_clock_options(actual),
                           '-progress', 'pipe:1', '-nostats',
                           *([] if reused else ['-fps_mode:v','passthrough','-enc_time_base:v','demux']),
                           '-f', 'null', '-'], label+('-audio-decode' if reused else '-decode'),
-                         float(before['format']['duration']),strict_decode=True)
+                         float(before['format']['duration']))
         save(self.directory/(label+'-decode-evidence.json'),dict(video_audit_reused=reused,
             verified_video_frames=count,audio_maps=maps if reused else 'all',strict_decode=True,
+            complete_pcm_audits_reused=sorted(covered),
             note='Current complete video frame comparison plus full audio decode; not historical evidence reuse'))
         temporary=self.color_intermediates.pop(output.resolve(),None)
         if temporary:
@@ -698,6 +880,65 @@ class Workflow:
             path.unlink()  # Exclusively created by this run; never an input file.
         return count
 
+    def validate_output_preset(self,output,actual,label):
+        from output_presets import preset
+        policy=preset(getattr(self.args,'output_preset','original'))
+        if policy['video_bps'] is None:return
+        target=self.directory/(label+'-preset-packets.txt')
+        run_probe([self.args.ffprobe,'-v','error','-select_streams','V:0','-show_packets',
+                   '-show_entries','packet=size,pts_time,duration_time','-of','compact=p=0',str(output)],
+                  target,'Checking selected video bitrate',self.args.timeout,self.guard,
+                  float(actual['format']['duration']))
+        errors=target.with_suffix(target.suffix+'.stderr')
+        if not errors.is_file() or errors.stat().st_size:raise ValueError('Preset bitrate reader reported errors')
+        size=0;start=None;end=None
+        for n,row in enumerate(compact_rows(target,'size')):
+            if n%4096==0:self.guard()
+            pts=Fraction(row['pts_time']);duration=Fraction(row['duration_time']);packet_size=int(row['size'])
+            if duration<=0 or packet_size<=0:raise ValueError('Incomplete video bitrate evidence')
+            size+=packet_size;start=pts if start is None else min(start,pts)
+            end=pts+duration if end is None else max(end,pts+duration)
+        if not size or start is None or end<=start:raise ValueError('Empty video bitrate evidence')
+        measured=Fraction(8*size)/(end-start)
+        proof=dict(preset=policy['id'],video_bps=float(measured),video_limit_bps=policy['video_bps'],
+                   payload_bytes=size,measurement='complete video packet presentation span',
+                   passed=measured<=policy['video_bps'],audio_and_subtitles_not_included=True)
+        save(self.directory/(label+'-output-preset.json'),proof)
+        if not proof['passed']:raise ValueError('Output exceeded selected preset video bitrate')
+
+    def decoded_audio_evidence(self, source, index, pcm, evidence, label, duration, *, reuse_source=False):
+        """Reuse only completed source decoding, never an output's PCM proof."""
+        source=Path(source);evidence=Path(evidence)
+        if evidence.parent.resolve()!=self.directory.resolve():raise ValueError('Unsafe audio evidence path')
+        # Full-file hashing is cheap for bounded samples, but can cost more than
+        # decoding a large source. Larger files retain the original fresh path.
+        eligible=(reuse_source and source.is_file() and not source.is_symlink() and
+                  source.stat().st_size<=64*1024*1024)
+        identity=self.audit_identity(source) if eligible else None
+        source_hash=digest(source,self.guard) if eligible else None
+        key=(str(source.resolve()),index,pcm,str(self.args.ffmpeg),duration)
+        cached=self.source_pcm_cache.get(key) if eligible else None
+        if cached and cached['identity']==identity and cached['source_hash']==source_hash:
+            path=cached['path']
+            if (path.parent.resolve()==self.directory.resolve() and path.is_file() and
+                    not path.is_symlink() and digest(path,self.guard)==cached['evidence_hash']):
+                self.guard()
+                progress('Reusing checked source audio evidence',detail='Source and complete PCM evidence hashes match; output audio is decoded independently')
+                return path
+        self.execute([self.args.ffmpeg,'-v','error','-nostdin','-n','-copyts','-threads','2',
+                      '-i',str(source),'-map','0:'+str(index),'-c:a',pcm,
+                      '-progress','pipe:1','-nostats','-f','framehash','-hash','sha256',str(evidence)],
+                     label,duration,strict_decode=True)
+        if eligible and evidence.is_file() and not evidence.is_symlink():
+            self.guard()
+            if identity!=self.audit_identity(source) or source_hash!=digest(source,self.guard):
+                self.source_pcm_cache.pop(key,None)
+                raise ValueError('Source changed during complete audio decoding')
+            self.source_pcm_cache[key]=dict(identity=identity,source_hash=source_hash,path=evidence,
+                                            evidence_hash=digest(evidence,self.guard))
+            while len(self.source_pcm_cache)>16:self.source_pcm_cache.pop(next(iter(self.source_pcm_cache)))
+        return evidence
+
     def validate_copied_tracks(self, reference, output, before, actual, label):
         """Shared packet/PCM preservation independent of the main video route."""
         indices=copied_track_indices(before)
@@ -714,6 +955,7 @@ class Workflow:
                 # when compressed packet timestamps happen to compare equal.
                 raise ValueError('Verify preserved AAC priming')
             except ValueError:
+                audio_identity=(self.audit_identity(reference),self.audit_identity(output))
                 stream=next(s for s in before['streams'] if s['index']==index)
                 from packet_validation import missing_audio_duration_case,compare_decoded_audio,reconstructed_audio_timestamp_case
                 reconstructed=(reconstructed_audio_timestamp_case(original[index],encoded[index])
@@ -724,16 +966,16 @@ class Workflow:
                     evidence=[]
                     for side,path in [('source',reference),('output',output)]:
                         hashes=self.directory/(label+f'-audio-duration-{index}-{side}.framehash')
-                        self.execute([self.args.ffmpeg,'-v','error','-nostdin','-n','-copyts','-threads','2',
-                            '-i',str(path),'-map','0:'+str(index if side=='source' else output_indices[index]),
-                            '-c:a','pcm_f64le','-progress','pipe:1','-nostats','-f','framehash','-hash','sha256',str(hashes)],
-                            label+f'-audio-duration-{index}-{side}',float(before['format']['duration']),strict_decode=True)
+                        hashes=self.decoded_audio_evidence(path,index if side=='source' else output_indices[index],
+                            'pcm_f64le',hashes,label+f'-audio-duration-{index}-{side}',
+                            float(before['format']['duration']),reuse_source=side=='source')
                         evidence.append(hashes)
                     proof=compare_decoded_audio(*evidence)
                     proof['packet_representation_case']='reconstructed-truehd-timestamps' if reconstructed else 'missing-audio-duration'
                     save(self.directory/(label+f'-audio-duration-{index}-presentation.json'),proof)
                     compare_packets(original[index],encoded[index],audio_duration_verified=missing_duration,
                                     audio_timestamps_verified=reconstructed)
+                    self.remember_audio_audit(reference,output,output_indices[index],audio_identity)
                     continue
                 from packet_validation import aac_initialization_timestamp_case, aac_terminal_duration_case, packet_rows, compare_decoded_audio
                 if stream.get('codec_name')!='aac':raise
@@ -746,33 +988,52 @@ class Workflow:
                 first_output=[]
                 for side,path,packets in [('source',reference,original[index]),('output',output,encoded[index])]:
                     hashes=self.directory/(label+f'-aac-{index}-{side}.framehash')
-                    self.execute([self.args.ffmpeg,'-v','error','-nostdin','-n','-copyts','-threads','2',
-                                  '-i',str(path),'-map','0:'+str(index if side=='source' else output_indices[index]),'-c:a','pcm_f32le',
-                                  '-progress','pipe:1','-nostats','-f','framehash','-hash','sha256',str(hashes)],
-                                 label+f'-aac-{index}-{side}-presentation',float(before['format']['duration']),strict_decode=True)
+                    hashes=self.decoded_audio_evidence(path,index if side=='source' else output_indices[index],
+                        'pcm_f32le',hashes,label+f'-aac-{index}-{side}-presentation',
+                        float(before['format']['duration']),reuse_source=side=='source')
                     evidence.append(hashes)
                     first_output.append(next(itertools.islice(packet_rows(packets),1,None))['pts_time'] if non_output_case else None)
                 proof=compare_decoded_audio(*evidence,*first_output)
                 proof['packet_representation_case']='terminal-duration' if terminal else ('preserved-priming' if priming_verified else ('non-output-initial-pts' if non_output_case else 'missing-initial-duration'))
                 save(self.directory/(label+f'-aac-{index}-presentation.json'),proof)
                 compare_packets(original[index],encoded[index],aac_initialization_verified=non_output_case or not (terminal or priming_verified),aac_terminal_verified=terminal,aac_priming_verified=priming_verified)
+                self.remember_audio_audit(reference,output,output_indices[index],audio_identity)
 
     def quality(self, reference, output, label, count, duration):
         # Safe generated basename and cwd avoid platform/path escaping in filter syntax.
         name = label+'-vmaf.json'
         video = next(s for s in self.probe(reference)['streams'] if s['codec_type'] == 'video')
-        graph = quality_graph(name, video['avg_frame_rate'])
+        from resource_governor import parallel_sdr_profile
+        threads=self.performance_threads() if parallel_sdr_profile(video) else 2
+        from output_presets import scale_filter,preset
+        identifier=getattr(self.args,'output_preset','original')
+        reference_filter=scale_filter(video,identifier) if Path(reference)!=Path(output) else ''
+        graph = quality_graph(name, video['avg_frame_rate'],threads=threads,reference_filter=reference_filter)
         if self.hdr_mode:
             from hdr_auto import quality_graph as hdr_quality_graph
-            graph=hdr_quality_graph(name,video['avg_frame_rate'])
+            # Only the measured scoring pool changes. Keep HDR decoding,
+            # rendering, frame alignment and score thresholds unchanged.
+            covered=(self.hdr_mode in ('pq','hdr10','hdr10plus') and video.get('pix_fmt')=='yuv420p10le'
+                and video.get('field_order')=='progressive' and
+                all(type(video.get(k)) is int and 0<video[k]<=maximum for k,maximum in
+                    (('width',3840),('height',2160))))
+            threads=2
+            if covered:
+                from resource_governor import HDRQualityWorkerBudget
+                if not hasattr(self,'hdr_quality_budget'):self.hdr_quality_budget=HDRQualityWorkerBudget()
+                threads=self.hdr_quality_budget.threads(self.guard)
+            graph=hdr_quality_graph(name,video['avg_frame_rate'],threads=threads)
         self.execute(quality_command(self.args.ffmpeg,output,reference,graph),
                      label+'-quality', duration)
         result = quality_summary(json.loads((self.directory/name).read_text()), count,
                                  self.args.vmaf_mean, self.args.vmaf_p5)
         result['alignment'] = 'verified-frame-ordinal-v1'
+        result['output_preset']=identifier
+        result['reference_domain']='target-resolution reference' if reference_filter else 'original-resolution reference'
+        result['thresholds']=dict(mean=self.args.vmaf_mean,p5=self.args.vmaf_p5)
         if not self.hdr_mode and video.get('field_order') in ('tt','bb','tb','bt'):
             field_name=label+'-fields-vmaf.json'
-            field_graph=quality_graph(field_name,video['avg_frame_rate'],separate_fields=True)
+            field_graph=quality_graph(field_name,video['avg_frame_rate'],separate_fields=True,reference_filter=reference_filter)
             self.execute(quality_command(self.args.ffmpeg,output,reference,field_graph),
                          label+'-field-quality',duration)
             fields=quality_summary(json.loads((self.directory/field_name).read_text()),2*count,
@@ -790,21 +1051,31 @@ class Workflow:
 
 def compact_rows(path, required):
     with path.open(encoding='utf-8') as handle:
-        for line in handle:
-            row = dict(item.split('=', 1) for item in line.strip().split('|') if '=' in item)
-            if required == 'width' and any(word in line.lower() for word in ('dolby', 'dovi', 'mastering display', 'content light', 'hdr dynamic', 'display matrix')):
-                raise ValueError('Unexpected HDR/geometry frame side data')
-            if required == 'data_hash' and row and 'data_hash' not in row:
-                raise ValueError('Missing packet hash evidence')
-            if required in row:
-                yield row
+        yield from compact_record_rows(handle,required)
+
+
+def compact_record_rows(lines,required):
+    """Same complete evidence parser for files or a bounded streaming reader."""
+    for line in lines:
+        row = dict(item.split('=', 1) for item in line.strip().split('|') if '=' in item)
+        if required == 'width' and any(word in line.lower() for word in ('dolby', 'dovi', 'mastering display', 'content light', 'hdr dynamic', 'display matrix')):
+            raise ValueError('Unexpected HDR/geometry frame side data')
+        if required == 'data_hash' and row and 'data_hash' not in row:
+            raise ValueError('Missing packet hash evidence')
+        if required in row:
+            yield row
 
 
 def compare_frames(reference, output):
     progress('Comparing frame geometry and timestamps',detail='Comparing collected frame evidence; percentage unavailable')
+    return compare_frame_rows(compact_rows(reference,'width'),compact_rows(output,'width'))
+
+
+def compare_frame_rows(reference,output):
+    """Compare every record. Representation does not change validation rules."""
     count = 0
     fields = ('width', 'height', 'pix_fmt', 'sample_aspect_ratio')
-    for a, b in itertools.zip_longest(compact_rows(reference, 'width'), compact_rows(output, 'width')):
+    for a, b in itertools.zip_longest(reference,output):
         if a is None or b is None:
             raise ValueError('Decoded frame count changed')
         if any(not (equivalent_ratio(a.get(k),b.get(k)) if k=='sample_aspect_ratio'
@@ -936,6 +1207,12 @@ def hardest_reference(report, encoder):
 
 
 def run(args):
+    from output_presets import preset,geometry
+    policy=preset(getattr(args,'output_preset','original'))
+    args.output_preset=policy['id']
+    if args.output_preset!='original':
+        args.vmaf_mean=max(args.vmaf_mean,policy['mean'])
+        args.vmaf_p5=max(args.vmaf_p5,policy['p5'])
     workflow_stage('inspect')
     source, root = disjoint(args.source, args.output_dir)
     if not source.is_file():
@@ -978,6 +1255,8 @@ def run(args):
             if hdr_inspection.recover_empty_dv_declaration(videos[0],evidence):
                 args.dv_declaration_recovery=evidence
         if hdr_inspection.classify(videos[0],[])['kind']=='Dolby Vision':
+            if args.output_preset!='original' or getattr(args,'hdr_policy','preserve')!='preserve':
+                raise ValueError('Selected output preset needs qualified Dolby Vision resizing or SDR rendering; original retained')
             if getattr(args,'research_full_av1_cq',None) is not None:
                 raise ValueError('Dolby Vision requires its dedicated research workflow')
             from dv_workflow import run as run_dv
@@ -995,6 +1274,8 @@ def run(args):
             except (ValueError, OSError, subprocess.SubprocessError) as exc:
                 raise ValueError('HDR metadata inspection incomplete; original retained: '+str(exc)) from exc
             if hdr_report['kind']=='Dolby Vision':
+                if args.output_preset!='original' or getattr(args,'hdr_policy','preserve')!='preserve':
+                    raise ValueError('Selected output preset needs qualified Dolby Vision resizing or SDR rendering; original retained')
                 if getattr(args,'research_full_av1_cq',None) is not None:
                     raise ValueError('Dolby Vision requires its dedicated research workflow')
                 from dv_workflow import run as run_dv
@@ -1049,6 +1330,10 @@ def run(args):
             from hdr_auto import admit
             admit(main_video(data),hdr_report)
             video=main_video(data)
+            if getattr(args,'hdr_policy','preserve')=='sdr':
+                raise ValueError('HDR-to-SDR output is awaiting render qualification; original retained')
+            if geometry(video,args.output_preset)['resized']:
+                raise ValueError('Selected preset needs qualified HDR resizing; original retained')
         else:
             video = eligibility(data)
     except ValueError as exc:
@@ -1074,11 +1359,15 @@ def run(args):
                 quality_domain='hdr-common-render-v1' if getattr(args,'hdr_mode',None) else 'sdr',
                 evaluation_policy=EVALUATION_POLICY)
     plan['decoder_context']=getattr(args,'decoder_context',None)
+    plan['worker_policy']='bounded-progressive-sdr-v1'
     plan['dv_declaration_recovery']=getattr(args,'dv_declaration_recovery',None)
     plan['savings_policy']=savings_policy
     plan['nvenc_maxrate_mbps']=getattr(args,'nvenc_maxrate_mbps',None)
     plan['nvenc_tune']=getattr(args,'nvenc_tune',None)
     plan['nvenc_analysis']=getattr(args,'nvenc_analysis',None)
+    plan['output_preset']=dict(policy,target=geometry(video,args.output_preset),
+                              quality_reference='target-resolution reference; not original-resolution equivalence')
+    plan['hdr_policy']=getattr(args,'hdr_policy','preserve')
     if not args.execute:
         print(json.dumps(dict(dry_run=True, plan=plan), indent=2))
         return 0
@@ -1098,6 +1387,7 @@ def run(args):
         if shutil.disk_usage(directory).free < args.min_free_gib*1024**3:
             raise RuntimeError('Output free space below safety reserve')
     workflow = Workflow(args, directory, guard)
+    workflow.performance_video=dict(video)
     save(directory/'plan.json', plan)
     state = dict(state='running', source=str(source), original_retained=True,savings_policy=savings_policy)
     save(directory/'status.json', state)
@@ -1203,6 +1493,27 @@ def run(args):
                          dolby_vision_rpu_present=False,dolby_vision_el_present=False,
                          hdr=info.color_transfer in mm.KNOWN_HDR_TRANSFERS or info.mastering_display_metadata)
         if getattr(args,'resolved_color',None):info=replace(info,**args.resolved_color)
+        def evaluate_sample(settings,trial_id,sample):
+            i=int(sample['reference_id'])
+            reference,probe,frames,count=references[i]
+            label=trial_id+'-'+str(i)
+            output=directory/(label+workflow.output_suffix)
+            ref_report=report['references'][i]
+            if 'metric_self_check' not in ref_report:
+                calibration=workflow.quality(reference,reference,'self-'+str(i),count,float(probe['format']['duration']))
+                if calibration['mean']<args.vmaf_mean or calibration['p5']<args.vmaf_p5:
+                    raise RuntimeError('Reference quality baseline is below configured thresholds; evaluation inconclusive, source retained')
+                ref_report['metric_self_check']=calibration
+            try:
+                workflow.validate(reference,output,probe,settings['codec'],label,frames)
+                quality=workflow.quality(reference,output,label,count,float(probe['format']['duration']))
+                sample.update(preservation_pass=True,decode_pass=True,quality_pass=quality['passed'],quality=quality)
+                if workflow.hdr_mode:sample['hdr_preservation_pass']=True
+            except (ValueError,RuntimeError,subprocess.SubprocessError) as exc:
+                guard()
+                sample['error']=str(exc)
+            return all(sample[k] for k in ('quality_pass','preservation_pass','decode_pass'))
+
         def trial_candidate(settings, adaptive=False):
             analysis=getattr(args,'nvenc_analysis',None)
             if analysis is not None and settings['encoder'] in ('hevc_nvenc','av1_nvenc'):
@@ -1225,6 +1536,12 @@ def run(args):
             if settings.get('nvenc_maxrate_mbps') is not None:
                 trial_id += '-peak'+str(settings['nvenc_maxrate_mbps'])
             first=hardest_reference(report,settings['encoder'])
+            # A previously measured failing scene can reject a retry before its
+            # other clips are encoded. No prediction or partial scene approves it.
+            early_quality=any(t.get('encoder')==settings['encoder'] and any(
+                s.get('quality',{}).get('passed') is False and
+                s.get('preservation_pass') is True and s.get('decode_pass') is True
+                for s in t.get('samples',[])) for t in report['trials'])
             trial = dict(id=trial_id, source_id=source_hash, codec=settings['codec'], encoder=settings['encoder'],
                          settings=settings, runtime_supported=True, playback_compatible=True, samples=[])
             blocked = previous_structural_failure(report['trials'], settings['encoder'])
@@ -1258,6 +1575,15 @@ def run(args):
                     trial['screened_out']='Encoding failed; evaluation incomplete'
                     save(directory/'trials.json',report)
                     return
+                if (early_quality and len(trial['samples'])==1 and len(references)>1 and
+                        100*(1-sample['bytes']/report['references'][i]['bytes'])>=args.minimum_savings_percent):
+                    if not evaluate_sample(settings,trial_id,sample):
+                        code=structural_failure_code(sample.get('error',''))
+                        if code:trial['structural_failure']=code
+                        trial['quality_early_screen']=True
+                        trial['screened_out']='Measured first scene failed; remaining clip encodes skipped'
+                        save(directory/'trials.json',report)
+                        return
                 bound=impossible_size_bound(report['references'],trial['samples'],args.minimum_savings_percent)
                 if bound and len(trial['samples'])<len(references):
                     trial['size_screen']=dict(rejected=True,early_bound=True,minimum=args.minimum_savings_percent,**bound)
@@ -1280,27 +1606,10 @@ def run(args):
                 return
             for sample in trial['samples']:
                 i=int(sample['reference_id'])
-                reference, probe, frames, count=references[i]
-                label=trial_id+'-'+str(i)
-                output=directory/(label+workflow.output_suffix)
-                ref_report=report['references'][i]
-                if 'metric_self_check' not in ref_report:
-                    calibration=workflow.quality(reference,reference,'self-'+str(i),count,float(probe['format']['duration']))
-                    # Identical videos need not score 100 (or even 98). Do not
-                    # normalize scores or loosen the user's conversion floors.
-                    if calibration['mean'] < args.vmaf_mean or calibration['p5'] < args.vmaf_p5:
-                        raise RuntimeError('Reference quality baseline is below configured thresholds; evaluation inconclusive, source retained')
-                    ref_report['metric_self_check']=calibration
-                try:
-                    workflow.validate(reference,output,probe,settings['codec'],label,frames)
-                    quality=workflow.quality(reference,output,label,count,float(probe['format']['duration']))
-                    sample.update(preservation_pass=True,decode_pass=True,quality_pass=quality['passed'],quality=quality)
-                    if workflow.hdr_mode:sample['hdr_preservation_pass']=True
-                except (ValueError,RuntimeError,subprocess.SubprocessError) as exc:
-                    guard()
-                    sample['error']=str(exc)
-                    code=structural_failure_code(str(exc))
-                    if code:trial['structural_failure']=code
+                if not sample.get('quality'):
+                    evaluate_sample(settings,trial_id,sample)
+                code=structural_failure_code(sample.get('error',''))
+                if code:trial['structural_failure']=code
                 save(directory/'trials.json',report)
                 if not all(sample[k] for k in ('quality_pass','preservation_pass','decode_pass')):
                     trial['screened_out']='Scene '+str(i)+' failed; remaining quality checks skipped'
@@ -1361,6 +1670,11 @@ def run(args):
             from validated_replace import readable_destination
             readable=readable_destination(source)
             output = directory/((readable.stem if readable.stem!=source.stem else 'full-'+settings['codec'])+workflow.output_suffix)
+            # Full HDR evidence can exhaust the user's read budget. Collect it
+            # before encoding, then reuse it for finalization and validation.
+            if workflow.hdr_mode:
+                workflow_stage('inspect')
+                workflow.prepare_full_hdr_reference(source,data)
             workflow_stage('encode')
             workflow.encode_preserving_color(source,output,settings,info,data,'full-encode',duration)
             # Rejection needs no expensive full-picture validation. Encoding has
@@ -1381,9 +1695,17 @@ def run(args):
                 print(json.dumps(state, indent=2))
                 return 0
             workflow_stage('validate')
-            frames = workflow.frame_cache.get(str(source.resolve())) if workflow.hdr_mode else None
-            if frames is None:frames = workflow.frame_file(source, 'full-source', data['format'])
-            workflow.validate(source, output, data, settings['codec'], 'full', frames)
+            from resource_governor import parallel_sdr_profile
+            if (getattr(args,'parallel_frame_validation',False) and sys.platform.startswith('linux') and
+                    not workflow.hdr_mode and parallel_sdr_profile(video) and workflow.performance_threads()==4):
+                from parallel_frame_audit import collect_pair
+                frames,output_frames,actual=collect_pair(workflow,source,output,data)
+                workflow.validate(source,output,data,settings['codec'],'full',frames,
+                                  output_frames=output_frames,output_metadata=actual)
+            else:
+                frames = workflow.frame_cache.get(str(source.resolve())) if workflow.hdr_mode else None
+                if frames is None:frames = workflow.frame_file(source, 'full-source', data['format'])
+                workflow.validate(source, output, data, settings['codec'], 'full', frames)
             actual_savings = 100*(1-output.stat().st_size/baseline['size'])
             guard()
             if digest(source, guard) != source_hash:
@@ -1416,6 +1738,8 @@ def main(argv=None):
     parser.add_argument('source', type=Path)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--capability-cache-dir', type=Path, help='Shared positive GPU-probe cache; unknown or multiple GPUs are always reprobed')
+    parser.add_argument('--source-evidence-cache-dir',type=Path,help='Private compact source-audio proofs; exact content and decoder/policy match required')
+    parser.add_argument('--parallel-frame-validation',action='store_true',help='Research qualification of resource-admitted paired SDR frame readers')
     parser.add_argument('--hardware', choices=('auto', 'nvidia', 'amd', 'intel'), default='auto')
     parser.add_argument('--execute', action='store_true', help='Run trials; default only probes and prints plan')
     parser.add_argument('--encode-best', action='store_true', help='After trials, encode and validate a full copy')
@@ -1443,6 +1767,10 @@ def main(argv=None):
     parser.add_argument('--vmaf-mean', type=float, default=90,
                         help='Minimum mean VMAF score (default: 90; not a percentage of retained quality)')
     parser.add_argument('--vmaf-p5', type=float, default=90)
+    from output_presets import PRESETS
+    parser.add_argument('--output-preset',choices=tuple(PRESETS),default='original')
+    parser.add_argument('--hdr-policy',choices=('preserve','sdr'),default='preserve',
+                        help='Requested HDR treatment; SDR output requires qualified tone mapping')
     parser.add_argument('--savings-mode',choices=('size-aware','fixed'),default='size-aware')
     parser.add_argument('--minimum-savings-percent', type=float, default=25,
                         help='Minimum reduction; 0 accepts any strictly smaller validated output')

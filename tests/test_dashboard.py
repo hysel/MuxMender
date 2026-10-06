@@ -13,6 +13,18 @@ from job_tracking import tracked_call
 
 
 class DashboardTests(unittest.TestCase):
+    def test_failed_outcome_never_claims_latest_validation_passed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            (root/'status.json').write_text(json.dumps(dict(state='stopped-original-retained',error='')))
+            (root/'job.json').write_text(json.dumps(dict(state='failed',error='Worker exited unexpectedly')))
+            row=apply_outcome(dict(state='failed'),root,root)
+            self.assertEqual(row['error'],'Worker exited unexpectedly')
+            (root/'job.json').write_text(json.dumps(dict(state='failed')))
+            row=apply_outcome(dict(state='failed'),root,root)
+            self.assertIn('unavailable',row['error'])
+            self.assertNotIn('latest validation passed',row['error'])
+
     def test_codec_run_identity_source_and_execution_state(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)
@@ -139,6 +151,18 @@ class DashboardTests(unittest.TestCase):
             (run/'status.json').write_text('{')
             with patch('dashboard.alive', return_value=False):
                 self.assertEqual(Catalog(folder).snapshot()[0]['state'], 'interrupted')
+
+    def test_dead_remote_observer_does_not_claim_worker_interrupted(self):
+        with tempfile.TemporaryDirectory() as folder:
+            run = Path(folder)/'reports'/'job-test'; run.mkdir(parents=True)
+            (run/'job.json').write_text(json.dumps(dict(state='running', pid=123,
+                phase='Checking quality', updated=time.time(),
+                monitor_scope='Read-only remote status mirror; PID identifies the local observer')))
+            for observed in (False, None):
+                with patch('dashboard.alive', return_value=observed):
+                    self.assertEqual(Catalog(folder).snapshot()[0]['state'], 'stale')
+            with patch('dashboard.alive', return_value=True):
+                self.assertEqual(Catalog(folder).snapshot()[0]['state'], 'running')
 
     def test_tracked_cli_keeps_result_and_log(self):
         with tempfile.TemporaryDirectory() as folder:

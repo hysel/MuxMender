@@ -19,9 +19,10 @@ class DecodeEvidenceTests(unittest.TestCase):
         if not ffmpeg or not ffprobe:self.skipTest('FFmpeg fixture tools unavailable')
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);source=root/'generated.mkv';output=root/'copy.mkv'
-            subprocess.run([ffmpeg,'-v','error','-nostdin','-n','-f','lavfi','-i',
+            from runtime_support import bounded_ffmpeg_threads
+            subprocess.run(bounded_ffmpeg_threads([ffmpeg,'-v','error','-nostdin','-n','-f','lavfi','-i',
                 'testsrc2=size=160x90:rate=10','-f','lavfi','-i','sine=frequency=440:sample_rate=48000',
-                '-t','1','-c:v','ffv1','-level','3','-c:a','aac',str(source)],
+                '-t','1','-c:v','ffv1','-threads:v','1','-level','3','-c:a','aac',str(source)]),
                 check=True,capture_output=True,timeout=30)
             shutil.copyfile(source,output)
             work=root/'validation';work.mkdir()
