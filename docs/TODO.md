@@ -84,6 +84,11 @@ Performance work stays on one host. Multi-machine processing is out of scope.
 
 ## Make everyday use easier
 
+- [ ] Publish the plain-language [user wiki](wiki/Home.md), separate from research results.
+- [ ] Move installation to versioned, prebuilt Docker images. Follow the
+  [release and hosting plan](docker-releases.md): reproducible inputs, licensing,
+  NVIDIA image checks, public GHCR access and persistent-state upgrade instructions.
+
 - [ ] Keep lifetime savings, active steps and resource information easy to find
   on narrow screens and long result lists.
 - [ ] Check dark mode, keyboard access, focus, screen-reader feedback and contrast
