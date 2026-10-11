@@ -1,0 +1,98 @@
+name: Reviewed NVIDIA container release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact app version (YYYYMMDD-vNN)
+        required: true
+      context_release:
+        description: GitHub release containing the reviewed Docker context
+        required: true
+      context_sha256:
+        description: SHA256 of public-context.tar
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: container-release
+  cancel-in-progress: false
+jobs:
+  release:
+    # Dedicated disposable runner: not TrueNAS, not a production media host.
+    # Configure environment approval before enabling this workflow.
+    environment: container-release
+    runs-on: [self-hosted, linux, x64, muxmender-release-nvidia]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Validate release inputs
+        env:
+          VERSION: ${{ inputs.version }}
+          CONTEXT_SHA: ${{ inputs.context_sha256 }}
+        run: |
+          python3 - <<'PY'
+          import os,re
+          from pathlib import Path
+          assert os.environ['GITHUB_REF'] == 'refs/heads/main', 'Release only from main'
+          assert re.fullmatch(r'\d{8}-v\d+', os.environ['VERSION'])
+          assert re.fullmatch(r'[a-f0-9]{64}', os.environ['CONTEXT_SHA'])
+          assert "VERSION = '" + os.environ['VERSION'] + "'" in Path('python/app_version.py').read_text()
+          PY
+      - name: Download and audit approved context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTEXT_RELEASE: ${{ inputs.context_release }}
+          CONTEXT_SHA: ${{ inputs.context_sha256 }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          gh release download "$CONTEXT_RELEASE" --repo "$GITHUB_REPOSITORY" --pattern public-context.tar --dir "$RUNNER_TEMP/download"
+          python3 tools/audit_public_release.py --archive "$RUNNER_TEMP/download/public-context.tar" --sha256 "$CONTEXT_SHA" --destination "$RUNNER_TEMP/context" --version "$VERSION" --revision "$GITHUB_SHA"
+          # The archive cannot substitute different app code under the reviewed revision.
+          diff -r --exclude=__pycache__ python "$RUNNER_TEMP/context/python"
+          diff deploy/truenas/Dockerfile.app "$RUNNER_TEMP/context/deploy/truenas/Dockerfile.app"
+          diff deploy/truenas/build_ffmpeg9.sh "$RUNNER_TEMP/context/deploy/truenas/build_ffmpeg9.sh"
+          diff tools/smoke_app_release.py "$RUNNER_TEMP/context/tools/smoke_app_release.py"
+          diff -r --exclude=__pycache__ tests "$RUNNER_TEMP/context/tests"
+      - name: Build once
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          docker build --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" --label "org.opencontainers.image.revision=$GITHUB_SHA" --label "org.opencontainers.image.version=$VERSION" -f "$RUNNER_TEMP/context/deploy/truenas/Dockerfile.app" -t "muxmender-release:$VERSION" "$RUNNER_TEMP/context"
+      - name: Check exact image using generated media only
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          for mode in runtime reaper; do
+            docker run --rm --network none --tmpfs /work:rw,uid=568,gid=568,mode=700 --mount "type=bind,src=$RUNNER_TEMP/context,dst=/qualification,readonly" --entrypoint /usr/bin/tini "muxmender-release:$VERSION" -- python3 -B /qualification/tools/smoke_app_release.py "$mode" --version "$VERSION"
+          done
+          docker run --rm --network none --gpus all --memory 8g --cpus 4 --tmpfs /work:rw,uid=568,gid=568,mode=700 --mount "type=bind,src=$RUNNER_TEMP/context,dst=/qualification,readonly" --entrypoint /usr/bin/tini "muxmender-release:$VERSION" -- python3 -B /qualification/tools/smoke_app_release.py gpu --version "$VERSION"
+      - name: Publish immutable version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          registry_config=$(mktemp -d "$RUNNER_TEMP/registry-XXXXXX")
+          export DOCKER_CONFIG="$registry_config"
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:$VERSION"
+          # Any response other than a known missing tag is an error, not permission to overwrite.
+          if docker manifest inspect "$image" > /dev/null 2> "$RUNNER_TEMP/manifest-error"; then
+            echo 'Version already exists; choose a new version.' >&2; exit 1
+          fi
+          grep -Eqi 'manifest unknown|manifest_unknown|not found' "$RUNNER_TEMP/manifest-error" || { cat "$RUNNER_TEMP/manifest-error"; exit 1; }
+          docker tag "muxmender-release:$VERSION" "$image"
+          docker push "$image" | tee "$RUNNER_TEMP/push-result.txt"
+          echo "Published $image. Review package visibility and anonymous pull before announcing availability." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: container-release-receipt
+          path: ${{ runner.temp }}/push-result.txt

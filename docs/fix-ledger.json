@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-10-10",
+  "updated": "2026-10-11",
   "scope": "Backfilled implementation families from current code, regression tests and release records. Historical records are not a claim that every case is qualified on every runtime.",
   "retirement_policy": "Never retire automatically. Require baseline raw failure, candidate raw pass, unchanged validation, negative controls, application regressions and representative full-file qualification. Skipped tests and missing fixtures are coverage gaps.",
   "runtime_observations": [
@@ -47,6 +47,7 @@
     {"id":"APP-010","title":"User-selected presets, HDR/SDR choices and size policy","kind":"application-fix","state":"implemented-limited-qualification","code":["python/output_presets.py","python/quality_profiles.py"],"tests":["test_output_presets.py","test_quality_profiles.py","test_quality_automation.py","test_savings_policy.py"],"evidence":["docs/output-presets.md"]},
     {"id":"APP-011","title":"Qualification image embeds VMAF models and preserves exact reader diagnostics","kind":"application-fix","state":"generated-image-qualified","code":["deploy/truenas/Dockerfile.ffmpeg-full-qualification","tools/qualify_ffmpeg_full.py","tools/diagnose_ffmpeg_full_exports.py"],"tests":["test_ffmpeg_full_qualification.py"],"evidence":["docs/ffmpeg-compatibility.md"]},
     {"id":"APP-012","title":"Attribute video diagnostics encountered during source audio preflight","kind":"application-fix","state":"implemented-not-deployed","code":["python/auto_optimize.py","python/ui/workspace.py"],"tests":["test_source_audio_preflight.py","test_activity_reports.py"],"evidence":["docs/ffmpeg-compatibility.md"],"limits":"Diagnostic attribution only; strict decoder rejection remains unchanged. Elementary source diagnosis is not repair or publication approval."},
-    {"id":"APP-013","title":"Portable version guard and archive-bound build retries","kind":"application-fix","state":"implemented-pending-image-build","code":["deploy/truenas/stage-release.sh","tools/build_app_release.py","tools/monitor_release_stage.py"],"tests":["test_ffmpeg9_release_package.py","test_release_smoke.py","test_release_monitor.py"],"evidence":["deploy/truenas/RELEASE-20261010-v60.md"]}
+    {"id":"APP-013","title":"Portable version guard and archive-bound build retries","kind":"application-fix","state":"implemented-pending-image-build","code":["deploy/truenas/stage-release.sh","tools/build_app_release.py","tools/monitor_release_stage.py"],"tests":["test_ffmpeg9_release_package.py","test_release_smoke.py","test_release_monitor.py"],"evidence":["deploy/truenas/RELEASE-20261010-v60.md"]},
+    {"id":"REL-001","title":"Reviewed public context and manual versioned container publication","kind":"release-tooling","state":"implemented-not-exercised","code":["tools/audit_public_release.py",".github/workflows/container-release.yml","deploy/truenas/compose.release.yaml"],"tests":["test_public_release_audit.py"],"evidence":["docs/container-release-operations.md"],"limits":"Local audit and YAML checks only. Dedicated GPU runner, complete redistribution materials, environment protections and clean public pull/installation remain pending. No registry image has been published."}
   ]
 }
