@@ -3,6 +3,16 @@ from tools.monitor_release_stage import interpret,read_command
 
 
 class ReleaseMonitorTests(unittest.TestCase):
+    def test_candidate_revision_is_fixed_and_read_only(self):
+        self.assertIn('public-image-20261011-r2',read_command('20261010-v60',True,candidate_revision='r2'))
+        with self.assertRaises(ValueError):read_command('20261010-v60',True,candidate_revision='r2;whoami')
+    def test_source_count_is_stage_progress_not_release_completion(self):
+        status,terminal=interpret('status=running\nphase=Collecting exact Ubuntu sources and license notices\nunit=active\nsource_progress={"completed": 12, "total": 24, "updated": 100}')
+        self.assertEqual(status['stage_percent'],50)
+        self.assertEqual(status['state'],'running');self.assertFalse(terminal)
+        status,terminal=interpret('status=running\nunit=active\nsource_progress=broken')
+        self.assertEqual(status['state'],'running');self.assertFalse(terminal)
+
     def test_unstarted_and_active_build_are_distinct(self):
         self.assertEqual(interpret('status=awaiting-admin\nunit=inactive')[0]['state'],'pending')
         status,terminal=interpret('status=running\nphase=GPU tests\nunit=active')

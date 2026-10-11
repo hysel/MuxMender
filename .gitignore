@@ -16,6 +16,10 @@ test-output/
 tools/*
 !tools/build_app_release.py
 !tools/audit_public_release.py
+!tools/audit_image_runtime.py
+!tools/prepare_public_candidate.py
+!tools/check_public_installation.py
+!tools/collect_release_sources.py
 !tools/patch_cuda_ffprobe.py
 !tools/assemble_gpu_reader_bundle.py
 !tools/benchmark_hdr_gpu_reader.py
@@ -88,3 +92,9 @@ tools/*
 !tools/research_finish_dv.py
 !tools/run_truenas_sample_batch.py
 .vscode/
+!tools/stage_conda_materials.py
+!tools/fetch_pinned_materials.py
+!tools/inspect_wheel_materials.py
+!tools/prepare_rust_source_pins.py
+!tools/audit_crate_notices.py
+!tools/recover_crate_notices.py

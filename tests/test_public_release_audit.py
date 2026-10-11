@@ -10,9 +10,18 @@ import unittest
 spec = importlib.util.spec_from_file_location('public_audit', Path(__file__).resolve().parents[1] / 'tools/audit_public_release.py')
 audit = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(audit)
+runtime_spec = importlib.util.spec_from_file_location('runtime_audit', Path(__file__).resolve().parents[1] / 'tools/audit_image_runtime.py')
+runtime = importlib.util.module_from_spec(runtime_spec)
+runtime_spec.loader.exec_module(runtime)
 
 
 class PublicReleaseAudit(unittest.TestCase):
+    def test_nonfree_build_rejected(self):
+        self.assertTrue(runtime.nonredistributable('configuration: --enable-gpl --enable-nonfree --enable-libfdk_aac'))
+        self.assertTrue(runtime.nonredistributable('License: nonfree and unredistributable'))
+        self.assertFalse(runtime.nonredistributable('configuration: --enable-gpl --enable-version3'))
+        self.assertFalse(runtime.nonredistributable('configuration: --disable-nonfree'))
+
     def test_valid_materials(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

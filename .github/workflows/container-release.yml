@@ -54,8 +54,8 @@ jobs:
           python3 tools/audit_public_release.py --archive "$RUNNER_TEMP/download/public-context.tar" --sha256 "$CONTEXT_SHA" --destination "$RUNNER_TEMP/context" --version "$VERSION" --revision "$GITHUB_SHA"
           # The archive cannot substitute different app code under the reviewed revision.
           diff -r --exclude=__pycache__ python "$RUNNER_TEMP/context/python"
-          diff deploy/truenas/Dockerfile.app "$RUNNER_TEMP/context/deploy/truenas/Dockerfile.app"
-          diff deploy/truenas/build_ffmpeg9.sh "$RUNNER_TEMP/context/deploy/truenas/build_ffmpeg9.sh"
+          diff -b deploy/truenas/Dockerfile.public "$RUNNER_TEMP/context/deploy/truenas/Dockerfile.public"
+          diff -b deploy/truenas/build_ffmpeg9.sh "$RUNNER_TEMP/context/deploy/truenas/build_ffmpeg9.sh"
           diff tools/smoke_app_release.py "$RUNNER_TEMP/context/tools/smoke_app_release.py"
           diff -r --exclude=__pycache__ tests "$RUNNER_TEMP/context/tests"
       - name: Build once
@@ -63,16 +63,22 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          docker build --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" --label "org.opencontainers.image.revision=$GITHUB_SHA" --label "org.opencontainers.image.version=$VERSION" -f "$RUNNER_TEMP/context/deploy/truenas/Dockerfile.app" -t "muxmender-release:$VERSION" "$RUNNER_TEMP/context"
+          docker build --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" --label "org.opencontainers.image.revision=$GITHUB_SHA" --label "org.opencontainers.image.version=$VERSION" -f "$RUNNER_TEMP/context/deploy/truenas/Dockerfile.public" -t "muxmender-release:$VERSION" "$RUNNER_TEMP/context"
+      - name: Inventory runtime and reject nonfree binaries
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --mount "type=bind,src=$GITHUB_WORKSPACE/tools,dst=/release-tools,readonly" --entrypoint python3 "muxmender-release:$VERSION" -B /release-tools/audit_image_runtime.py --require-redistributable | tee "$RUNNER_TEMP/runtime-inventory.json"
       - name: Check exact image using generated media only
         env:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           for mode in runtime reaper; do
-            docker run --rm --network none --tmpfs /work:rw,uid=568,gid=568,mode=700 --mount "type=bind,src=$RUNNER_TEMP/context,dst=/qualification,readonly" --entrypoint /usr/bin/tini "muxmender-release:$VERSION" -- python3 -B /qualification/tools/smoke_app_release.py "$mode" --version "$VERSION"
+            docker run --rm --network none --tmpfs /work:rw,uid=568,gid=568,mode=700 --mount "type=bind,src=$RUNNER_TEMP/context,dst=/qualification,readonly" --entrypoint /usr/bin/tini "muxmender-release:$VERSION" -- python3 -B /qualification/tools/smoke_app_release.py "$mode" --version "$VERSION" --public-runtime
           done
-          docker run --rm --network none --gpus all --memory 8g --cpus 4 --tmpfs /work:rw,uid=568,gid=568,mode=700 --mount "type=bind,src=$RUNNER_TEMP/context,dst=/qualification,readonly" --entrypoint /usr/bin/tini "muxmender-release:$VERSION" -- python3 -B /qualification/tools/smoke_app_release.py gpu --version "$VERSION"
+          docker run --rm --network none --gpus all --memory 8g --cpus 4 --tmpfs /work:rw,uid=568,gid=568,mode=700 --mount "type=bind,src=$RUNNER_TEMP/context,dst=/qualification,readonly" --entrypoint /usr/bin/tini "muxmender-release:$VERSION" -- python3 -B /qualification/tools/smoke_app_release.py gpu --version "$VERSION" --public-runtime
       - name: Publish immutable version
         env:
           GH_TOKEN: ${{ github.token }}
@@ -93,6 +99,9 @@ jobs:
           docker push "$image" | tee "$RUNNER_TEMP/push-result.txt"
           echo "Published $image. Review package visibility and anonymous pull before announcing availability." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
         with:
           name: container-release-receipt
-          path: ${{ runner.temp }}/push-result.txt
+          path: |
+            ${{ runner.temp }}/push-result.txt
+            ${{ runner.temp }}/runtime-inventory.json
