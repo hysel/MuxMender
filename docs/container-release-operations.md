@@ -5,12 +5,47 @@ has been announced. Do not use a production TrueNAS host as the Actions runner.
 
 ## Outstanding requirements
 
+**Public image blocker:** the upstream Dockerfile for our current LinuxServer
+base enables FFmpeg `--enable-nonfree` alongside GPL components and libfdk_aac.
+The app image retains that FFmpeg 8 fallback. Our separate FFmpeg 9 build does
+not make the inherited binary redistributable. Do not publish the current image.
+The workflow now inventories the actual binaries and refuses that configuration.
+Use a clean, redistributable runtime base and requalify its dependency loading,
+fallback behavior, service and GPU before public release. Deleting a binary in a
+later Docker layer is not a solution: its old layer would still be distributed.
+
+Source: [upstream base build recipe](https://github.com/linuxserver/docker-ffmpeg/blob/8.0.1-cli-ls61/Dockerfile).
+Exact digest runtime inspection is still required; a tag's source recipe is not
+substituted for inspecting the binary actually shipped.
+
+The clean-base candidate is `deploy/truenas/Dockerfile.public`. It builds the
+same FFmpeg 9 recipe on pinned Ubuntu and copies the same app code. It isn't
+image-qualified yet; in particular the packaged GPU reader's dynamic libraries
+may need additional clean-base packages. The production Dockerfile is unchanged.
+
+TrueNAS may run an administrator-launched, isolated candidate build instead of
+hosting an Actions runner. `launch-public-candidate.sh` uses a separate context
+and image, survives shell timeout and mounts no library media. Generated GPU
+checks require a fresh idle production queue snapshot. This is research, not
+permission to publish an incompletely reviewed image. No permanent Actions
+runner is installed on the shared production host.
+
+The first clean-base candidate passed runtime and generated NVIDIA checks. The
+next isolated package checks service startup, browser/API responses, cross-site
+write rejection, an inspection of a generated clip and retained history when
+moving from the installed image to the candidate. It also collects exact Ubuntu
+source packages and version-matched upstream archives. These checks and source
+collection do not authorize public distribution: missing package versions,
+transitive Rust/conda dependencies and the wheel's bundled libraries still need
+their corresponding source and review.
+
 1. Provision a disposable Linux amd64 NVIDIA runner with Docker, Python 3.12 and
    GitHub CLI. Label it `muxmender-release-nvidia`. Limit it to this repository;
    don't allow untrusted pull requests to execute on it.
 2. Create the `container-release` GitHub environment with required approval and
    main-only deployment rules. Verify these settings before enabling the workflow.
-3. Prepare a clean context using the existing shared release packager. Add complete
+3. Prepare a clean context using the existing shared release packager, adding
+   `Dockerfile.public`, the repository LICENSE and the current smoke script. Add complete
    third-party notices, corresponding source and build instructions. Review the
    base image, apt packages, PyAV wheel, FFmpeg, HDR tools and FEL runtime—not just
    MuxMender's MIT license. Use the inventory below as a starting point, not a legal
@@ -54,6 +89,45 @@ References: [FFmpeg licensing](https://ffmpeg.org/legal.html),
 This is an engineering inventory, not legal advice or completed clearance.
 
 ## Before announcing a release
+
+The isolated installation harness uses generated media and an explicit
+keep-original decision to check API access, cross-site write rejection, retained
+history after upgrading, source preservation and clean shutdown. It does not
+exercise a processing worker or bypass resource admission. Runtime regression
+and generated GPU encoding smoke checks are separate; full safe-copy lifecycle
+and public installation checks are still needed.
+
+Dependency review also includes what is inside prebuilt packages. The PyAV wheel
+bundles its own FFmpeg and other native libraries; collecting PyAV's Python source
+alone is not enough. Keep its embedded library inventory, upstream build recipes,
+patches and matching dependency sources together. Configure flags are evidence,
+not a substitute for reviewing the actual licenses.
+
+`tools/stage_conda_materials.py` retains recipes, patches and licenses from the
+checksum-pinned FEL packages without loading them. It requires Python 3.14 and
+PyYAML as offline tooling, not as app dependencies. `tools/inspect_wheel_materials.py`
+inventories a pinned wheel and reads upstream recipes as syntax trees without
+executing them. `tools/fetch_pinned_materials.py` downloads checksum-pinned public
+archives and records its progress on the development dashboard. These tools do
+not grant redistribution approval, process videos or change the installed app.
+
+Public contexts exclude private GPU reader receipts and research evidence. The
+GPU can still encode with NVENC; the accelerated HDR frame-inspection reader
+requires a trusted, host-specific qualification receipt. Without one, the shared
+workflow uses its existing complete CPU reader. Do not copy another host's receipt
+or remove validation checks to enable acceleration.
+
+Rust lockfiles are also included in source review. `tools/prepare_rust_source_pins.py`
+reads them without running Cargo, and `tools/audit_crate_notices.py` retains license
+metadata and notices from checksum-verified crate archives. A missing notice file
+remains an explicit review item; a license declaration alone is not approval.
+
+Notice discovery also retains original source-file license headers and AUTHORS
+files. When a crate omits its notice file, `tools/recover_crate_notices.py` makes
+read-only GitHub requests at its recorded source revision. A manual revision
+requires a separate source comparison and keeps its qualification limits in the
+receipt. These records distinguish finding notice material from approving the
+license terms for publication.
 
 Make the GHCR package public intentionally. Public containers can be pulled without
 credentials; confirm that with a clean Docker configuration on a separate machine.

@@ -8,7 +8,7 @@ import time
 import unittest
 
 
-def runtime(version):
+def runtime(version, public_runtime=False):
     import app_version, app_api, auto_optimize, quality_profiles
     from ui.app import HTML
     from output_presets import encoder_options
@@ -16,7 +16,13 @@ def runtime(version):
     assert app_api.describe()['app_version'] == version
     assert subprocess.check_output(['ffmpeg','-version'],text=True,stderr=subprocess.STDOUT).startswith('ffmpeg version 9.0.2 ')
     assert subprocess.check_output(['ffprobe','-version'],text=True,stderr=subprocess.STDOUT).startswith('ffprobe version 9.0.2 ')
-    assert subprocess.check_output(['/usr/local/bin/ffmpeg','-version'],text=True,stderr=subprocess.STDOUT).startswith('ffmpeg version 8.0.1 ')
+    if public_runtime:
+        assert not Path('/usr/local/bin/ffmpeg').exists(), 'Public image must not inherit the nonfree fallback'
+        assert not Path('/usr/local/bin/ffprobe').exists(), 'Public image must not inherit the nonfree fallback'
+        assert not Path('/opt/muxmender-readers/qualification.json').exists(), 'Public image must not ship a private GPU receipt'
+        assert not Path('/opt/muxmender-readers/evidence.json').exists(), 'Public image must not ship private reader evidence'
+    else:
+        assert subprocess.check_output(['/usr/local/bin/ffmpeg','-version'],text=True,stderr=subprocess.STDOUT).startswith('ffmpeg version 8.0.1 ')
     assert 'MuxMender' in HTML and 'id="terminal-style"' in HTML
     assert 'id="quality-gate-profile"' in HTML
     assert quality_profiles.profile('balanced')['mean'] == 94
@@ -48,10 +54,12 @@ def reaper():
     raise RuntimeError('Image failed orphan reaping')
 
 
-def gpu():
+def gpu(public_runtime=False):
     from gpu_frame_reader import load_qualification
     reader=load_qualification()
-    if reader is None:raise RuntimeError('Bundled qualified GPU reader not accepted')
+    if public_runtime:
+        if reader is not None:raise RuntimeError('Public image unexpectedly includes host-specific GPU reader qualification')
+    elif reader is None:raise RuntimeError('Bundled qualified GPU reader not accepted')
     for encoder in ('hevc_nvenc','av1_nvenc'):
         subprocess.run(['ffmpeg','-hide_banner','-nostdin','-v','error','-xerror',
             '-f','lavfi','-i','color=c=black:s=192x192:r=5:d=0.4',
@@ -61,18 +69,20 @@ def gpu():
     suite=unittest.defaultTestLoader.discover('/qualification/tests',pattern='test_output_presets.py')
     result=unittest.TextTestRunner(verbosity=1).run(suite)
     if not result.wasSuccessful():raise RuntimeError('Image GPU preset validation failed')
-    print('Image GPU encoding, all-codec generated presets and reader checks passed',flush=True)
+    print('Image GPU encoding and generated presets passed; '+
+          ('public reader remains unqualified until host-specific checks' if public_runtime else 'private reader checks passed'),flush=True)
 
 
 def main():
     if not sys.platform.startswith('linux'):raise RuntimeError('Image smoke tests are Linux-only')
     parser=argparse.ArgumentParser()
     parser.add_argument('mode',choices=('runtime','reaper','gpu'))
+    parser.add_argument('--public-runtime', action='store_true', help='Require clean-base runtime without inherited FFmpeg 8 fallback')
     parser.add_argument('--version',required=True)
     args=parser.parse_args()
-    if args.mode=='runtime':runtime(args.version)
+    if args.mode=='runtime':runtime(args.version, public_runtime=args.public_runtime)
     elif args.mode=='reaper':reaper()
-    else:gpu()
+    else:gpu(public_runtime=args.public_runtime)
 
 
 if __name__=='__main__':main()
