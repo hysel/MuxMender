@@ -1,0 +1,58 @@
+# Solve common problems
+
+## The dashboard won't open
+
+Check that the app is running and use the published **host port**. If host 8767
+maps to container 8765, open `http://YOUR-SERVER:8767/`, not port 8765. The
+TrueNAS portal link must use that same host port.
+
+If the app reports a missing path, check the host folders in its mount settings.
+Both must exist. Inside the container, the app expects `/media` and `/output`.
+
+## I see permission denied
+
+Check permissions for the user the app actually runs as. It needs read access
+to media and write access to output. Replacement additionally needs write access
+to media. Don't solve this by granting everyone full access to the whole pool.
+
+## Videos are waiting, but nothing starts
+
+Read the queue's waiting reason. It may be deliberately paused, waiting for
+storage or memory headroom, sharing the GPU, or recovering interrupted work.
+Resume doesn't override those conditions.
+
+An idle GPU isn't proof that nothing is happening. Inspection, track copying,
+some validation and storage work can run without the encoder being busy.
+
+## A conversion takes a long time
+
+Look at the current step first. Full encoding and validation both read substantial
+amounts of data. GPU encoding doesn't make every other step GPU-accelerated.
+More concurrent jobs can make each job slower on a shared GPU or storage pool.
+
+Keep enough temporary disk space, check resource pressure and choose a time limit
+appropriate for your files. Lower-resolution copies may be faster or smaller,
+but deliberately change the picture; they aren't a free quality-preserving shortcut.
+
+## The original was kept
+
+Open its reason. If no candidate meets your quality and savings choices, keeping
+the original is the expected result. You can deliberately change those choices
+for a new request. The app won't do that for you just to show a successful conversion.
+
+If the reason is a decoding or preservation error, retrying unchanged settings
+may reproduce it. Include the app version, action, current step and sanitized
+error text when reporting a problem. Don't publish private file paths or video names.
+
+## Cancel was clicked, but the video still appears
+
+Cancelled attempts remain in history. Check its current state rather than the
+presence of a result card. Active workers may need time to stop, and an in-progress
+replacement finishes safely. Avoid restarting repeatedly while cancellation is settling.
+
+## Free space hasn't increased
+
+Check whether you created a copy or actually replaced the original. Then check
+retained copies, unresolved work and storage snapshots. Don't delete the entire
+output folder: it contains the records the app uses to avoid repeating work and
+recover interrupted replacements.

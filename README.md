@@ -8,7 +8,7 @@ original when the tested options do not meet your quality and space-saving targe
 
 It works with files you already have. It does not find, download or share videos.
 
-[Get started](docs/GETTING-STARTED.md) · [Project status](docs/STATUS.md) · [Roadmap](docs/TODO.md)
+[User guide](docs/wiki/Home.md) · [Get started](docs/GETTING-STARTED.md) · [Project status](docs/STATUS.md) · [Roadmap](docs/TODO.md)
 
 ## How it works
 
