@@ -173,6 +173,9 @@ def run(args,source,root,data,baseline):
               evaluation_policy=EVALUATION_POLICY,route='dv81-nvidia-hevc',
               quality_domain='hdr-common-render-v1')
     plan['savings_policy']=getattr(args,'savings_policy',None)
+    from quality_profiles import validate_policy
+    quality_policy=validate_policy(dict(id=getattr(args,'quality_profile',None) or 'legacy',mean=args.vmaf_mean,p5=args.vmaf_p5))
+    plan['quality_policy']=quality_policy
     plan['nvenc_maxrate_mbps']=peak_rate
     if not args.execute:
         print(json.dumps(dict(dry_run=True,plan=plan),indent=2));return 0
@@ -190,7 +193,7 @@ def run(args,source,root,data,baseline):
     root.mkdir(parents=True,exist_ok=True)
     directory=root/('auto-'+time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:8])
     directory.mkdir()
-    state=dict(state='running',source=str(source),original_retained=True,publication_authorized=False)
+    state=dict(state='running',source=str(source),original_retained=True,publication_authorized=False,quality_policy=quality_policy)
     save(directory/'plan.json',plan);save(directory/'status.json',state)
 
     def guard():
@@ -203,7 +206,7 @@ def run(args,source,root,data,baseline):
         guard();source_hash=digest(source,guard)
         workflow.preflight_source(source,data,source_hash)
         report=dict(schema='muxmender-codec-trials-v1',source_id=source_hash,color_mode='pq',
-                    dv_profile='8.1',source_bytes=baseline['size'],references=[],trials=[])
+                    dv_profile='8.1',source_bytes=baseline['size'],references=[],trials=[],quality_policy=quality_policy)
         identities={}
         workflow_stage('compare')
         for cq in cqs:

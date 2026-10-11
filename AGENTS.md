@@ -16,6 +16,16 @@ No media changes during refactoring tests: use generated fixtures. Do not change
 the running app, resume a queue, or create a Docker release unless requested.
 Ask before git commit, merge or push. Preserve unrelated user changes.
 
+# Fix and upstream compatibility records
+
+Record each new fix family in `docs/fix-ledger.json`, with implementation,
+regression tests, evidence and qualification limits. Keep withdrawn experiments
+and unresolved cases distinct from verified fixes. Build the reusable FFmpeg
+test package for proposed runtime upgrades. Do not retire a workaround solely
+because a newer version exists or managed tests pass: require an old-runtime raw
+reproducer, new-runtime raw success, unchanged negative/preservation checks and
+representative full-file qualification. Safety gates are not workarounds.
+
 # Development run visibility
 
 Never execute Linux remote-reader payloads or signal-based process probes on

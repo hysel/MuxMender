@@ -165,6 +165,14 @@ def quality_command(ffmpeg, output, reference, graph):
 
 
 def stream_metadata_check(before, after, codec, *, verified_frame_count=None, verified_variable_timing=False, verified_hdr_frames=False):
+    old_chapter_track=before.get('chapter_track_semantics')
+    new_chapter_track=after.get('chapter_track_semantics')
+    if bool(old_chapter_track)!=bool(new_chapter_track):raise ValueError('Native chapter representation was not preserved')
+    if old_chapter_track:
+        for key in ('chapters','method','handler_name','disposition','descriptor','side_data'):
+            if old_chapter_track.get(key)!=new_chapter_track.get(key):raise ValueError('Native chapter track semantics changed: '+key)
+        if not equivalent_stream_language(old_chapter_track.get('language'),new_chapter_track.get('language')):
+            raise ValueError('Native chapter track language changed')
     primary=main_video(before)['index']
     for a, b in paired_streams(before,after):
         keys = ['codec_type', 'disposition']
@@ -215,11 +223,21 @@ def stream_metadata_check(before, after, codec, *, verified_frame_count=None, ve
                      if tag == 'language' else old_tags.get(tag) == new_tags.get(tag))
             if not equal:
                 raise ValueError(f"Stream {a['index']} ({a['codec_type']}) tag changed: {tag}: {old_tags.get(tag)!r} -> {new_tags.get(tag)!r}")
-def metadata_check(before, after, codec, *, verified_frame_count=None, verified_hdr_frames=False, duration_evidence=None, verified_variable_timing=False):
+def metadata_check(before, after, codec, *, verified_frame_count=None, verified_hdr_frames=False, duration_evidence=None, verified_variable_timing=False, chapter_evidence=None):
     stream_metadata_check(before,after,codec,verified_frame_count=verified_frame_count,verified_hdr_frames=verified_hdr_frames,
                           verified_variable_timing=verified_variable_timing)
-    if canonical_chapters(before.get('chapters', [])) != canonical_chapters(after.get('chapters', [])):
-        raise ValueError('Chapters changed')
+    old_chapters=canonical_chapters(before.get('chapters', []))
+    new_chapters=canonical_chapters(after.get('chapters', []))
+    if old_chapters != new_chapters:
+        # Only the existing exact native-tree proof can resolve inferred ends.
+        # Bind it to this inspection and still compare every non-end property.
+        if not (chapter_evidence and chapter_evidence.get('method')=='exact-native-matroska-tree'
+                and chapter_evidence.get('unchanged') is True
+                and [{k:v for k,v in c.items() if k!='end'} for c in old_chapters]
+                    ==[{k:v for k,v in c.items() if k!='end'} for c in new_chapters]
+                and chapter_evidence.get('reported_endpoints_before')==[round(float(c['end']),6) for c in old_chapters]
+                and chapter_evidence.get('reported_endpoints_after')==[round(float(c['end']),6) for c in new_chapters]):
+            raise ValueError('Chapters changed')
     durations=[float(item['format']['duration']) for item in (before,after)]
     if any(not math.isfinite(value) or value<=0 for value in durations):
         raise ValueError('Invalid duration; finite positive evidence required')
@@ -277,7 +295,7 @@ def encode_command(ffmpeg, source, output, settings, info, streams, *, video_onl
         # a runtime-chosen ceiling; this is not a target bitrate or approval.
         options = [*options, '-maxrate:v:0', str(ceiling * 1000000)]
     from output_presets import encoder_options as output_options
-    options += output_options(video,settings.get('output_preset','original'))
+    options += output_options(video,settings.get('output_preset','original'),encoder=settings['encoder'])
     command = [ffmpeg, '-hide_banner', '-nostdin', '-n', '-xerror', '-copyts', '-noautorotate', '-i', str(source),
                '-map', '0:'+str(video['index']) if video_only else '0',
                '-map_metadata', '0', '-map_chapters', '0', '-c', 'copy',
@@ -318,6 +336,11 @@ def probe_rate_retry(ffmpeg, settings, info, video, timeout=30):
 class Workflow:
     def check_metadata(self, reference, output, before, after, codec, label, **verified):
         evidence=None
+        chapter_evidence=None
+        if canonical_chapters(before.get('chapters',[]))!=canonical_chapters(after.get('chapters',[])):
+            from streaming_pipeline import verify_chapters_preserved
+            chapter_evidence=verify_chapters_preserved(self.args.ffprobe,reference,output,self.args.timeout)
+            save(self.directory/(label+'-chapter-evidence.json'),chapter_evidence)
         if abs(Fraction(str(before['format']['duration']))-Fraction(str(after['format']['duration'])))>Fraction(1,10):
             from packet_validation import duration_header_evidence
             paths=[]
@@ -329,7 +352,7 @@ class Workflow:
                 paths.append(target)
             evidence=duration_header_evidence(before,after,*paths,guard=self.guard)
             save(self.directory/(label+'-duration-evidence.json'),evidence)
-        metadata_check(before,after,codec,duration_evidence=evidence,**verified)
+        metadata_check(before,after,codec,duration_evidence=evidence,chapter_evidence=chapter_evidence,**verified)
 
     def cleanup_terminal_artifacts(self):
         from replacement_cleanup import cleanup_finished
@@ -365,6 +388,8 @@ class Workflow:
         self.audio_audits={}
         self.source_pcm_cache={}
         self.output_suffix='.mkv'
+        self.essence_options={}
+        self.chapter_tracks={}
         self.performance_video=None
         self.worker_budget=None
         self.frame_reader_qualification=None
@@ -506,6 +531,8 @@ class Workflow:
         return command[:-1]+options+command[-1:]
 
     def execute(self, command, label, duration, *, strict_decode=False):
+        from iso_chapters import mapping_options
+        command=mapping_options(command,self.chapter_tracks)
         from runtime_support import bounded_ffmpeg_threads
         threads=self.performance_threads() if Path(str(command[0])).stem.lower()=='ffmpeg' else 2
         command=bounded_ffmpeg_threads(command,decoder_threads=threads)
@@ -574,6 +601,9 @@ class Workflow:
             for key,value in resolved.items():
                 if video.get(key) in legacy_color.UNKNOWN:video[key]=value
                 elif video[key]!=value:raise ValueError('Reference color metadata changed: '+key)
+        from iso_chapters import inspect as inspect_chapter_track
+        translated=inspect_chapter_track(self,source,data)
+        if translated:self.chapter_tracks[str(source.resolve())]=tuple(translated)
         return data
 
     def prepare_full_hdr_reference(self, source, metadata):
@@ -608,7 +638,7 @@ class Workflow:
                 self.frame_reader_checked=True
             video=main_video(self.probe(source)) if self.frame_reader_qualification else None
             command,options,plan=hdr_reader_request(self.args.ffprobe,source,video,metadata['duration'],
-                self.hdr_mode,self.frame_reader_qualification,self.decoder_options(source),metadata.get('format_name'))
+                self.hdr_mode,self.frame_reader_qualification,[*self.reader_input_options(source),*self.decoder_options(source)],metadata.get('format_name'))
             progress('Selecting frame inspection backend',detail=plan['reason'])
             from gpu_admission import stage_context
             with stage_context(video):
@@ -622,7 +652,7 @@ class Workflow:
         # frames: identical validation fields and full EOF draining are retained.
         run_probe([self.args.ffprobe, '-v', 'error', '-threads', str(self.performance_threads()), '-select_streams', 'V:0', '-show_frames',
                 '-show_entries', 'frame=best_effort_timestamp_time,width,height,pix_fmt,sample_aspect_ratio,interlaced_frame,top_field_first,repeat_pict,color_primaries,color_transfer,color_space,color_range',
-                '-of', 'compact=p=0', *self.decoder_options(source),str(source)],path,'Checking frame timing: '+label,
+                '-of', 'compact=p=0', *self.reader_input_options(source),*self.decoder_options(source),str(source)],path,'Checking frame timing: '+label,
                 self.args.timeout,self.guard,float(metadata['duration']),float(metadata.get('start_time',0)))
         if path.with_suffix(path.suffix+'.stderr').stat().st_size:
             raise ValueError('Frame decoder reported errors: '+label)
@@ -680,6 +710,22 @@ class Workflow:
             return validate_frames(frame_records(reference),frame_records(output),mode=self.hdr_mode)['frames']
         return compare_frames(reference,output)
 
+    def reference_window(self, source, probe, seconds):
+        """Subtitle cue tails do not measure the moving-video sample length."""
+        try:
+            return check_reference_window(probe,seconds)
+        except ValueError:
+            # Measure every primary-video packet, not a potentially stale stream
+            # DURATION tag. Decoder/timing checks still follow this demux proof.
+            evidence=self.directory/(source.stem+'-'+uuid.uuid4().hex[:8]+'-video-span-all-packets.txt')
+            run_probe([self.args.ffprobe,'-v','error','-select_streams','V:0',
+                '-show_packets','-show_entries','packet=stream_index,pts_time,duration_time',
+                '-of','compact=p=0',str(source)],evidence,
+                'Checking video sample span',self.args.timeout,self.guard)
+            if evidence.with_suffix(evidence.suffix+'.stderr').stat().st_size:
+                raise ValueError('Video sample span probe reported errors')
+            return check_reference_window(probe,seconds,compact_rows(evidence,'stream_index'))
+
     def packet_file(self, source, label, index):
         path = self.directory/(label+f'-stream-{index}.txt')
         run_probe([self.args.ffprobe, '-v', 'error', '-select_streams', str(index),
@@ -711,25 +757,45 @@ class Workflow:
             progress('Reusing verified sample track evidence',detail='Generated reference and cached evidence hashes match')
             return {index:item[0] for index,item in cached.items()}
         result=collect_packets(self.args.ffprobe,source,self.directory,label,indices,self.args.timeout,self.guard,
-                               float(metadata['duration']),float(metadata.get('start_time',0)))
+                               float(metadata['duration']),float(metadata.get('start_time',0)),input_options=self.reader_input_options(source))
         if key:self.packet_reference_cache[key]={index:(path,digest(path,self.guard)) for index,path in result.items()}
         return result
+
+    def reader_input_options(self, source):
+        return list(self.essence_options.get(str(Path(source).resolve()),()))
+
+    def prepare_chapter_mapping(self, source, metadata):
+        source_key=str(Path(source).resolve())
+        if metadata.get('chapter_track_semantics') and source_key not in self.chapter_tracks:
+            # Admission and conversion can use different Workflow instances.
+            # Re-establish stream-map authority from complete worker-local proof.
+            inspected=self.probe(source)
+            if inspected.get('chapter_track_semantics')!=metadata['chapter_track_semantics']:
+                raise ValueError('Native chapter evidence changed since admission')
+            metadata_check(metadata,inspected,main_video(metadata)['codec_name'])
+            if source_key not in self.chapter_tracks:
+                raise ValueError('Verified native chapter mapping is unavailable')
 
     def preflight_source(self, source, metadata, source_hash):
         from media_metadata import preflight_metadata
         from aac_priming import inspect as inspect_priming
+        from media_metadata import iso_data_container,essence_reader_options
         summary={'state':'running','stage':'metadata','original_retained':True}
         path=self.directory/'source-preflight.json'
         save(path,summary)
         try:
             self.guard()
             progress('Checking source metadata structure',directory=self.directory)
+            self.prepare_chapter_mapping(source,metadata)
             summary.update(metadata=preflight_metadata(metadata),stage='audio-priming')
+            self.essence_options[str(Path(source).resolve())]=tuple(essence_reader_options(metadata))
+            summary['essence_reader_options']=self.reader_input_options(source)
             save(path,summary)
             tracks=inspect_priming(self,source,metadata,'preflight-source')
             if tracks:self.output_suffix='.mp4'
-            if any(s.get('codec_type')=='data' for s in metadata['streams']) and 'mov' in metadata['format'].get('format_name','').split(','):
-                self.output_suffix='.mov'
+            data_container=iso_data_container(metadata)
+            if metadata.get('chapter_track_semantics'):data_container='.mp4'
+            if data_container:self.output_suffix=data_container
             summary.update(priming_tracks=sorted(tracks),stage='audio-decode');save(path,summary)
             self.preflight_source_audio(source,metadata,source_hash)
             if getattr(self.args,'encode_best',False):
@@ -737,7 +803,7 @@ class Workflow:
                 indices=copied_track_indices(metadata)
                 result=collect_packets(self.args.ffprobe,source,self.directory,'preflight-source',indices,
                                        self.args.timeout,self.guard,float(metadata['format']['duration']),
-                                       float(metadata['format'].get('start_time',0)))
+                                       float(metadata['format'].get('start_time',0)),input_options=self.reader_input_options(source))
                 errors=self.directory/'preflight-source-all-packets.txt.stderr'
                 if errors.exists() and errors.stat().st_size:
                     raise ValueError('Source track reader reported errors; inspect preflight-source-all-packets.txt.stderr')
@@ -795,7 +861,7 @@ class Workflow:
                 version=subprocess.check_output([str(executable),'-version'],text=True,
                     stderr=subprocess.STDOUT,timeout=10)
                 code=hashlib.sha256()
-                for name in ('auto_optimize.py','native_pipeline.py','runtime_support.py'):
+                for name in ('auto_optimize.py','native_pipeline.py','runtime_support.py','media_metadata.py','iso_chapters.py'):
                     code.update(Path(__file__).with_name(name).read_bytes())
                 context=dict(schema='complete-source-audio-v1',source_sha256=source_hash,
                     tracks=indices,ffmpeg_sha256=executable_hash,ffmpeg_version=version,
@@ -810,7 +876,7 @@ class Workflow:
             except (OSError,ValueError,subprocess.SubprocessError):cache=None
         try:
             clock_retry=self.discard_decode([self.args.ffmpeg,'-hide_banner','-nostdin','-v','error','-xerror',
-                          '-threads','2','-i',str(source),
+                          '-threads','2',*self.reader_input_options(source),'-i',str(source),
                           *[item for index in indices for item in ('-map',f'0:{index}')],
                           # This discard-only decoder check is about sample integrity.
                           # Source timestamps are validated independently against the
@@ -819,9 +885,18 @@ class Workflow:
                           '-progress','pipe:1','-nostats','-f','null','-'],
                          'source-audio-preflight-decode',float(metadata['format']['duration']))
         except RuntimeError as exc:
+            # Opening an input for an audio-only decode may also probe video.
+            # Attribute an explicit decoder tag without concealing its error.
+            import re
+            tag=re.search(r'\[([A-Za-z0-9_]+) @ 0x[0-9a-fA-F]+\]',str(exc))
+            video_codecs={s.get('codec_name') for s in metadata['streams'] if s.get('codec_type')=='video'}
+            reported_video=bool(tag and tag.group(1) in video_codecs)
             save(evidence,dict(state='failed',stage='source-audio-preflight',
-                               tracks=indices,original_retained=True,error=str(exc)))
-            raise RuntimeError('Source audio preflight failed before conversion; original retained. '+str(exc)) from exc
+                               tracks=indices,original_retained=True,error=str(exc),
+                               diagnostic_media_type='video' if reported_video else 'audio-or-input'))
+            message=('Source video reader failed while opening the input for audio preflight; original retained. '
+                     if reported_video else 'Source audio preflight failed before conversion; original retained. ')
+            raise RuntimeError(message+str(exc)) from exc
         proof=dict(state='passed',tracks=indices,complete_decode=True,strict_decode=True,
                    original_clock_retry=clock_retry)
         save(evidence,proof)
@@ -926,7 +1001,7 @@ class Workflow:
                 progress('Reusing checked source audio evidence',detail='Source and complete PCM evidence hashes match; output audio is decoded independently')
                 return path
         self.execute([self.args.ffmpeg,'-v','error','-nostdin','-n','-copyts','-threads','2',
-                      '-i',str(source),'-map','0:'+str(index),'-c:a',pcm,
+                      *self.reader_input_options(source),'-i',str(source),'-map','0:'+str(index),'-c:a',pcm,
                       '-progress','pipe:1','-nostats','-f','framehash','-hash','sha256',str(evidence)],
                      label,duration,strict_decode=True)
         if eligible and evidence.is_file() and not evidence.is_symlink():
@@ -1031,6 +1106,7 @@ class Workflow:
         result['output_preset']=identifier
         result['reference_domain']='target-resolution reference' if reference_filter else 'original-resolution reference'
         result['thresholds']=dict(mean=self.args.vmaf_mean,p5=self.args.vmaf_p5)
+        result['quality_profile']=getattr(self.args,'quality_profile',None) or 'legacy'
         if not self.hdr_mode and video.get('field_order') in ('tt','bb','tb','bt'):
             field_name=label+'-fields-vmaf.json'
             field_graph=quality_graph(field_name,video['avg_frame_rate'],separate_fields=True,reference_filter=reference_filter)
@@ -1078,9 +1154,11 @@ def compare_frame_rows(reference,output):
     for a, b in itertools.zip_longest(reference,output):
         if a is None or b is None:
             raise ValueError('Decoded frame count changed')
-        if any(not (equivalent_ratio(a.get(k),b.get(k)) if k=='sample_aspect_ratio'
-                    else a.get(k)==b.get(k)) for k in fields):
-            raise ValueError('Decoded frame geometry/pixel format changed')
+        changed=[k for k in fields if not (equivalent_ratio(a.get(k),b.get(k)) if k=='sample_aspect_ratio'
+                    else a.get(k)==b.get(k))]
+        if changed:
+            details=', '.join(f'{k}: {a.get(k)!r} -> {b.get(k)!r}' for k in changed)
+            raise ValueError(f'Decoded frame geometry/pixel format changed at frame {count+1}: {details}')
         for key in legacy_color.FIELDS:
             if a.get(key) not in legacy_color.UNKNOWN and a.get(key)!=b.get(key):
                 raise ValueError('Decoded frame color metadata changed: '+key)
@@ -1143,13 +1221,29 @@ def explicit_hevc_trials(cqs, preset='p6'):
                  **({'nvenc_preset':'p7'} if preset=='p7' else {})) for q in dict.fromkeys(cqs)]
 
 
-def check_reference_window(probe, seconds):
+def check_reference_window(probe, seconds, video_packets=None):
     """Keep the original sample bound until keyframe/preroll behavior is verified."""
     duration=float(probe['format']['duration'])
     if not math.isfinite(duration) or duration<=0:raise ValueError('Invalid reference clip duration')
+    container_duration=duration
+    if video_packets is not None:
+        start=end=None
+        for packet in video_packets:
+            try:
+                pts=Fraction(packet['pts_time']);length=Fraction(packet['duration_time'])
+            except (KeyError,ValueError,ZeroDivisionError):
+                raise ValueError('Incomplete video sample timing evidence') from None
+            if length<=0:raise ValueError('Invalid video sample packet duration')
+            start=pts if start is None else min(start,pts)
+            end=pts+length if end is None else max(end,pts+length)
+        if start is None:raise ValueError('Empty video sample timing evidence')
+        duration=float(end-min(Fraction(0),start))
     limit=2*seconds
     if duration>limit:raise ValueError(f'Reference clip exceeds bounded sampling window: {duration:.6f}s > {limit:.6f}s')
-    return dict(duration=duration,maximum_seconds=limit,boundary_allowance_seconds=0)
+    result=dict(duration=duration,maximum_seconds=limit,boundary_allowance_seconds=0)
+    if video_packets is not None:
+        result.update(container_duration=container_duration,method='complete-primary-video-packet-span')
+    return result
 
 
 def adaptive_candidates(report, limit=8):
@@ -1168,6 +1262,15 @@ def adaptive_candidates(report, limit=8):
         if not encoder.endswith('_nvenc'):
             if not any(t.get('encoder')==encoder and t.get('settings',{}).get('quality')=='transparent' for t in report['trials']):
                 candidates.append(dict(codec=encoders[encoder],encoder=encoder,quality='transparent'))
+            continue
+        if report.get('output_preset','original')!='original':
+            # Bounded NVENC presets use VBR, not CQ. Changing CQ would repeat
+            # the same encode; try the slower p7 analysis once per encoder.
+            if not any(t.get('encoder')==encoder and
+                (t.get('settings',{}).get('nvenc_preset')=='p7' or
+                 t.get('settings',{}).get('quality')=='transparent') for t in report['trials']):
+                candidates.append(dict(codec=encoders[encoder],encoder=encoder,
+                                       quality='transparent',nvenc_preset='p7'))
             continue
         measured=[t for t in report['trials'] if t['encoder']==encoder]
         size_limited=bool(measured) and all(t.get('size_screen',{}).get('rejected') is True
@@ -1210,9 +1313,8 @@ def run(args):
     from output_presets import preset,geometry
     policy=preset(getattr(args,'output_preset','original'))
     args.output_preset=policy['id']
-    if args.output_preset!='original':
-        args.vmaf_mean=max(args.vmaf_mean,policy['mean'])
-        args.vmaf_p5=max(args.vmaf_p5,policy['p5'])
+    from quality_profiles import apply_profile
+    quality_policy=apply_profile(args,policy)
     workflow_stage('inspect')
     source, root = disjoint(args.source, args.output_dir)
     if not source.is_file():
@@ -1368,6 +1470,8 @@ def run(args):
     plan['output_preset']=dict(policy,target=geometry(video,args.output_preset),
                               quality_reference='target-resolution reference; not original-resolution equivalence')
     plan['hdr_policy']=getattr(args,'hdr_policy','preserve')
+    plan['quality_profile']=quality_policy
+    plan['output_preset'].update(mean=args.vmaf_mean,p5=args.vmaf_p5)
     if not args.execute:
         print(json.dumps(dict(dry_run=True, plan=plan), indent=2))
         return 0
@@ -1389,7 +1493,7 @@ def run(args):
     workflow = Workflow(args, directory, guard)
     workflow.performance_video=dict(video)
     save(directory/'plan.json', plan)
-    state = dict(state='running', source=str(source), original_retained=True,savings_policy=savings_policy)
+    state = dict(state='running', source=str(source), original_retained=True,savings_policy=savings_policy,quality_policy=quality_policy)
     save(directory/'status.json', state)
     try:
         guard()
@@ -1398,7 +1502,8 @@ def run(args):
         plan['output_container']=workflow.output_suffix.lstrip('.')
         save(directory/'plan.json',plan)
         progress('Checking available encoders and quality tools',directory=directory)
-        report = dict(schema='muxmender-codec-trials-v1', source_id=source_hash, source_bytes=baseline['size'], color_mode=workflow.hdr_mode or 'sdr', references=[], trials=[])
+        report = dict(schema='muxmender-codec-trials-v1', source_id=source_hash, source_bytes=baseline['size'], color_mode=workflow.hdr_mode or 'sdr', references=[], trials=[],quality_policy=quality_policy)
+        report['output_preset']=args.output_preset
         workflow_stage('compare')
         filters = subprocess.check_output([args.ffmpeg, '-hide_banner', '-filters'], text=True, stderr=subprocess.STDOUT, timeout=30)
         if 'libvmaf' not in filters:
@@ -1455,7 +1560,7 @@ def run(args):
                 probe=workflow.probe(reference)
                 frames=workflow.frame_file(reference,'reference-'+str(i),probe['format'])
                 count=workflow.compare_frame_files(frames,frames)
-                window=check_reference_window(probe,args.seconds)
+                window=workflow.reference_window(reference,probe,args.seconds)
                 references.append((reference,probe,frames,count))
                 report['references'].append(dict(id=str(i),path=str(reference),bytes=reference.stat().st_size,
                     position=0,window=window,recovery=None,whole_source=True,sha256=source_hash))
@@ -1471,18 +1576,18 @@ def run(args):
             try:
                 workflow.execute(workflow.preserve_covers(reference_command,source,data,'reference-'+str(i)), 'reference-'+str(i), args.seconds)
                 probe = workflow.probe(reference)
-                window=check_reference_window(probe,args.seconds)
+                window=workflow.reference_window(reference,probe,args.seconds)
                 frames = workflow.frame_file(reference, 'reference-'+str(i), probe['format'])
             except (ValueError,RuntimeError):
                 from reference_sampling import recover_reference
                 reference,recovery=recover_reference(workflow,source,data,position,args.seconds,
                                                       'reference-'+str(i)+'-keyframe')
                 probe=workflow.probe(reference)
-                window=check_reference_window(probe,max(args.seconds,15))
+                window=workflow.reference_window(reference,probe,max(args.seconds,15))
                 frames = workflow.frame_file(reference, 'reference-'+str(i)+'-recovered', probe['format'])
             count = workflow.compare_frame_files(frames, frames)
             # Do not accept pathological keyframe preroll spanning another sample.
-            window=check_reference_window(probe,max(args.seconds,15) if recovery else args.seconds)
+            window=workflow.reference_window(reference,probe,max(args.seconds,15) if recovery else args.seconds)
             references.append((reference, probe, frames, count))
             report['references'].append(dict(id=str(i),path=str(reference), bytes=reference.stat().st_size, position=position,window=window,
                                              recovery=recovery))
@@ -1626,7 +1731,7 @@ def run(args):
             # consumes the existing adaptive budget and never bypasses checks.
             from nvenc_quality_retry import rate_retry
             retry=(rate_retry(report,baseline['size'],duration)
-                   if getattr(args,'nvenc_maxrate_mbps',None) is None else None)
+                   if args.output_preset=='original' and getattr(args,'nvenc_maxrate_mbps',None) is None else None)
             if retry:
                 guard()
                 progress('Checking HEVC quality-retry capability',directory=directory,
@@ -1657,6 +1762,7 @@ def run(args):
                 result=decision['action'],stop_reason='eligible_candidate' if decision['action']=='encode_copy' else 'bounded_search_exhausted',
                 cpu_fallback='not_run_requires_explicit_opt_in',quality_thresholds_unchanged=True))
         save(directory/'selection.json', decision)
+        state['quality_policy']=quality_policy
         if getattr(args,'research_full_av1_cq',None) is not None:
             from full_conversion_research import finish
             settings=dict(candidates[0])
@@ -1769,6 +1875,9 @@ def main(argv=None):
     parser.add_argument('--vmaf-p5', type=float, default=90)
     from output_presets import PRESETS
     parser.add_argument('--output-preset',choices=tuple(PRESETS),default='original')
+    from quality_profiles import PROFILES
+    parser.add_argument('--quality-profile',choices=tuple(PROFILES),default=None,
+                        help='Quality acceptance profile; omitted preserves legacy thresholds')
     parser.add_argument('--hdr-policy',choices=('preserve','sdr'),default='preserve',
                         help='Requested HDR treatment; SDR output requires qualified tone mapping')
     parser.add_argument('--savings-mode',choices=('size-aware','fixed'),default='size-aware')

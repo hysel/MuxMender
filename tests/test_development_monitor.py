@@ -29,6 +29,34 @@ class MonitorIdentityTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'linux', 'Remote reader tests run on Linux only')
 class DevelopmentMonitorTests(unittest.TestCase):
+    def test_complete_quality_rejection_is_not_a_processing_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            job=dict(state='failed',started=1,updated=2,finished=2,exit_code=1,error=None)
+            audit=dict(passed=False,publication_authorized=False,frames=10,
+                quality=dict(passed=False,frames=10),frame_timing_metadata_and_packets_passed=True,
+                decoded_audio_samples_equal=True,source_stat_unchanged=True)
+            (root/'job.json').write_text(json.dumps(job))
+            (root/'result.json').write_text(json.dumps(audit))
+            result=self.snapshot(root)
+            self.assertEqual(result['failures'],0)
+            self.assertEqual(result['rejection_label'],'Quality target not met')
+            audit['decoded_audio_samples_equal']=False
+            (root/'result.json').write_text(json.dumps(audit))
+            self.assertEqual(self.snapshot(root)['failures'],1)
+            audit['decoded_audio_samples_equal']=True;job['error']='decoder error'
+            (root/'result.json').write_text(json.dumps(audit));(root/'job.json').write_text(json.dumps(job))
+            self.assertEqual(self.snapshot(root)['failures'],1)
+
+    def test_pending_research_is_queued_not_running(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            (root/'job.json').write_text(json.dumps(dict(state='pending',started=1,updated=1,pid=0)))
+            capture=io.StringIO()
+            with contextlib.redirect_stdout(capture):
+                exec(REMOTE_TRACKED,{'ROOTS':[str(root)],'CROSS_NAMESPACE':True})
+            self.assertEqual(json.loads(capture.getvalue())[0]['state'],'queued')
+
     def test_cross_container_uses_worker_heartbeat_not_unrelated_pid(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)

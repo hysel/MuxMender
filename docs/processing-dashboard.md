@@ -5,6 +5,21 @@ and what happened to the files that finished?
 
 ## Three places to work
 
+A full safe copy keeps the original until you decide otherwise. In Results,
+choose **Replace original with this copy** on an eligible validated result.
+The confirmation shows both sizes and the destination. **Keep original**, the
+close button and Escape dismiss it without replacing anything. Approval queues
+verification and publication of that copy; it does not encode the video again.
+The original is removed only after the shared replacement checks succeed.
+Read-only media, changed/missing files or recovery journals prevent approval.
+
+Resource-profile feedback appears beside **Apply resource profile**. **Saved**
+means the setting was recorded, not that four workers have started. Faster still
+waits for sustained headroom and respects GPU sharing. If a request times out,
+check the saved setting before trying again; a lost response can follow a
+successful save. These controls are additions after v59 and require an updated
+app image.
+
 - **Overview** shows the queue, current work and the step each video has reached.
 - **Add videos** lets you choose a folder or one video, pick an action, then
   review the selection before adding it to the queue. Subfolders are included

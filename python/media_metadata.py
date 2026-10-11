@@ -3,6 +3,27 @@ from fractions import Fraction
 import math
 
 
+def iso_data_container(data):
+    """Keep MP4 chapter-text data in its native container; never drop tracks."""
+    if 'mov' not in data.get('format',{}).get('format_name','').split(','):return None
+    tracks=[s for s in data.get('streams',[]) if s.get('codec_type')=='data']
+    if not tracks:return None
+    return '.mp4' if all(s.get('codec_name')=='bin_data' and s.get('codec_tag_string')=='text'
+                         for s in tracks) else '.mov'
+
+
+def essence_reader_options(data):
+    """Audio/frame/packet readers do not need a second chapter metadata parse.
+
+    Normal metadata probing and final chapter comparison are unchanged. Limit
+    this to ISO sources without data streams: parsing chapter text can change
+    those streams' classification, so they retain the original reader path.
+    """
+    iso={'mov','mp4','m4a'}.intersection(data.get('format',{}).get('format_name','').split(','))
+    return ['-ignore_chapters','1'] if iso and not any(
+        s.get('codec_type')=='data' for s in data.get('streams',[])) else []
+
+
 def preflight_metadata(data):
     """Validate structural metadata, not arbitrary codec/resolution preferences."""
     streams=data.get('streams',[])

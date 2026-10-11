@@ -9,6 +9,43 @@ from control_service import Controls
 
 
 class QueueCancellationTests(unittest.TestCase):
+    def test_remove_one_waiting_item_keeps_other_jobs_files_and_pause_state(self):
+        first=self.enqueue();second=dict(copy.deepcopy(first),id='other-waiting')
+        self.controls.state['jobs'].append(second)
+        snapshot=copy.deepcopy(second)
+        paused=self.controls.state['paused']
+        result=self.controls.action(dict(action='remove-queued',id=first['id']))
+        self.assertEqual(result['removed'],first['id'])
+        self.assertEqual(first['state'],'cancelled')
+        self.assertTrue(first['removed_from_queue'])
+        self.assertEqual(second,snapshot)
+        self.assertEqual(self.controls.state['paused'],paused)
+        self.assertEqual(self.source.read_bytes(),b'original fixture')
+        self.assertEqual(len(self.controls.state['jobs']),2)
+        restored=Controls(self.media,self.output,lambda _:True,['hevc'])
+        self.assertEqual(restored.state['jobs'][0]['state'],'cancelled')
+        self.controls.action(dict(action='remove-queued',id=first['id']))
+
+    def test_remove_refuses_started_finished_unknown_and_invalid_requests(self):
+        job=self.enqueue()
+        for state in ('running','completed','cancelled'):
+            job['state']=state
+            with self.assertRaises(ValueError):
+                self.controls.action(dict(action='remove-queued',id=job['id']))
+            self.assertEqual(job['state'],state)
+        for identifier in (None,{},'','unknown','x'*129):
+            with self.assertRaises(ValueError):
+                self.controls.action(dict(action='remove-queued',id=identifier))
+        job['state']='pending';self.controls.ready=False
+        with self.assertRaises(ValueError):self.controls.remove_queued(job['id'])
+        self.assertEqual(job['state'],'pending')
+
+    def test_remove_save_failure_rolls_back(self):
+        job=self.enqueue();before=copy.deepcopy(self.controls.state)
+        with patch.object(self.controls,'save',side_effect=OSError('disk')):
+            with self.assertRaises(OSError):self.controls.remove_queued(job['id'])
+        self.assertEqual(self.controls.state,before)
+
     @unittest.skipUnless(sys.platform.startswith('linux'),'Linux process ownership and signals only')
     def test_owned_active_worker_stops_but_publisher_is_not_signalled(self):
         job=dict(self.enqueue(),id='owned-worker',state='running',cancel_requested=True)
@@ -68,12 +105,12 @@ class QueueCancellationTests(unittest.TestCase):
         self.assertEqual(previous['state'],'cancelled')
         self.assertEqual(self.controls.state['jobs'][-1]['state'],'pending')
 
-    def test_manual_pause_is_not_overridden_by_cancel_then_submit(self):
+    def test_manual_pause_on_drained_queue_does_not_block_new_request(self):
         self.enqueue();self.controls.action(dict(action='pause'))
         self.confirm(self.controls.action(dict(action='clear-queue-preview',include_running=True)))
         self.enqueue()
-        self.assertTrue(self.controls.state['paused'])
-        self.assertEqual(self.controls.state['pause_origin'],'manual')
+        self.assertFalse(self.controls.state['paused'])
+        self.assertNotIn('pause_origin',self.controls.state)
 
     def test_cancellation_pause_survives_restart_and_new_request_starts(self):
         previous=self.enqueue()
@@ -101,13 +138,56 @@ class QueueCancellationTests(unittest.TestCase):
         self.assertFalse(result['auto_started'])
         self.assertTrue(self.controls.state['paused'])
 
-    def test_explicit_pause_after_cancellation_still_requires_resume(self):
+    def test_explicit_pause_on_empty_queue_starts_when_new_work_arrives(self):
         self.enqueue()
         self.confirm(self.controls.action(dict(action='clear-queue-preview',include_running=True)))
         self.controls.action(dict(action='pause'))
         self.enqueue()
+        self.assertFalse(self.controls.state['paused'])
+        self.assertNotIn('pause_origin',self.controls.state)
+
+    def test_manual_pause_with_waiting_or_running_work_is_preserved(self):
+        for state in ('pending','running'):
+            with self.subTest(state=state):
+                self.controls.state['jobs']=[]
+                previous=self.enqueue();previous['state']=state
+                self.controls.action(dict(action='pause'))
+                draft=self.controls.preview(dict(path='fixture.mkv',mode='test'))
+                result=self.controls.submit(draft['preview_id'])
+                self.assertFalse(result['auto_started'])
+                self.assertTrue(self.controls.state['paused'])
+
+    def test_recovery_or_worker_error_pause_is_not_automatically_cleared(self):
+        for origin in ('error','restart-recovery'):
+            with self.subTest(origin=origin):
+                self.controls.state.update(jobs=[],paused=True,pause_origin=origin)
+                draft=self.controls.preview(dict(path='fixture.mkv',mode='encode'))
+                self.assertFalse(self.controls.submit(draft['preview_id'])['auto_started'])
+                self.assertTrue(self.controls.state['paused'])
+
+    def test_empty_legacy_paused_queue_autostarts_and_persists(self):
+        self.controls.state['paused']=True
+        draft=self.controls.preview(dict(path='fixture.mkv',mode='encode'))
+        result=self.controls.submit(draft['preview_id'])
+        self.assertTrue(result['auto_started'])
+        restored=Controls(self.media,self.output,lambda _:True,['hevc'])
+        self.assertFalse(restored.state['paused'])
+
+    def test_history_only_submission_does_not_unpause_empty_queue(self):
+        previous=self.enqueue();previous['state']='awaiting-playback'
+        self.controls.action(dict(action='pause'))
+        draft=self.controls.preview(dict(path='fixture.mkv',mode='encode'))
+        result=self.controls.submit(draft['preview_id'])
+        self.assertEqual(result['queued'],0)
+        self.assertFalse(result['auto_started'])
         self.assertTrue(self.controls.state['paused'])
-        self.assertEqual(self.controls.state['pause_origin'],'manual')
+
+    def test_live_worker_error_prevents_autostart_without_pause_origin(self):
+        self.controls.state['paused']=True
+        self.controls.error='Worker unavailable'
+        draft=self.controls.preview(dict(path='fixture.mkv',mode='encode'))
+        self.assertFalse(self.controls.submit(draft['preview_id'])['auto_started'])
+        self.assertTrue(self.controls.state['paused'])
 
     def enqueue(self):
         preview=self.controls.preview(dict(path='fixture.mkv',mode='encode'))

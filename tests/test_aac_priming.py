@@ -58,6 +58,23 @@ class AACPrimingTests(unittest.TestCase):
         self.assertIn('codec-delay=42666667',edit)
         self.assertNotIn('source.mp4',edit)
 
+    def test_offset_aac_start_is_not_assumed_to_be_zero(self):
+        data={'streams':[dict(index=1,codec_name='aac',codec_type='audio',sample_rate='48000',
+                            start_pts=768,time_base='1/48000',start_time='0.016000')]}
+        p=dict(stream_index=1,pts_time='-0.005333',side_data_list=[dict(side_data_type='Skip Samples',skip_samples=1024)])
+        tracks=priming_tracks(data,[p])
+        self.assertEqual(tracks[1]['presentation_start'],Fraction(16,1000))
+        self.assertEqual(tracks[1]['seconds'],Fraction(1024,48000))
+        p['pts_time']='0.005333'
+        with self.assertRaisesRegex(ValueError,'initial timestamp'):priming_tracks(data,[p])
+
+    def test_decimal_offset_fallback_retains_one_sample_tolerance(self):
+        data={'streams':[dict(index=1,codec_name='aac',codec_type='audio',sample_rate='48000',start_time='0.016')]}
+        p=dict(stream_index=1,pts_time='-0.005333',side_data_list=[dict(side_data_type='Skip Samples',skip_samples=1024)])
+        self.assertEqual(priming_tracks(data,[p])[1]['presentation_start'],Fraction(16,1000))
+        data['streams'][0]['start_time']='nan'
+        with self.assertRaises(ValueError):priming_tracks(data,[p])
+
     def test_mp4_finalizer_keeps_native_priming_without_codec_delay_shift(self):
         class Args:ffmpeg='ffmpeg'
         class W:

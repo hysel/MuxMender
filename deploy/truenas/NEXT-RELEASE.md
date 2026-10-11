@@ -1,5 +1,230 @@
 # Next release deployment checklist
 
+## Current package: v60, awaiting isolated image smoke tests
+
+FFmpeg 9.0.2 becomes the default runtime. Build sources are checksum-pinned,
+NVENC API 13.0 remains compatible with the tested driver, and the existing
+qualified GPU validation reader is retained. Chapter mapping, narrow DTS
+duration restoration and source-error attribution fixes are included. Quality
+and preservation checks are unchanged. No deployment or runtime speed gain is
+claimed before qualification. See RELEASE-20261010-v60.md and the fix ledger.
+
+The revised package fixes Windows-line-ending version checks and separates
+build contexts and progress records by archive checksum. Production remains
+unchanged. The older staging notes below retain their original scope/evidence.
+
+## Retry-failure investigation (after v59; not packaged)
+
+- Conversion workers independently re-establish verified native chapter stream
+  mappings when admission ran in another Workflow instance. Changed chapter
+  evidence or a missing verified mapping stops processing; track-count validation
+  remains unchanged.
+- Three affected sources passed complete stream-copy remux metadata validation
+  with separate admission/conversion instances and strict five-second audio reads.
+  This is not full re-encode, visual-quality or publication qualification.
+- 43 focused chapter-recovery and automatic-workflow regressions passed.
+- Frame geometry errors now identify the frame and changed fields. One remaining
+  retry failure is reproduced: undeclared source SAR becomes explicit square SAR
+  after NVENC encoding. Preservation attempts have not resolved it; no validation
+  exception has been introduced. This issue remains open before release.
+
+## FFmpeg upgrade investigation (not enabled in production)
+
+- Production and the qualified custom GPU reader remain pinned to 8.0.1.
+- A checksum-pinned 9.0-branch prebuilt runtime completed three full chapter
+  remux metadata checks with the worker-handoff fix. Its NVENC encoders failed
+  initialization: the build requires API 13.1 while the installed driver supplies
+  13.0. This is not evidence that FFmpeg 9.0.2 itself requires a driver update.
+- Signed stable 9.0.2 source is staged for an isolated diagnostic image compiled
+  with pinned NVIDIA SDK 13.0 headers. The launcher mounts sources read-only and
+  never stops, replaces or upgrades the production app or host driver.
+- The signed stable 9.0.2 diagnostic image with SDK 13.0 headers has now encoded
+  short HEVC/AV1 clips on the existing driver and passed three complete chapter
+  remux checks with verified mappings enabled. The aspect-ratio mismatch still
+  occurs with both codecs; it is not fixed upstream by this upgrade.
+- Complete quality-metric compatibility, representative full re-encode checks,
+  aspect-ratio handling and custom-reader requalification remain required.
+  A completed comparison does not constitute approval for production migration.
+- The maintained fix ledger and version-independent compatibility package track
+  raw versus managed behavior, all current regression modules, executable/fixture
+  hashes, negative controls, skipped tests and coverage gaps. Code removal is
+  always a reviewed change, never an automatic consequence of an upgrade.
+
+## Approve safe copies and resource-setting feedback (after v59)
+
+- Eligible Results cards have **Replace original with this copy**. Review the
+  original/copy sizes and destination in a dismissible confirmation dialog.
+  Confirmation queues publication of the existing full validated copy, not a
+  new encode. Source, copy and evidence must be unchanged. Expired or reused
+  confirmations, read-only media, missing copies, active work on the source,
+  unqualified routes and existing recovery journals are rejected.
+- Publication uses the same worker and verified replacement transaction as
+  automatic replacement: source/output hashes, savings, staged-copy verification,
+  journal, atomic publication, cleanup and confirmed lifetime savings. Approving
+  a copy does not waive quality checks or force an already paused busy queue.
+- Resource profile Apply shows Applying / Saved / error feedback next to the
+  button, prevents duplicate requests and recovers from network failures. Control
+  resource-setting writes time out after 15 seconds; the UI does not infer failure or undo a setting
+  when acknowledgement is lost. Saved profiles are returned from in-memory queue
+  state even when resource/history refresh is delayed. Faster is a ceiling, not
+  a promise of four workers under contention.
+- Backend and browser-behavior regressions cover no-encode approval, publication
+  cleanup, source/copy changes, journals, confirmation expiry, persistence failure,
+  queue pause preservation, local feedback and retryable request errors.
+- Linux generated-fixture qualification passed 110 tests, including execution
+  of the actual publication worker, verified replacement, savings receipts and
+  removal of the redundant copy. Browser behavior tests passed locally; the Linux
+  research container has no Node runtime. No production source was published.
+- Not included in the already staged/deployed v59. Image qualification and a
+  future deployment remain separate from implementing this change.
+
+## ISO chapter tracks and AAC timing (after v58)
+
+- Translate a native QuickTime chapter-text track only after all raw chapter
+  packets exactly match the parsed chapter titles and start/end clocks. Preserve
+  its language, handler and disposition; reject unknown extra payload or metadata.
+  Exclude only that proven duplicate representation from copy-all maps and retain
+  ordinary chapter metadata. Final output independently repeats the proof and
+  must match all chapter semantics. Audio/subtitles and other data are not dropped.
+- MP4 sources with native chapter text use MP4 rather than blindly choosing MOV.
+- Chapter-independent essence readers skip a redundant ISO chapter parse only
+  when no unclassified data tracks remain. Metadata probing and final chapter
+  validation still parse and compare chapters. Other decoder diagnostics remain
+  strict failures; no broad error-message allowlist was added.
+- AAC priming is checked against each track's recorded presentation start, not
+  an assumed zero origin. The tolerance remains one audio sample.
+- Accept regeneration of only two verified default chapter-text descriptors;
+  custom descriptors, unknown payloads and stream side data still require
+  preservation. Descriptor bytes must match the source probe's recorded hash.
+- Isolated Linux qualification passed six real complete chapter remuxes and
+  eight strict five-second audio excerpts, including an offset AAC case and
+  dangling chapter-reference cases. All eight source stats were unchanged;
+  temporary remux videos were removed. Another 51 Linux tests passed, including
+  corrupt-audio rejection. No full conversion, visual-quality approval,
+  source replacement or production deployment is claimed by those tests.
+- Genuine AC3 and H.264 decoder errors remain failures, not silently repaired
+  media. Source-preflight UI wording no longer diagnoses every error as audio.
+
+## Queue source-size summary (after v58)
+
+- Show the total size of active and waiting source videos, with separate sizes
+  under Running now and Waiting their turn. Show each waiting video's source
+  size next to its filename. Use recorded scan/request sizes, never rescan media
+  during polling. Completed history is excluded from this queue total.
+- Missing sizes are labelled unavailable, not silently counted as zero. Lost,
+  delayed or frozen queue responses keep their last-known label. These numbers
+  are source sizes, not temporary disk use or a savings forecast.
+- Local UI behavior tests cover empty queues, unknown sizes, duplicate records,
+  historical outcomes and stale data. Not included in the already staged v58.
+
+## Current next-release delta after v57
+
+- Adding processing work to an empty paused queue now starts it automatically.
+  Existing manual pauses with waiting/running work, recovery pauses and live
+  worker errors remain protected. Keep-only and history-only submissions do
+  not restart work. Local queue regressions passed; image qualification remains.
+- Include queue cancellation/auto-start regressions in the image smoke suite.
+- v57 is already deployed and image-qualified. Older pending/deployment labels
+  below are historical notes, not the current installed status.
+- The all-scene CQ22 experiment completed: four scenes passed quality, one
+  failed, and aggregate savings missed the target. No full encode was started.
+- Next performance research needs comparable resource conditions and available
+  production GPU capacity. Do not force four workers or change quality gates.
+
+## Live queue status when resource readings are delayed
+
+- Queue state, counts and request settings now come directly from the worker's
+  in-memory state. Slow history/storage/resource refreshes no longer freeze them.
+- Delayed resource readings remain labelled as delayed; they are not presented
+  as current. Queue controls still require a fresh queue response.
+- Local control and UI regression checks pass. Installed-image smoke testing is
+  still needed before deployment.
+
+## Scheduling research — not yet a release performance claim
+
+- Image-isolated v56 retest: the same four excerpt tasks took 575/601/383
+  seconds with 1/2/4 workers; all twelve passed technical and 94/90 sampled
+  quality checks. Four workers finished 33.5% sooner than one in this run.
+- Resource conditions varied substantially: available memory was as low as
+  6.1 GiB during the serial phase, versus at least 53.1 GiB in the four-worker
+  phase. These ordered measurements do not establish a general 33.5% gain.
+  Retain dynamic admission and the four-worker ceiling; do not force four
+  workers or loosen resource/quality checks based on this benchmark.
+- Intermediate AV1 CQ22 passed one difficult scene at mean 94.80 / p5 90.63,
+  with 10.6% excerpt size reduction. CQ23/24 failed p5. Five-scene and conditional
+  full-copy qualification is staged, not yet completed or publication-approved.
+
+- A preliminary 1/2/4-worker excerpt comparison completed all technical and
+  quality checks in 421/335/189 seconds. However, a writable-output development
+  module shadowed an image module, so these are not certified installed-image
+  timings. Repeat before changing production scheduling policy.
+- The corrected harness isolates image imports, records engine provenance, and
+  uses existing decoded-frame and bitstream color inspection rather than
+  weakening metadata checks. The separate difficult-scene AV1 tests retain the
+  selected 90/90 gates; no publication is authorized by this research.
+
+## Selectable quality checks
+
+- New jobs offer Strict (mean VMAF 95), Balanced (94, default), and Space saver
+  (90). All require fifth-percentile VMAF at least 90.
+- Acceptance is independent of encoder tuning and resolution. Bitrate ceilings,
+  savings, timing, track preservation and decode validation are unchanged.
+- UI, API and automatic CLI use the same shared policy. The selected profile is
+  stored per request. Existing queued jobs keep legacy settings; changed profiles
+  re-evaluate automatic keep decisions without undoing replacements or explicit
+  keep choices. There is no automatic threshold reduction after a failed test.
+- Automatic trial selection now verifies numeric scores against recorded policy
+  thresholds, not just pass flags. The policy follows ordinary and dedicated DV
+  evidence into selection, final status and compact history. Legacy report
+  compatibility and existing route-specific publication qualification remain.
+- The new policy module is included in the Python package manifest.
+- Real SDR excerpt comparison on the RTX 5050 now has accepted outcomes for
+  three source cases across all three profiles. One case required the subtitle
+  tail sampling fix below. Its final AV1 copies were 40.973% smaller under Strict
+  and Balanced (lowest scene mean/p5 95.264/93.017); Space saver selected HEVC,
+  56.152% smaller (93.899/91.296). Runs took 177, 178 and 194 seconds. Another
+  case produced 21.855% smaller validated copies under all profiles. The third
+  retained the original after measured trials missed the 10% excerpt savings
+  target; that is not proof that no other settings could save space.
+- Real cases include copied audio and subtitles. Sources remained unchanged;
+  each accepted run recorded terminal scratch cleanup. These are full-excerpt
+  technical checks plus sampled visual scores, not full-movie, HDR, playback,
+  final-image or throughput certification. Test copies are not reclaimed space.
+- 7 October 2026: serial RTX 5050 qualification passed Strict, Balanced and Space
+  saver on the same generated 12-second 1080p SDR video-only source. Each selected
+  HEVC NVENC compact, saved 74.556%, and completed in about 40 seconds including
+  trials and full technical validation. Lowest selected-scene mean/p5 scores
+  were 98.031/97.066. All three recorded cleanup of 47 temporary files (~64 MB)
+  each, with the generated source hash unchanged. The development dashboard
+  recorded completion. This is not real-library, audio, HDR or throughput
+  certification; no production deployment or source replacement occurred.
+- Not deployed. These policy changes do not qualify pending HDR-to-SDR routes or
+  retroactively approve retained research candidates for replacement.
+
+## Subtitle tails during reference sampling
+
+- When a copied sample's container duration exceeds the sampling limit, the
+  shared engine measures every primary-video packet. Subtitle cues can outlast
+  the pictures; their end time must not be mistaken for excessive video preroll.
+- The video-span limit is unchanged. Missing or invalid packet clocks still
+  fail, and complete decoded-frame, copied-track and quality checks still apply.
+  Stream duration tags alone cannot approve a sample. Temporary packet evidence
+  follows the existing terminal cleanup policy.
+- Focused regressions cover subtitle tails, genuinely overlong video, missing
+  clocks, reordered packets and repeated evidence collection. The failing real
+  NVIDIA excerpt now passes all three profiles, with full excerpt validation
+  and terminal cleanup. This fix has not been deployed.
+
+## Queue button availability feedback
+
+- Queue actions now explain paused, empty, connecting and worker-unavailable
+  states beside the buttons, including active jobs finishing after a pause.
+- Ordinary polling retains button state. Delayed snapshots keep a safe pause
+  request available from the last confirmed running state; resume and destructive
+  actions wait for fresh status. The server still validates every action.
+- Repeated clicks are blocked during requests. Older in-flight polls cannot
+  undo an acknowledged action, and action errors remain visible by the buttons.
+
 ## Compact sci-fi console presentation
 
 - The latest preview refines this into a retro operations terminal: olive-black
@@ -44,6 +269,29 @@
 
 ## Resolution and bitrate presets (development only)
 
+- Preset/profile GPU matrix testing found that a CQ encode with a zero bitrate
+  target could exceed the measured preset limit despite maxrate/buffer options.
+  Bounded presets now supply a nonzero VBR target (90% of the ceiling), maximum
+  rate (95%) and a small startup buffer (5% of one second's ceiling). They disable NVENC CQ, which otherwise
+  clears the target and buffer in
+  [FFmpeg's NVENC implementation](https://www.ffmpeg.org/doxygen/8.0/nvenc_8c_source.html).
+  Original-resolution CQ behavior is unchanged. This is encoding headroom, not a change
+  to the user-selected ceiling or quality floor. Complete packet-span bitrate
+  validation is unchanged. The corrected nine-combination matrix passed on
+  the RTX 5050 with a generated 12-second 1080p SDR video-only fixture.
+- All three quality profiles passed all three targets, including full-output
+  validation and terminal scratch cleanup. Selected HEVC outputs averaged
+  6.029 / 2.850 / 1.083 Mbps for 1080p / 720p / 480p, respectively. The lowest
+  selected-scene mean/p5 scores were 96.569/94.950, 97.874/96.251 and
+  97.419/94.179. Runs took approximately 39 / 29 / 25 seconds per combination.
+  Lower-resolution scores use resized references; they do not establish
+  preservation of original-resolution detail. This is not real-media, audio,
+  HDR, every-codec, playback or final-image certification.
+- Raw preset packet lists are removed by terminal cleanup; compact measured
+  bitrate reports remain alongside history and quality summaries.
+- Bounded-preset adaptive searches no longer repeat CQ changes that would be
+  ignored by VBR or probe a source-derived rate ceiling that the preset would
+  override. They can try slower p7 analysis once per NVIDIA encoder instead.
 - A shared selector adds original resolution, 1080p / 8 Mbps video, 720p /
   4 Mbps video and 480p / 1.5 Mbps video. Target geometry preserves display
   aspect without cropping or upscaling. Audio and subtitles remain copies.
@@ -430,3 +678,8 @@ cleaned their generated media and frame/quality work files, retaining reports.
   malformed/truncated inputs and full EOF draining before integration.
 - Research is tracked on the development dashboard; no production image,
   source file, queue setting or quality threshold was changed.
+# Remove individual waiting videos
+
+Open **Waiting videos** in Current work and use **Remove** beside a video.
+Other jobs keep running. The file and history are kept; running jobs cannot
+be removed with this control. Buttons are unavailable while queue status is stale.

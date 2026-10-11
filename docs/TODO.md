@@ -24,6 +24,11 @@ A unit-test pass does not qualify every video or GPU.
 
 ## Next: finish the current library checks
 
+- [ ] Ship and image-test empty-queue auto-start. The local implementation and
+  regression tests are complete; v57 does not include it.
+- [ ] Finish the current production batch, review errors and keep decisions,
+  and verify terminal scratch cleanup without disturbing active work.
+
 - [ ] Finish remaining full-file tests and size/quality refinements. Give each
   result a clear outcome: converted, deliberately kept, failed, or waiting.
 - [ ] Reconcile historical failures with later successes without erasing history.
@@ -38,6 +43,10 @@ A unit-test pass does not qualify every video or GPU.
 
 ## Next: spend less time on each file
 
+- [ ] Extend the completed excerpt benchmarks to representative full files under
+  comparable resource conditions. Short p4/p5/p6/p7 and one/two/four-worker
+  tests are complete, but do not justify a blanket production speed claim.
+  Do not compete with the running production queue for GPU capacity.
 - [ ] Queued September 22: benchmark faster NVENC presets on the TrueNAS RTX
   5050 against the current preset, using separate test outputs after production
   GPU capacity is available. Compare HEVC and AV1 where supported, using the
@@ -64,7 +73,7 @@ Performance work stays on one host. Multi-machine processing is out of scope.
 
 - [ ] Expand NVIDIA generation coverage, including older cards and multiple GPUs
   on one host. Test encoding and decoding separately.
-- [ ] Re-test AMD against the current shared engine and broaden Intel coverage.
+- [ ] Deferred beyond phase 1: re-test AMD against the current shared engine and broaden Intel coverage.
   One card's limitation must not block a working route on another.
 - [ ] Finish full-file tests for selected 10-bit 4:4:4 inputs; short tests passed.
 - [ ] Broaden legacy AVI, mixed-container, audio, subtitle, aspect-ratio and timing tests.

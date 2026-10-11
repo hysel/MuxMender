@@ -39,6 +39,26 @@ class OutputPresetTests(unittest.TestCase):
                          [8000000,4000000,1500000])
         with self.assertRaises(ValueError):presets.preset('unsafe')
 
+    def test_rate_control_has_nonzero_target_and_bounded_startup_headroom(self):
+        video=dict(width=1920,height=1080,sample_aspect_ratio='1:1')
+        for identifier in ('tv1080','mobile720','small480'):
+            options=presets.encoder_options(video,identifier)
+            limit=presets.preset(identifier)['video_bps']
+            self.assertEqual(int(options[options.index('-b:v:0')+1]),limit*90//100)
+            self.assertEqual(int(options[options.index('-maxrate:v:0')+1]),limit*95//100)
+            self.assertEqual(int(options[options.index('-bufsize:v:0')+1]),limit*5//100)
+            self.assertEqual(presets.preset(identifier)['video_bps'],limit)
+
+    def test_only_bounded_nvenc_presets_disable_cq_that_discards_vbv(self):
+        video=dict(width=1920,height=1080,sample_aspect_ratio='1:1')
+        for encoder in ('hevc_nvenc','av1_nvenc','h264_nvenc'):
+            for identifier in ('tv1080','mobile720','small480'):
+                options=presets.encoder_options(video,identifier,encoder=encoder)
+                self.assertEqual(options[-2:],['-cq','0'])
+            self.assertEqual(presets.encoder_options(video,'original',encoder=encoder),[])
+        for encoder in ('libx264','hevc_qsv','hevc_amf',None):
+            self.assertNotIn('-cq',presets.encoder_options(video,'tv1080',encoder=encoder))
+
     def test_cli_and_app_use_shared_target_arguments(self):
         settings=dict(mode='encode',hardware='nvidia',minimum_savings=25,codecs=['hevc'],quality='auto',
                       output_preset='mobile720',hdr_policy='sdr')

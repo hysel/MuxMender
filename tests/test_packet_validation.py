@@ -98,7 +98,7 @@ class PacketValidationTests(unittest.TestCase):
     def test_sample_cache_rechecks_source_and_evidence_content(self):
         source=self.root/'reference-0.mkv';source.write_bytes(b'generated source')
         workflow=Workflow(SimpleNamespace(ffprobe='ffprobe',timeout=60),self.root,lambda:None)
-        def collect(ffprobe,source,directory,label,*args):
+        def collect(ffprobe,source,directory,label,*args,**kwargs):
             evidence=directory/(label+'.txt');evidence.write_text(row(1));return {1:evidence}
         with patch('auto_optimize.collect_packets',side_effect=collect) as call:
             first=workflow.copied_packets(source,'one',[1],{'duration':60},True)

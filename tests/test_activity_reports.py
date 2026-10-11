@@ -62,6 +62,8 @@ const card=userEl('report-rows').children[0],details=card.children.find(n=>n.tag
 renderActivityReports([...records,{id:'next',source:'/media/next.mkv',state:'pending',created:10}]);
 assert(userEl('report-rows').contains(card)&&details.open,'Polling keeps expanded details open');
 assert(reportReason({state:'failed',reason:'Source audio preflight failed: quant_step_size larger than huff_lsbs'}).includes('source audio could not be decoded'),'Readable audio explanation');
+assert(!reportReason({state:'failed',reason:'Source audio preflight failed: Invalid NAL length'}).includes('source audio could not be decoded'),'Generic preflight wrapper does not prove an audio error');
+assert(reportReason({state:'failed',reason:'Source video reader failed while opening the input for audio preflight; original retained.'}).includes('source video reader reported an error'),'Video probe errors have a video explanation');
 assert(!userReason({state:'failed',reason:'Video decoder reported incomplete frame'}).includes('source audio'),'Do not mislabel video errors as source audio');
 assert(userEl('report-freshness').textContent.includes('may be stale'),'Disconnected state visible');
 console.log('Report checks passed');

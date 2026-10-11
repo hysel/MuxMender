@@ -78,8 +78,10 @@ def run(workflow_args, source, root, data, baseline):
     configs=[s for s in main_video(data).get('side_data_list',[]) if 'dv_profile' in s]
     if len(configs)!=1:raise ValueError('Expected one DV configuration')
     profile=configs[0]['dv_profile'];candidate_service(profile)
+    from quality_profiles import validate_policy
+    quality_policy=validate_policy(dict(id=getattr(args,'quality_profile',None) or 'legacy',mean=args.vmaf_mean,p5=args.vmaf_p5))
     plan=dict(route='dv7-layer-preserving' if profile==7 else f'dv{profile}-native-preserving',source=str(source),source_deletion=False,
-              publication_authorized=False,full_copy=args.encode_best,evaluation_policy=EVALUATION_POLICY)
+              publication_authorized=False,full_copy=args.encode_best,evaluation_policy=EVALUATION_POLICY,quality_policy=quality_policy)
     if not args.execute:
         print(json.dumps(dict(dry_run=True,plan=plan),indent=2));return 0
     if 'hevc' not in args.playback_verified_codecs:
@@ -87,7 +89,7 @@ def run(workflow_args, source, root, data, baseline):
     root=Path(root);root.mkdir(parents=True,exist_ok=True)
     directory=root/('auto-'+time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:8]);directory.mkdir()
     state=dict(state='running',source=str(source),original_retained=True,publication_authorized=False,
-               integration_qualification_required=True)
+               integration_qualification_required=True,quality_policy=quality_policy)
     save(directory/'plan.json',plan);save(directory/'status.json',state)
     def guard():
         if (root/'STOP').exists() or (directory/'STOP').exists():raise KeyboardInterrupt('STOP requested')
@@ -123,7 +125,7 @@ def run(workflow_args, source, root, data, baseline):
         report,decision=compare_candidates(work,source,candidates,args.seconds,
             playback_verified_codecs=args.playback_verified_codecs,
             minimum_savings_percent=args.minimum_savings_percent,mean_floor=args.vmaf_mean,p5_floor=args.vmaf_p5,
-            encoder_ffmpeg=encoder_ffmpeg,profile=profile)
+            encoder_ffmpeg=encoder_ffmpeg,profile=profile,quality_profile=getattr(args,'quality_profile',None))
         save(directory/'trials.json',report);save(directory/'selection.json',decision)
         state.update(state='trials-completed',decision=decision)
         if decision['action']!='encode_copy':
@@ -340,7 +342,7 @@ def refine_full_candidate(workflow, source, settings, *, source_id, playback_ver
 
 def compare_candidates(workflow, source, candidates, seconds, *, playback_verified_codecs,
                        minimum_savings_percent=25, mean_floor=90, p5_floor=90,
-                       dovi_tool='dovi_tool', encoder_ffmpeg=None,profile=7,max_refinements=4):
+                       dovi_tool='dovi_tool', encoder_ffmpeg=None,profile=7,max_refinements=4,quality_profile=None):
     """Shared measured selector over source-verified DV references.
 
     A runtime failure belongs to its candidate; it is not a GPU-family ban or a
@@ -363,6 +365,8 @@ def compare_candidates(workflow, source, candidates, seconds, *, playback_verifi
     report=dict(schema='muxmender-codec-trials-v1',source_id=prepared['source_id'],
                 source_bytes=prepared['source_bytes'],color_mode='pq',dv_profile={7:'7-layered',5:'5',8:'8-native'}[profile],
                 evaluation_policy=EVALUATION_POLICY,references=references,trials=[])
+    from quality_profiles import validate_policy
+    report['quality_policy']=validate_policy(dict(id=quality_profile or 'legacy',mean=mean_floor,p5=p5_floor))
     candidates=list(candidates)
     initial_count=len(candidates)
     completed=0

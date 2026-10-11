@@ -1,0 +1,15 @@
+# Isolated diagnostic image only. Does not change production FFmpeg or readers.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config nasm xz-utils zlib1g-dev libdav1d-dev && apt-get clean
+COPY source/ /build/source/
+WORKDIR /build
+RUN echo '8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e  source/ffmpeg-9.0.2.tar.xz' | sha256sum -c - && echo '86d15d1a7c0ac73a0eafdfc57bebfeba7da8264595bf531cf4d8db1c22940116  source/nv-codec-headers-n13.0.19.0.tar.gz' | sha256sum -c - && tar -xf source/ffmpeg-9.0.2.tar.xz && tar -xf source/nv-codec-headers-n13.0.19.0.tar.gz && make -C nv-codec-headers-n13.0.19.0 install
+WORKDIR /build/ffmpeg-9.0.2
+RUN ./configure --prefix=/opt/ffmpeg9 --disable-autodetect --disable-doc --disable-debug --disable-ffplay --disable-network --enable-gpl --enable-pthreads --enable-zlib --enable-libdav1d --enable-ffnvcodec --enable-nvenc --enable-nvdec --enable-cuvid --enable-cuda && make -j2 && make install
+COPY python/ /opt/ffmpeg-qualification/python/
+COPY tools/qualify_ffmpeg_upgrade.py /opt/ffmpeg-qualification/tools/qualify_ffmpeg_upgrade.py
+ENV PYTHONPATH=/opt/ffmpeg-qualification/python PYTHONDONTWRITEBYTECODE=1
+USER 3005:3005
+ENTRYPOINT ["python3", "-B", "/opt/ffmpeg-qualification/tools/qualify_ffmpeg_upgrade.py"]

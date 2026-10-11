@@ -224,6 +224,8 @@ for(const [id,value] of [['source-path','video.mkv'],['operation','test'],['code
 controlElement('timeout-minutes').value='120';
 controlElement('output-preset').value='original';
 controlElement('output-preset').selectedOptions=[{textContent:'Original resolution'}];
+controlElement('quality-gate-profile').value='balanced';
+controlElement('quality-gate-profile').selectedOptions=[{textContent:'Balanced — mean VMAF 94'}];
 controlElement('hdr-policy').value='preserve';
 controlElement('hdr-policy').selectedOptions=[{textContent:'Keep HDR'}];
 controlElement('source-depth').value='recursive';

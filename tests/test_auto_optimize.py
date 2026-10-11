@@ -18,6 +18,29 @@ def source_data():
 
 
 class AutoOptimizeTests(unittest.TestCase):
+    def test_frame_geometry_error_identifies_field_without_relaxing_validation(self):
+        before={'width':'1280','height':'720','pix_fmt':'yuv420p'}
+        after=dict(before,sample_aspect_ratio='1:1')
+        with self.assertRaisesRegex(ValueError,r'frame 1: sample_aspect_ratio: None ->'):
+            ao.compare_frame_rows([before],[after])
+
+    def test_inferred_chapter_end_requires_bound_exact_native_proof(self):
+        before=source_data()
+        before['chapters']=[dict(start_time='0',end_time='117.536',tags={'title':'Chapter 01'})]
+        after=copy.deepcopy(before);after['streams'][0]['codec_name']='hevc'
+        after['chapters'][0]['end_time']='117.534'
+        with self.assertRaisesRegex(ValueError,'Chapters changed'):ao.metadata_check(before,after,'hevc')
+        proof=dict(method='exact-native-matroska-tree',unchanged=True,
+                   reported_endpoints_before=[117.536],reported_endpoints_after=[117.534])
+        ao.metadata_check(before,after,'hevc',chapter_evidence=proof)
+        for bad in (dict(proof,unchanged=False),dict(proof,method='reported-chapters'),
+                    dict(proof,reported_endpoints_after=[117.535])):
+            with self.assertRaisesRegex(ValueError,'Chapters changed'):
+                ao.metadata_check(before,after,'hevc',chapter_evidence=bad)
+        after['chapters'][0]['tags']['title']='Different chapter'
+        with self.assertRaisesRegex(ValueError,'Chapters changed'):
+            ao.metadata_check(before,after,'hevc',chapter_evidence=proof)
+
     def test_generated_sample_probe_cache_requires_content_identity(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);reference=root/'reference-0.mkv';reference.write_bytes(b'generated')

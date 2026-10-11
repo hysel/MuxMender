@@ -103,6 +103,11 @@ def recover(work, source, output, settings, info, before, label, duration, error
     # copyts leaves the original video clock intact: never apply a sync offset.
     work.execute(command, label+'-audio-recovery-mux', duration)
     recovered = Path(command[command.index('-o')+1])
+    # A short padded DTS packet can lose its explicit duration during either
+    # relay or MKVToolNix remux. Restore only from complete source packet proof;
+    # the ordinary full-output timing/audio/quality checks remain unchanged.
+    from dts_terminal_duration import restore
+    recovered = restore(work, source, recovered, before, label, duration)
     work.guard()
     if output.exists():
         if output not in registered_outputs(root):
