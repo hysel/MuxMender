@@ -1,7 +1,17 @@
 # Generic app image: GPU devices and folders are assigned by TrueNAS, not here.
+FROM ghcr.io/linuxserver/ffmpeg:8.0.1-cli-ls61@sha256:81e11f5953179536ca3b478f406d77ae3f114ad72a6243d78ff2476a2b76eb3a AS ffmpeg9-build
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config nasm xz-utils xxd meson ninja-build python3-jinja2 zlib1g-dev libdav1d-dev libx264-dev libx265-dev libaom-dev libzimg-dev libass-dev libshaderc-dev libvulkan-dev && apt-get clean
+COPY vendor/ffmpeg9-source/ /build/source/
+COPY deploy/truenas/build_ffmpeg9.sh /build/build_ffmpeg9.sh
+RUN bash /build/build_ffmpeg9.sh
 FROM ghcr.io/linuxserver/ffmpeg:8.0.1-cli-ls61@sha256:81e11f5953179536ca3b478f406d77ae3f114ad72a6243d78ff2476a2b76eb3a
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip mkvtoolnix libzstd1 tini && apt-get clean
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip mkvtoolnix libzstd1 tini libdav1d7 libx264-164 libx265-199 libaom3 libzimg2 libass9 libshaderc1 libvulkan1 && apt-get clean
+COPY --from=ffmpeg9-build /opt/ffmpeg9/ /opt/ffmpeg9/
+COPY --from=ffmpeg9-build /opt/ffmpeg9-deps/lib/ /opt/ffmpeg9-deps/lib/
+ENV LD_LIBRARY_PATH=/opt/ffmpeg9-deps/lib:/usr/lib/x86_64-linux-gnu
+LABEL org.muxmender.ffmpeg.version="9.0.2"
 COPY deploy/truenas/requirements-av1-runtime.txt /tmp/requirements-av1-runtime.txt
 RUN python3 -m pip install --no-cache-dir --no-deps --only-binary=:all: --require-hashes --target /opt/muxmender-runtime -r /tmp/requirements-av1-runtime.txt
 COPY vendor/hdr10plus.tar.gz /tmp/hdr10plus.tar.gz
@@ -12,7 +22,7 @@ COPY python/ /opt/muxmender/
 COPY vendor/gpu-reader/ /opt/muxmender-readers/
 RUN if [ -f /opt/muxmender-readers/ffprobe-cuda ]; then chmod 0555 /opt/muxmender-readers/ffprobe-cuda; fi
 ENV PYTHONPATH=/opt/muxmender:/opt/muxmender-runtime PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-ENV PATH=/opt/dovi:/opt/hdr10plus:$PATH
+ENV PATH=/opt/ffmpeg9/bin:/opt/dovi:/opt/hdr10plus:$PATH
 COPY vendor/fel-runtime-archives/ /tmp/fel-runtime-archives/
 COPY tools/install_fel_runtime.py /opt/muxmender-tools/install_fel_runtime.py
 RUN python3 -B /opt/muxmender-tools/install_fel_runtime.py --archives /tmp/fel-runtime-archives --destination /opt/muxmender/runtime/felbaker --execute

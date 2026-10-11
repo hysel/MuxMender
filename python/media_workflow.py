@@ -84,6 +84,9 @@ def automatic_arguments(source, output, settings, *, min_free_gib=12, capability
     from output_presets import preset
     output_preset=preset(settings.get('output_preset','original'))
     args+=['--output-preset',output_preset['id']]
+    if settings.get('quality_profile') is not None:
+        from quality_profiles import profile
+        args+=['--quality-profile',profile(settings['quality_profile'])['id']]
     hdr_policy=settings.get('hdr_policy','preserve')
     if hdr_policy not in ('preserve','sdr'):raise ValueError('Unknown HDR handling choice')
     args+=['--hdr-policy',hdr_policy]
@@ -118,6 +121,8 @@ def main(argv=None):
     parser.add_argument('--quality',choices=('auto','transparent','balanced','compact'),default='auto')
     from output_presets import PRESETS
     parser.add_argument('--output-preset',choices=tuple(PRESETS),default='original')
+    from quality_profiles import PROFILES
+    parser.add_argument('--quality-profile',choices=tuple(PROFILES),default='balanced')
     parser.add_argument('--hdr-policy',choices=('preserve','sdr'),default='preserve')
     parser.add_argument('--nvenc-maxrate-mbps',type=int,help='Optional measured NVENC peak-rate ceiling, 1..1000 Mbps')
     parser.add_argument('--experimental-dv81',action='store_true',help='Separate-copy DV integration qualification only')
@@ -143,7 +148,7 @@ def main(argv=None):
         parser.error('Select at least one playback-verified codec before testing or encoding')
     from auto_optimize import main as execute
     return execute(automatic_arguments(args.source,args.output_dir,dict(mode=args.mode,
-        hardware=args.hardware,quality=args.quality,output_preset=args.output_preset,hdr_policy=args.hdr_policy,codecs=args.playback_verified_codecs,
+        hardware=args.hardware,quality=args.quality,output_preset=args.output_preset,quality_profile=args.quality_profile,hdr_policy=args.hdr_policy,codecs=args.playback_verified_codecs,
         minimum_savings=args.minimum_savings_percent,savings_mode=args.savings_mode,legacy_color=args.legacy_color,
         timeout_minutes=args.timeout_minutes,
         nvenc_maxrate_mbps=args.nvenc_maxrate_mbps,experimental_dv81=args.experimental_dv81),

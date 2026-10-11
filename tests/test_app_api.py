@@ -17,7 +17,7 @@ class AppApiTests(unittest.TestCase):
     def test_api_and_shared_performance_modules_ship_in_python_package(self):
         config=(Path(__file__).resolve().parents[1]/'pyproject.toml').read_text()
         modules=set(ast.literal_eval(re.search(r'py-modules\s*=\s*(\[[^\]]+\])',config).group(1)))
-        for name in ('app_api','gpu_admission','parallel_frame_audit','source_evidence_cache'):
+        for name in ('app_api','gpu_admission','parallel_frame_audit','source_evidence_cache','quality_profiles'):
             self.assertIn(name,modules)
 
     def test_discovery_does_not_claim_unavailable_controls(self):

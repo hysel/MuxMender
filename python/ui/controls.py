@@ -22,6 +22,8 @@ PANEL = '''<section class="panel" id="workflow"><div class="panel-head"><h2>New 
 <p id="file-age-help" class="control-note">Applies to this new request, including subfolders. Uses the filesystem creation date, not the movie release date or last modified date. Files with unavailable creation dates are excluded when filtering. Preview shows matching files; existing queue entries are unchanged.</p>
 <label for="output-preset">Output size and resolution</label><select id="output-preset" aria-describedby="output-preset-help"><option value="original">Original resolution — automatic size reduction (recommended)</option><option value="tv1080">1080p TV — up to 8 Mbps video</option><option value="mobile720">720p — up to 4 Mbps video</option><option value="small480">480p — up to 1.5 Mbps video</option></select>
 <p id="output-preset-help" class="control-note">Lower resolutions trade detail for smaller files. We never upscale or crop. Quality is checked against the source resized to your chosen resolution; passing does not mean the original resolution was preserved. Audio and subtitles stay intact and add to the bitrate. Plex playback depends on your player and selected format.</p>
+<label for="quality-gate-profile">Quality checks</label><select id="quality-gate-profile" aria-describedby="quality-profile-help"><option value="strict">Strict — mean VMAF 95</option><option value="balanced" selected>Balanced — mean VMAF 94 (recommended)</option><option value="space-saver">Space saver — mean VMAF 90</option></select>
+<p id="quality-profile-help" class="control-note">Every profile also requires a 5th-percentile VMAF score of at least 90. VMAF is a comparison score, not a percentage of retained quality. Bitrate, timing, audio, subtitles and decode checks stay unchanged. Applies to new jobs only; failed tests never lower the profile automatically.</p>
 <details class="control-advanced"><summary>Encoding options · Automatic by default</summary><div class="control-grid"><div>
 <label for="codec-choice">Encoding format</label><select id="codec-choice"><option value="auto">Automatic — compare playback-verified formats</option><option value="hevc">HEVC / H.265 only</option><option value="av1">AV1 only</option><option value="h264">H.264 — including interlaced video</option></select>
 <label for="hardware-choice">Hardware preference</label><select id="hardware-choice"><option value="auto">Auto-detect supported GPU</option><option value="nvidia">NVIDIA</option><option value="amd">AMD</option><option value="intel">Intel</option></select>
@@ -62,7 +64,7 @@ document.querySelectorAll('a[href="#workflow"]').forEach(link=>link.addEventList
  const section=controlElement('workflow');if(section?.tagName==='DETAILS')section.open=true;
 }));
 async function controlCall(action,extra={}){
- const response=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json','X-MuxMender-CSRF':controlToken||''},body:JSON.stringify({action,...extra})});
+ const response=await fetch('/api/control',{method:'POST',...(action==='resource-profile'?{signal:AbortSignal.timeout(15000)}:{}),headers:{'Content-Type':'application/json','X-MuxMender-CSRF':controlToken||''},body:JSON.stringify({action,...extra})});
  const body=await response.json();if(!response.ok)throw Error(body.error||'Request failed');return body;
 }
 async function browseMedia(path='',offset=0){try{
@@ -106,7 +108,7 @@ controlElement('choose-folder').addEventListener('click',()=>selectFolder(browse
 controlElement('source-depth').addEventListener('change',()=>{if(activeFolder!==null)selectFolder(activeFolder)});
 controlElement('video-choice').addEventListener('change',()=>{const file=controlElement('video-choice').value;
  if(file&&!folderFiles.some(row=>row.path===file))return;controlElement('source-path').value=file||activeFolder;invalidatePreview()});
-for(const id of ['source-path','operation','codec-choice','hardware-choice','quality-choice','output-preset','hdr-policy','minimum-savings','recheck-history','legacy-color','timeout-minutes'])controlElement(id).addEventListener('change',invalidatePreview);
+for(const id of ['source-path','operation','codec-choice','hardware-choice','quality-choice','output-preset','quality-gate-profile','hdr-policy','minimum-savings','recheck-history','legacy-color','timeout-minutes'])controlElement(id).addEventListener('change',invalidatePreview);
 controlElement('source-path').addEventListener('input',invalidatePreview);
 controlElement('timeout-minutes').addEventListener('input',invalidatePreview);
 controlElement('file-age-unit').addEventListener('change',()=>{const all=controlElement('file-age-unit').value==='all';controlElement('file-age-value-wrap').hidden=all;controlElement('file-age-value').disabled=all;invalidatePreview()});
@@ -116,7 +118,7 @@ controlElement('preview-job').addEventListener('click',async()=>{invalidatePrevi
  const target=controlElement('minimum-savings').value;
  const timeoutMinutes=Number(controlElement('timeout-minutes').value);
  if(!Number.isInteger(timeoutMinutes)||timeoutMinutes<1||timeoutMinutes>1440)throw Error('Choose 1–1440 whole minutes per processing stage.');
- const settings={timeout_minutes:timeoutMinutes,path:controlElement('source-path').value,recursive:!controlElement('video-choice').value&&controlElement('source-depth').value!=='top',mode:controlElement('operation').value,codec:controlElement('codec-choice').value,hardware:controlElement('hardware-choice').value,quality:controlElement('quality-choice').value,output_preset:controlElement('output-preset').value,hdr_policy:controlElement('hdr-policy').value,savings_mode:target==='size-aware'?'size-aware':'fixed',minimum_savings:target==='size-aware'?25:Number(target),history_mode:controlElement('recheck-history').value||'reuse'};
+ const settings={timeout_minutes:timeoutMinutes,path:controlElement('source-path').value,recursive:!controlElement('video-choice').value&&controlElement('source-depth').value!=='top',mode:controlElement('operation').value,codec:controlElement('codec-choice').value,hardware:controlElement('hardware-choice').value,quality:controlElement('quality-choice').value,output_preset:controlElement('output-preset').value,quality_profile:controlElement('quality-gate-profile').value,hdr_policy:controlElement('hdr-policy').value,savings_mode:target==='size-aware'?'size-aware':'fixed',minimum_savings:target==='size-aware'?25:Number(target),history_mode:controlElement('recheck-history').value||'reuse'};
  settings.legacy_color=controlElement('legacy-color').value||'inspect';
  settings.age_unit=controlElement('file-age-unit').value||'all';settings.age_value=settings.age_unit==='all'?null:Number(controlElement('file-age-value').value);
  if(settings.age_unit!=='all'&&(!Number.isInteger(settings.age_value)||settings.age_value<1||settings.age_value>100000))throw Error('Enter a whole number from 1 to 100000 for file age.');
@@ -125,15 +127,32 @@ controlElement('preview-job').addEventListener('click',async()=>{invalidatePrevi
  controlElement('replacement-confirmation').hidden=!previewReplaces;
  const actionName={analyze:'Inspect only',test:'Test samples',encode:'Create smaller copies',replace:'Convert and permanently replace originals',keep:'Keep originals'}[body.settings.mode];
  controlElement('preview-description').textContent=body.files.length+' video(s) · '+actionName+' · Format: '+body.settings.codec+' · Hardware: '+body.settings.hardware+' · Preset: '+body.settings.quality+' · Savings: '+(body.settings.savings_mode==='size-aware'?'size-aware':body.settings.minimum_savings+'%')+' · Limit per stage: '+body.settings.timeout_minutes+' minutes. '+body.note;
- controlElement('preview-description').textContent+=' Output: '+controlElement('output-preset').selectedOptions[0].textContent+' · HDR: '+controlElement('hdr-policy').selectedOptions[0].textContent+'.';
+ controlElement('preview-description').textContent+=' Output: '+controlElement('output-preset').selectedOptions[0].textContent+' · Quality checks: '+controlElement('quality-gate-profile').selectedOptions[0].textContent+' · HDR: '+controlElement('hdr-policy').selectedOptions[0].textContent+'.';
  const age=body.age_filter||{};controlElement('preview-description').textContent+=' Creation age: '+(body.settings.age_unit==='all'?'All files':'Within the last '+body.settings.age_value+' '+body.settings.age_unit)+'. '+(age.outside_age_window||0)+' outside the age window; '+(age.creation_date_unavailable||0)+' excluded because creation date is unavailable. Selection is fixed at preview time.';
  const list=controlElement('preview-files');list.replaceChildren();for(const row of body.files){const li=document.createElement('li');const goal=row.savings_policy;li.textContent=row.path+' ('+(row.signature[0]/1e9).toFixed(2)+' GB)'+(goal?' — Must save '+(goal.required_bytes/1e9).toFixed(3)+' GB ('+goal.effective_percent.toFixed(1)+'%)'+(!goal.possible?' — Too small for this target':''):'')+(row.history_reason?' — Will skip. '+row.history_reason:'');list.append(li)}
  controlElement('request-preview').hidden=false;controlElement('submit-job').disabled=previewReplaces;controlMessage('Review the file list and settings. Preview expires in 10 minutes.');controlElement('preview-description').focus?.();
  }catch(error){controlMessage(error.message)}});
 controlElement('confirm-replacement').addEventListener('change',()=>{controlElement('submit-job').disabled=!previewId||(previewReplaces&&!controlElement('confirm-replacement').checked)});
 controlElement('submit-job').addEventListener('click',async()=>{if(!previewId||(previewReplaces&&!controlElement('confirm-replacement').checked))return;controlElement('submit-job').disabled=true;try{const body=await controlCall('submit',{preview_id:previewId,confirm_replace:previewReplaces&&controlElement('confirm-replacement').checked});invalidatePreview();controlMessage(body.queued+' new job(s) recorded. '+(body.history_skipped||[]).length+' skipped using saved history or active jobs.');collapseSubmittedSetup(body);refreshControls()}catch(error){controlMessage(error.message);controlElement('submit-job').disabled=!previewId}});
-for(const [id,action] of [['pause-selected','pause'],['resume-selected','resume']])controlElement(id).addEventListener('click',async()=>{try{const body=await controlCall(action);controlMessage(body.message);refreshControls()}catch(error){controlMessage(error.message)}});
-controlElement('save-resource-profile').addEventListener('click',async()=>{try{const body=await controlCall('resource-profile',{profile:controlElement('resource-profile').value});controlMessage(body.message);refreshControls()}catch(error){controlMessage(error.message)}});
+for(const [id,action] of [['pause-selected','pause'],['resume-selected','resume']])controlElement(id).addEventListener('click',async()=>{
+ if(queueActionBusy||controlElement(id).disabled)return;
+ queueActionBusy=true;queueActionVersion++;queueActionError='';renderQueueActions(lastQueueControl,queueStatusUnavailable);
+ try{const body=await controlCall(action);if(lastQueueControl)lastQueueControl={...lastQueueControl,paused:action==='pause'};controlMessage(body.message)}
+ catch(error){queueActionError='Queue action failed: '+error.message;controlMessage(error.message)}
+ finally{queueActionBusy=false;renderQueueActions(lastQueueControl,queueStatusUnavailable);refreshControls()}
+});
+let resourceProfileBusy=false,resourceProfileDirty=false;
+controlElement('resource-profile').addEventListener('change',()=>{resourceProfileDirty=true});
+async function applyResourceProfile(){
+ if(resourceProfileBusy)return;
+ const button=controlElement('save-resource-profile'),select=controlElement('resource-profile'),feedback=controlElement('resource-profile-feedback');
+ const profile=select.value;resourceProfileBusy=true;button.disabled=true;select.disabled=true;button.textContent='Applying…';button.setAttribute('aria-busy','true');
+ if(feedback)feedback.textContent='Saving your resource setting…';
+ try{const body=await controlCall('resource-profile',{profile});resourceProfileDirty=false;if(lastQueueControl)lastQueueControl.resource_profile=body.profile||profile;if(feedback)feedback.textContent='Saved: '+select.options[select.selectedIndex].text+'. New workers still wait for available resources.';controlMessage(body.message)}
+ catch(error){if(feedback)feedback.textContent='Could not confirm the change: '+error.message+'. Check the saved setting before trying again.';controlMessage(error.message)}
+ finally{resourceProfileBusy=false;button.disabled=false;select.disabled=false;button.textContent='Apply resource profile';button.removeAttribute('aria-busy');refreshControls()}
+}
+controlElement('save-resource-profile').addEventListener('click',applyResourceProfile);
 controlElement('save-gpu-yield')?.addEventListener('click',async()=>{try{const body=await controlCall('gpu-yield',{enabled:controlElement('gpu-yield-enabled').checked});controlMessage(body.message);refreshControls()}catch(error){controlMessage(error.message)}});
 let queueClearToken=null,queueClearBusy=false;
 function closeQueueClearDialog(){
@@ -168,25 +187,44 @@ controlElement('queue-clear-confirm')?.addEventListener('click',async()=>{
  finally{queueClearBusy=false;refreshControls()}
 });
 let controlPollBusy=false;
+let lastQueueControl=null,queueStatusUnavailable=true,queueActionBusy=false,queueActionVersion=0,queueActionError='';
+function renderQueueActions(body,unavailable=false){
+ const ready=!!body?.ready,pending=body?.counts?.pending||0,running=body?.counts?.running||0,paused=!!body?.paused;
+ const pause=controlElement('pause-selected'),resume=controlElement('resume-selected');
+ const hasWork=pending+running>0;
+ pause.disabled=queueActionBusy||!ready||paused||!hasWork;
+ resume.disabled=queueActionBusy||unavailable||!ready||!paused||!pending;
+ pause.title=queueActionBusy?'Updating queue…':!ready?'Queue controls are unavailable':paused?'New starts are already paused':!hasWork?'No active or waiting jobs':'Pause new starts; active jobs finish normally';
+ resume.title=queueActionBusy?'Updating queue…':unavailable?'Waiting for current queue status':!ready?'Queue controls are unavailable':!pending?'No waiting jobs to resume':!paused?'The queue is already running':'Resume waiting jobs';
+ for(const button of [pause,resume])button.setAttribute('aria-describedby','queue-action-status');
+ let message=queueActionBusy?'Updating queue…':unavailable?(body?'Queue status delayed. Last confirmed state: '+(paused?'paused.':'running.')+(pause.disabled?' Actions will return when status reconnects.':' You can still request a pause; Resume waits for reconnection.'):'Connecting to queue controls…'):!ready?'Queue controls unavailable: '+(body?.error||'worker is starting'):paused?(running?'New starts paused. '+running+' active job(s) are finishing.':'Queue paused.')+(!pending?' No waiting jobs to resume.':' Resume starts the waiting jobs.'):hasWork?'Queue running. Pause new starts lets active jobs finish.':'No active or waiting jobs. Add videos to start a batch.';
+ if(queueActionError&&!queueActionBusy)message=queueActionError+' · '+message;
+ const status=controlElement('queue-action-status');if(status&&status.textContent!==message)status.textContent=message;
+ if(typeof renderWaitingQueue==='function')renderWaitingQueue(body,ready&&!unavailable&&!queueActionBusy);
+}
 async function refreshControls(){if(controlPollBusy)return;controlPollBusy=true;let received=false;try{
- if(globalThis.liveUpdatesPaused)return;
- const response=await fetch('/api/controls',{signal:AbortSignal.timeout(30000)});if(!response.ok)throw Error('Job controls are unavailable. Check the app connection or ask your administrator to enable them.');const body=await response.json();received=true;controlToken=body.csrf_token;
- if(body.snapshot_stale||body.snapshot_error){controlReady=false;controlElement('control-availability').textContent=body.snapshot_updated?'Queue status is delayed. Last displayed results may be out of date.':'Loading queue status…';for(const id of ['preview-job','pause-selected','resume-selected','clear-waiting-queue']){const el=controlElement(id);if(el)el.disabled=true}if(typeof connectionUpdate==='function')connectionUpdate('controls',false);return}
- if(!controlElement('resource-profile').initialized){controlElement('resource-profile').value=body.resource_profile||'shared';controlElement('resource-profile').initialized=true}
+ if(globalThis.liveUpdatesPaused||queueActionBusy)return;
+ const actionVersion=queueActionVersion;
+ const response=await fetch('/api/controls',{signal:AbortSignal.timeout(30000)});if(!response.ok)throw Error('Job controls are unavailable. Check the app connection or ask your administrator to enable them.');const body=await response.json();received=true;if(body.csrf_token)controlToken=body.csrf_token;
+ if(actionVersion!==queueActionVersion)return; // An old poll cannot undo an acknowledged queue action.
+ const freshQueue=Number.isFinite(body.queue_snapshot_updated)&&Math.abs(Date.now()/1000-body.queue_snapshot_updated)<15;
+ if((body.snapshot_stale||body.snapshot_error)&&!freshQueue){controlReady=false;queueStatusUnavailable=true;renderQueueActions(lastQueueControl,true);controlElement('control-availability').textContent=body.snapshot_updated?'Queue status is delayed. Last displayed results may be out of date.':'Loading queue status…';for(const id of ['preview-job','clear-waiting-queue']){const el=controlElement(id);if(el)el.disabled=true}if(typeof connectionUpdate==='function')connectionUpdate('controls',false);return}
+ lastQueueControl=body;queueStatusUnavailable=false;renderQueueActions(body,false);
+ if(!resourceProfileBusy&&!resourceProfileDirty){controlElement('resource-profile').value=body.resource_profile||'shared';controlElement('resource-profile').initialized=true}
+ const savedProfile=controlElement('resource-profile-current');if(savedProfile){const names={quiet:'Quiet — up to one file',shared:'Shared host — up to two files',faster:'Faster — up to four files'};savedProfile.textContent='Saved setting: '+(names[body.resource_profile]||'Unavailable')}
  const sharing=body.gpu_yield||{},sharingInput=controlElement('gpu-yield-enabled');
  if(sharingInput){if(!sharingInput.initialized){sharingInput.checked=!!sharing.enabled;sharingInput.initialized=true}controlElement('gpu-yield-status').textContent=sharing.reason||'Automatic GPU yielding is off';controlElement('save-gpu-yield').disabled=!body.ready}
  const resource=body.resources||{},metrics=resource.telemetry||{};
  const metric=(key,suffix,digits=0)=>Number.isFinite(metrics[key])?metrics[key].toFixed(digits)+suffix:'Unavailable';
- controlElement('resource-status').textContent='Host CPU '+metric('cpu_percent','%')+(Number.isFinite(metrics.container_cpu_percent)?' · App CPU allocation '+metric('container_cpu_percent','%'):'')+' · Available RAM '+metric('available_gib',' GiB',1)+' · GPU compute '+metric('gpu_compute_percent','%')+' · GPU encode '+metric('gpu_encode_percent','%')+' · GPU decode '+metric('gpu_decode_percent','%')+' · Free VRAM '+metric('vram_free_gib',' GiB',1)+' · '+(resource.active||0)+' workers · '+(resource.reason||'Collecting measurements');
+ controlElement('resource-status').textContent=(body.snapshot_stale||body.snapshot_error)?'Resource readings are delayed; queue status is current.':'Host CPU '+metric('cpu_percent','%')+(Number.isFinite(metrics.container_cpu_percent)?' · App CPU allocation '+metric('container_cpu_percent','%'):'')+' · Available RAM '+metric('available_gib',' GiB',1)+' · GPU compute '+metric('gpu_compute_percent','%')+' · GPU encode '+metric('gpu_encode_percent','%')+' · GPU decode '+metric('gpu_decode_percent','%')+' · Free VRAM '+metric('vram_free_gib',' GiB',1)+' · '+(resource.active||0)+' workers · '+(resource.reason||'Collecting measurements');
  const admission=body.gpu_admission||{};
- if(admission.reason)controlElement('resource-status').textContent+=' · GPU stages: '+admission.limit+' · '+admission.reason;
+ if(admission.reason&&!body.snapshot_stale&&!body.snapshot_error)controlElement('resource-status').textContent+=' · GPU stages: '+admission.limit+' · '+admission.reason;
  controlElement('control-availability').textContent=body.ready?'Ready · choose your action below':'Worker unavailable: '+(body.error||'starting');
- controlReady=body.ready;controlElement('preview-job').disabled=!body.ready||!workspaceReady;controlElement('pause-selected').disabled=!body.ready||body.paused;controlElement('resume-selected').disabled=!body.ready||!body.paused||!(body.counts.pending>0);
- controlElement('resume-selected').title=!(body.counts.pending>0)?'No waiting jobs to resume':!body.paused?'The queue is already running':'Resume waiting jobs';
+ controlReady=body.ready;controlElement('preview-job').disabled=!body.ready||!workspaceReady;
  if(controlElement('clear-waiting-queue'))controlElement('clear-waiting-queue').disabled=!body.ready||!((body.counts.pending||0)+(body.counts.running||0)>0)||queueClearBusy;
  controlElement('replacement-availability').textContent=body.replacement_enabled?'Replacement available. Choose it explicitly and confirm to remove originals after verification.':'Copy-only storage: make /media writable in TrueNAS to use replacement. No replacement environment variable is needed.';
  controlElement('control-state').textContent=(body.wait_reason||(body.paused?(body.pause_reason||'Queue paused'):'Queue ready'))+' · '+(body.counts.pending||0)+' waiting · '+(body.counts.running||0)+' running';
  if(typeof receiveControls==='function')receiveControls(body);
- }catch(error){controlElement('control-availability').textContent=received?'Display update failed; retrying. Processing is unaffected.':error.message;controlElement('preview-job').disabled=true;if(received)console.error(error);else if(typeof connectionUpdate==='function')connectionUpdate('controls',false)}
+ }catch(error){controlElement('control-availability').textContent=received?'Display update failed; retrying. Processing is unaffected.':error.message;controlElement('preview-job').disabled=true;if(received)console.error(error);else{queueStatusUnavailable=true;renderQueueActions(lastQueueControl,true);if(typeof connectionUpdate==='function')connectionUpdate('controls',false)}}
  finally{controlPollBusy=false;clearTimeout(controlTimer);controlTimer=setTimeout(refreshControls,10000)}}refreshControls();
 </script>'''

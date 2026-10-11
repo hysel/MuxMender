@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -10,6 +11,26 @@ from auto_optimize import Workflow
 
 
 class SourceAudioPreflightTests(unittest.TestCase):
+    def test_video_probe_failure_is_not_reported_as_corrupt_audio_or_ignored(self):
+        self.meta['streams'].append(dict(index=0,codec_type='video',codec_name='h264'))
+        error=RuntimeError('Strict decode reported an error: [h264 @ 0x1234] number of reference frames exceeds max')
+        with patch.object(self.w,'execute',side_effect=error) as execute:
+            with self.assertRaisesRegex(RuntimeError,'Source video reader failed'):
+                self.w.preflight_source_audio(self.root/'source.mkv',self.meta)
+        self.assertEqual(execute.call_count,1)
+        evidence=json.loads((self.root/'source-audio-preflight.json').read_text())
+        self.assertEqual(evidence['diagnostic_media_type'],'video')
+        self.assertEqual(evidence['state'],'failed')
+
+    def test_audio_decoder_diagnostic_still_stops_even_with_video_present(self):
+        self.meta['streams'].append(dict(index=0,codec_type='video',codec_name='h264'))
+        error=RuntimeError('Strict decode reported an error: [ac3 @ 0x1234] exponent -2 is out-of-range')
+        with patch.object(self.w,'execute',side_effect=error):
+            with self.assertRaisesRegex(RuntimeError,'Source audio preflight failed'):
+                self.w.preflight_source_audio(self.root/'source.mkv',self.meta)
+        evidence=json.loads((self.root/'source-audio-preflight.json').read_text())
+        self.assertEqual(evidence['diagnostic_media_type'],'audio-or-input')
+
     def test_null_clock_reset_retries_complete_strict_decode_without_timestamp_changes_to_media(self):
         error=RuntimeError('Strict decode reported an error: [null @ 0x1234] Application provided invalid, non monotonically increasing dts to muxer in stream 1: 118272 >= 0')
         with patch.object(self.w,'execute',side_effect=[error,None]) as execute:
@@ -64,7 +85,7 @@ class SourceAudioPreflightTests(unittest.TestCase):
         self.assertLess(code.index('workflow.preflight_source('),code.index('probe_encoder('))
         self.assertLess(code.index('workflow.preflight_source('),code.index('workflow_stage(\'compare\')'))
 
-    @unittest.skipUnless(shutil.which('ffmpeg'),'FFmpeg integration dependency unavailable')
+    @unittest.skipUnless(sys.platform.startswith('linux') and shutil.which('ffmpeg'),'Linux FFmpeg integration only')
     def test_duplicate_timestamps_do_not_fail_discard_only_decode(self):
         ffmpeg=shutil.which('ffmpeg');self.w.args.ffmpeg=ffmpeg
         source=self.root/'generated-duplicate-timestamps.mkv'
@@ -78,6 +99,9 @@ class SourceAudioPreflightTests(unittest.TestCase):
                             '-i',str(source),'-map','0:0','-progress','pipe:1','-nostats','-f','null','-'],
                            'unfiltered-null-check',0.25,strict_decode=True)
         self.w.preflight_source_audio(source,meta)
+        # Frame comparison is mocked below. Supply its synthetic video metadata
+        # so this audio-focused test also satisfies the preset geometry layer.
+        meta['streams'].append(dict(index=1,codec_type='video',width=64,height=64,sample_aspect_ratio='1:1'))
         # The final candidate audit must use the same discard-only clock, not
         # just source preflight. Independent packet/timeline checks stay called.
         with patch.object(self.w,'compare_frame_files',return_value=24), \
@@ -88,7 +112,7 @@ class SourceAudioPreflightTests(unittest.TestCase):
         metadata_check.assert_called_once();packet_check.assert_called_once()
         self.assertEqual(source.read_bytes(),before)
 
-    @unittest.skipUnless(shutil.which('ffmpeg'),'FFmpeg integration dependency unavailable')
+    @unittest.skipUnless(sys.platform.startswith('linux') and shutil.which('ffmpeg'),'Linux FFmpeg integration only')
     def test_generated_truncated_ac3_is_rejected(self):
         ffmpeg=shutil.which('ffmpeg');self.w.args.ffmpeg=ffmpeg
         good=self.root/'generated.ac3'
@@ -99,6 +123,7 @@ class SourceAudioPreflightTests(unittest.TestCase):
         broken=self.root/'generated-truncated.ac3';broken.write_bytes(good.read_bytes()[:-64])
         with self.assertRaisesRegex(RuntimeError,'Source audio preflight failed'):
             self.w.preflight_source_audio(broken,meta)
+        meta['streams'].append(dict(index=1,codec_type='video',width=64,height=64,sample_aspect_ratio='1:1'))
         with patch.object(self.w,'compare_frame_files',return_value=24), \
              patch.object(self.w,'check_metadata'),patch.object(self.w,'validate_copied_tracks'):
             with self.assertRaisesRegex(RuntimeError,'Strict decode reported an error'):

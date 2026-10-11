@@ -69,12 +69,22 @@ def expected_frame_rows(rows,target):
         yield expected
 
 
-def encoder_options(video,identifier):
+def encoder_options(video,identifier,*,encoder=None):
     policy=preset(identifier)
     if identifier=='original':return []
     filters=scale_filter(video,identifier)
     options=['-filter:v:0',filters] if filters else []
     if policy['video_bps'] is not None:
-        # A video ceiling, not a total media bitrate or a quality waiver.
-        options+=['-maxrate:v:0',str(policy['video_bps']),'-bufsize:v:0',str(2*policy['video_bps'])]
+        # NVENC's ordinary CQ route has b:v=0. A maximum plus a large
+        # buffer alone can exceed the measured preset ceiling, especially on
+        # short samples. Supply a real VBR target and startup headroom; the
+        # complete packet-span bitrate and selected VMAF floors still decide.
+        limit=policy['video_bps']
+        options+=['-b:v:0',str(limit*90//100),
+                  '-maxrate:v:0',str(limit*95//100),
+                  '-bufsize:v:0',str(limit*5//100)]
+        # FFmpeg NVENC CQ explicitly clears average bitrate and VBV size.
+        # Bounded presets must use VBR rather than override it with CQ. Zero
+        # disables CQ here; it does not select NVENC's separate lossless mode.
+        if encoder and encoder.endswith('_nvenc'):options+=['-cq','0']
     return options

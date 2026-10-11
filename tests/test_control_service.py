@@ -44,6 +44,10 @@ class ControlTests(unittest.TestCase):
                 if acquired:self.controls.mutex.release()
                 self.controls.action(dict(action='pause'))
                 self.assertTrue(self.controls.state['paused'])
+                refreshed=self.controls.poll()
+                self.assertTrue(refreshed['paused'])
+                self.assertTrue(refreshed['snapshot_stale'])
+                self.assertGreater(refreshed['queue_snapshot_updated'],0)
             finally:
                 release.set();self.assertTrue(finished.wait(1))
 
@@ -55,7 +59,8 @@ class ControlTests(unittest.TestCase):
         value=self.controls.poll()
         self.assertTrue(value['snapshot_error'])
         self.assertTrue(value['snapshot_stale'])
-        self.assertEqual(value['jobs'],[dict(id='historical')])
+        self.assertEqual(value['jobs'],[])
+        self.assertGreater(value['queue_snapshot_updated'],0)
 
     def test_resume_empty_or_terminal_only_queue_does_not_change_pause(self):
         self.controls.action(dict(action='pause'))
@@ -65,6 +70,7 @@ class ControlTests(unittest.TestCase):
         self.assertTrue(self.controls.state['paused'])
         self.assertEqual(self.controls.state['failures'],3)
         draft=self.draft(mode='test');self.controls.submit(draft['preview_id'])
+        self.controls.action(dict(action='pause'))
         for state in ('cancelled','failed','replaced','running'):
             self.controls.state['jobs'][0]['state']=state
             with self.assertRaisesRegex(ValueError,'No waiting jobs'):

@@ -18,8 +18,10 @@ def priming_tracks(data, packets):
             rate=int(s['sample_rate'])
             if discard or rate<=0 or not 0<skip<=rate:raise ValueError('Unsupported AAC priming evidence')
             delay=Fraction(skip,rate)
-            if abs(Fraction(p['pts_time'])+delay)>Fraction(1,rate):raise ValueError('AAC priming does not match initial timestamp')
-            result[s['index']]=dict(samples=skip,rate=rate,seconds=delay)
+            start=(Fraction(s['start_pts'])*Fraction(s['time_base']) if s.get('start_pts') is not None and s.get('time_base')
+                   else Fraction(s.get('start_time','0')))
+            if abs(Fraction(p['pts_time'])+delay-start)>Fraction(1,rate):raise ValueError('AAC priming does not match initial timestamp')
+            result[s['index']]=dict(samples=skip,rate=rate,seconds=delay,presentation_start=start)
     return result
 
 def inspect(workflow, source, before, label):

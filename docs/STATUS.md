@@ -1,6 +1,58 @@
 # Project status
 
-## Current checkpoint: 29 September 2026
+## Current checkpoint: 10 October 2026
+
+Production remains on v59. The revised v60 package is building in isolation;
+it enables checksum-pinned FFmpeg 9.0.2 by default while retaining the existing
+qualified GPU validation reader. Deployment is not yet approved: image smoke
+tests must finish successfully. The first staging attempt failed before Docker
+on a Windows line-ending version guard; the revised package fixes that guard
+and binds build progress to the archive checksum.
+
+Generated paired FFmpeg 8/9 qualification passed all 82 modules on each runtime
+with no skipped tests. Three historical track-count failures now have validated
+full-source research copies, with reductions of 33.53%, 44.08% and 27.11%.
+Only the first was tested in full on both runtimes; the others passed the current
+baseline engine. These are potential savings, not reclaimed space: originals
+remain unchanged. No material encoding speed or size gain from FFmpeg 9 has
+been demonstrated in the paired full-source case.
+
+Separate elementary-track diagnosis confirmed genuine AVC and AC3 decoding
+failures on both runtimes. Their checks remain enforced. Video-reader failures
+encountered during audio preflight now have an accurate explanation. Working
+tracks were removed; compact evidence and validated test copies were retained.
+
+## Historical checkpoint: 9 October 2026
+
+The TrueNAS app is running v57. Its isolated image build and smoke tests passed,
+including the packaged runtime, dashboard/API, NVIDIA encoding, GPU reader and
+generated output presets. The active batch is still running; this is not a claim
+that the whole library has finished.
+
+The last checked batch had 12 verified replacements, three running jobs and 25
+waiting jobs, with no failed or skipped jobs in that batch. All 12 replacements
+recorded cleanup of redundant output media. Receipts and compact diagnostics
+remain available. These counts are a dated observation, not live telemetry.
+
+The empty-queue auto-start fix is tested locally and is awaiting the next image
+qualification. New work starts an empty queue without a Resume click; manual
+pauses with existing work and recovery/error pauses remain protected.
+
+Scheduling tests on the installed v56 engine completed the same four excerpt
+tasks in about 575/601/383 seconds with one/two/four workers. All twelve passed
+technical and sampled quality checks. Available memory varied considerably, so
+this does not establish a general 33.5% speed improvement. Dynamic admission
+and the four-worker ceiling remain unchanged.
+
+A separate intermediate AV1 setting passed one scene but failed the later
+five-scene quality and aggregate size checks. No full conversion was started.
+There is no new automatic quality exception for that setting.
+
+Manually approved safe-copy replacements have durable receipts and count toward
+lifetime savings, but their original result cards can still show the safe-copy
+outcome. Reconciliation remains follow-up work.
+
+## Historical checkpoint: 29 September 2026
 
 Production was last observed on v44. The working tree prepares
 [v45](../deploy/truenas/RELEASE-20260929-v45.md): saved per-stage processing

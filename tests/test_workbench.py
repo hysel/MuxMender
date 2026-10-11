@@ -17,14 +17,14 @@ class WorkbenchTests(unittest.TestCase):
         note='Progress shows the current check, not the whole video.'
         support=HTML[HTML.index('<details class="queue-support">'):]
         self.assertIn(note, support[:support.index('</details>')])
-        self.assertEqual(HTML.count(note), 1)
+        self.assertEqual(HTML.count('<p class="control-note">'+note), 1)
 
     def test_bottom_guidance_is_compact_and_still_available(self):
         self.assertIn('<div class="workspace-footer"><details class="panel help">', HTML)
         note='Pause new starts lets active jobs finish.'
         support=HTML[HTML.index('<details class="queue-support">'):]
         self.assertIn(note, support[:support.index('</details>')])
-        self.assertEqual(HTML.count(note), 1)
+        self.assertEqual(HTML.count('<p class="control-note">'+note), 1)
 
     def test_console_progress_is_compact_and_does_not_change_controls(self):
         self.assertIn('id="console-style"', HTML)

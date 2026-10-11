@@ -239,7 +239,7 @@ def split_packet_evidence(combined, directory, label, indices, guard=lambda:None
 
 
 def collect_packets(ffprobe, source, directory, label, indices, timeout, guard,
-                    duration=None, start=0):
+                    duration=None, start=0, *, input_options=()):
     if not indices:return {}
     if any(type(i) is not int or i<0 for i in indices):
         raise ValueError('Invalid copied stream index')
@@ -249,7 +249,7 @@ def collect_packets(ffprobe, source, directory, label, indices, timeout, guard,
         for position,index in enumerate(indices,1):
             guard()
             target=Path(directory)/(label+f'-stream-{index}.txt')
-            command=[ffprobe,'-v','error','-select_streams',str(index),
+            command=[ffprobe,'-v','error',*input_options,'-select_streams',str(index),
                      '-show_packets','-show_data_hash','sha256','-show_entries',
                      'packet=stream_index,pts_time,dts_time,duration_time,data_hash:packet_side_data=',
                      '-of','compact=p=0',str(source)]
@@ -270,7 +270,7 @@ def collect_packets(ffprobe, source, directory, label, indices, timeout, guard,
     combined=Path(directory)/(label+'-all-packets.txt')
     # Excluding packet side-data fields keeps each packet on one compact line.
     # No decoding is requested here; existing full decode/frame checks remain.
-    command=[ffprobe,'-v','error','-show_packets','-show_data_hash','sha256',
+    command=[ffprobe,'-v','error',*input_options,'-show_packets','-show_data_hash','sha256',
              '-show_entries','packet=stream_index,pts_time,dts_time,duration_time,data_hash:packet_side_data=',
              '-of','compact=p=0',str(source)]
     run_probe(command,combined,'Checking all copied tracks: '+label,timeout,guard,duration,start)

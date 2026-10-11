@@ -44,6 +44,7 @@ def sample_state(empty=False):
         jobs.append(job)
     counts = {s: sum(j['state'] == s for j in jobs) for s in ('running', 'pending', 'replaced', 'skipped', 'failed')}
     return dict(jobs=jobs, counts=counts, ready=True, paused=False, csrf_token='preview-only', app_version='Design preview',
+                queue_snapshot_updated=now,server_time=now,
                 replacement_enabled=True, resource_profile='shared',
                 gpu_yield={'enabled': True, 'reason': 'No competing GPU activity'},
                 resources={'active': counts['running'], 'reason': 'Shared-host profile',

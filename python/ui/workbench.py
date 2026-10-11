@@ -139,6 +139,10 @@ button,.button{background:var(--soft);border:1px solid var(--border);box-shadow:
 #activity #control-state{margin:0 0 6px;font-size:.82rem}
 #activity .queue-actions{margin:0 0 8px;gap:8px}#activity .queue-actions button{padding:6px 12px}
 #queue-clear-feedback:empty{margin:0;padding:0}
+#activity #queue-action-status{margin:0 0 6px;font-size:.72rem}
+.waiting-queue{border-top:1px solid var(--hairline);margin-top:6px}.waiting-queue>summary{min-height:44px;font-size:.8rem}
+.waiting-queue .control-note{margin:0 0 6px;font-size:.74rem}#waiting-queue-feedback:empty{display:none}
+#waiting-queue-items{max-height:320px;overflow:auto}.waiting-video{display:flex;gap:16px;align-items:center;justify-content:space-between;border-top:1px solid var(--hairline);padding:2px 8px;font-size:.8rem}.waiting-video>span{overflow-wrap:anywhere;min-width:0}.waiting-video>button{min-height:44px;flex-shrink:0}
 @media(min-width:1000px){
  .active-job{grid-template-columns:minmax(160px,1fr) minmax(150px,1fr) minmax(0,300px) 80px;column-gap:16px;padding:6px 12px;row-gap:2px}
  .active-job>h3{grid-column:1;grid-row:1}.active-job>.result-meta{grid-column:1;grid-row:2}

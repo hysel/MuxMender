@@ -84,6 +84,21 @@ for root_text in ROOTS:
  seen.add(path)
  state=j.get('state')
  done=state in ('completed','failed','cancelled')
+ rejection_label=None
+ # A completed research audit that rejects its candidate is not a crash.
+ # Require all preservation checks and the complete quality result, never
+ # infer this outcome from a nonzero exit code or an incomplete report alone.
+ try:
+  audit=json.loads((root/'result.json').read_text())
+  quality=audit.get('quality',{})
+  if (done and state=='failed' and j.get('exit_code')==1 and not j.get('error')
+      and audit.get('passed') is False and audit.get('publication_authorized') is False
+      and audit.get('frame_timing_metadata_and_packets_passed') is True
+      and audit.get('decoded_audio_samples_equal') is True and audit.get('source_stat_unchanged') is True
+      and type(audit.get('frames')) is int and audit['frames']>0 and quality.get('frames')==audit['frames']
+      and type(quality.get('passed')) is bool):
+   rejection_label='Quality target not met' if quality['passed'] is False else 'Bitrate or size target not met'
+ except (OSError,ValueError,TypeError):pass
  # Parent controls lifecycle; a current nested worker supplies stage progress.
  # Ignore earlier attempts and completed fixtures when choosing the live stage.
  stage=j
@@ -103,12 +118,12 @@ for root_text in ROOTS:
    proc=Path('/proc',str(pid))
    alive=pid>0 and proc.is_dir() and (proc/'stat').read_text().rsplit(')',1)[1].split()[0] not in ('Z','X')
   except (OSError,TypeError,ValueError,IndexError):alive=False
- result.append(dict(state=('completed-with-failures' if state!='completed' else 'completed') if done else 'running',
+ result.append(dict(state=('completed-with-failures' if state!='completed' else 'completed') if done else ('queued' if state in ('pending','queued') else 'running'),
  started=j.get('started'),finished=j.get('finished'),updated=(stage.get('updated') or 0) if alive else 0,
- total=1,completed=int(done),failures=int(done and state!='completed'),
+ total=1,completed=int(done),failures=int(done and state!='completed' and not rejection_label),rejection_label=rejection_label,
  validated=sum(s.get('state')=='validated-copy-awaiting-playback' for s in outcomes),
  evaluation_errors=sum(s.get('decision',{}).get('reason_code')=='evaluation_inconclusive' for s in outcomes),
- retained=sum((s.get('state')=='full-output-rejected-insufficient-savings' or (s.get('state')=='trials-completed' and s.get('decision',{}).get('action')=='keep_original')) and s.get('decision',{}).get('reason_code')!='evaluation_inconclusive' for s in outcomes),
+ retained=int(bool(rejection_label))+sum((s.get('state')=='full-output-rejected-insufficient-savings' or (s.get('state')=='trials-completed' and s.get('decision',{}).get('action')=='keep_original')) and s.get('decision',{}).get('reason_code')!='evaluation_inconclusive' for s in outcomes),
  current=1,phase=stage.get('phase'),stage_percent=stage.get('stage_percent'),stage_eta=stage.get('stage_eta'),
  stage_updated=stage.get('stage_updated'),detail=stage.get('detail'),workflow_stage=stage.get('workflow_stage'),
  stage_identity=[stage.get(k) for k in ('pid','started','phase','stage_started')]))
@@ -160,6 +175,7 @@ def main():
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--interval', type=int, default=20)
+    parser.add_argument('--once', action='store_true',help='Refresh observer status once and exit')
     args = parser.parse_args()
     config = json.loads(args.config.read_text(encoding='utf-8'))
     if len({entry_key(e) for e in config})!=len(config):
@@ -220,9 +236,19 @@ def main():
                 done = active is None
                 fresh = done or time.time()-float(active.get('updated') or 0) < 90
                 state = ('failed' if failures or evaluation_errors else 'completed') if done else ('running' if fresh else 'stale')
+                if active and active.get('state')=='queued':
+                    state='queued'
+                    fresh=True
                 phase = 'Development execution finished — check outcomes' if done else (active.get('phase') or 'Remote test '+str(completed+1)+' of '+str(total))
                 detail = f'{completed}/{total} commands finished; {validated} validated test copies (not published); {retained} size/quality keeps; {evaluation_errors} incomplete evaluations; {failures} command failures. Execution completion alone does not mean conversion passed or disk space was reclaimed. Other completed commands may be unsupported-input skips or sample-only tests. Originals retained.'
+                if entry.get('publication'):
+                    detail='Approved-copy publication; confirmed space savings are recorded in per-video replacement receipts, not inferred from execution completion.'
+                    if done:phase='Publication execution finished — check replacement receipts'
                 if done and evaluation_errors:phase='Evaluation incomplete — investigation required'
+                rejected=next((b.get('rejection_label') for b in batches if b.get('rejection_label')),None)
+                if done and rejected and not (failures or evaluation_errors):
+                    state='skipped'
+                    phase=rejected+' — original kept'
                 if done and entry.get('completion_note'):
                     detail += ' '+str(entry['completion_note'])
                 if active and active.get('detail'):detail += ' '+str(active['detail'])
@@ -242,7 +268,7 @@ def main():
             except Exception as exc:
                 job.save(**unavailable_status(entry,job.data,exc))
                 terminal.append(False)
-        if all(terminal):break
+        if args.once or all(terminal):break
         time.sleep(max(5,args.interval))
 
 

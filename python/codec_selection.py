@@ -40,13 +40,19 @@ def select_candidate(report, minimum_savings_percent=25.0):
     """Select smallest eligible aggregate output from identical sample sets.
 
     source_id should be a source content hash, not just a filename. This function
-    validates evidence structure, not the truth of a caller's quality assertions.
+    validates evidence structure, not the truth of a caller's measurements.
+    New reports bind numeric quality scores to their recorded effective policy;
+    legacy reports retain their original producer-assertion contract.
     HDR trials require separate native-preservation and rendered-quality evidence.
     """
     if not math.isfinite(minimum_savings_percent) or not 0 <= minimum_savings_percent < 100:
         raise ValueError('Savings threshold must be finite and between 0 and 100')
     if report.get('schema') != 'muxmender-codec-trials-v1':
         raise ValueError('Unsupported trial report')
+    quality_policy=None
+    if 'quality_policy' in report:
+        from quality_profiles import validate_policy
+        quality_policy=validate_policy(report['quality_policy'])
     source_id = report.get('source_id')
     if not isinstance(source_id, str) or not source_id.strip():
         raise ValueError('Source identity is required')
@@ -113,6 +119,10 @@ def select_candidate(report, minimum_savings_percent=25.0):
                     rejected_reasons=['insufficient_savings'],assessment='size_screened',quality_evaluated=False))
                 continue
         for sample in samples:
+            if quality_policy is not None:
+                from quality_profiles import scores_meet_policy
+                if not scores_meet_policy(sample.get('quality'),quality_policy):
+                    reasons.append('quality_policy_evidence_missing_or_failed')
             if report.get('color_mode') in ('pq','hlg'):
                 if sample.get('hdr_preservation_pass') is not True:
                     reasons.append('hdr_preservation_missing_or_failed')
@@ -185,6 +195,7 @@ def select_candidate(report, minimum_savings_percent=25.0):
                       reason_code='candidate_selected',cacheable=False,
                       selected={k: winner[k] for k in ('id', 'codec', 'encoder', 'settings')},
                       estimated_savings_percent=savings)
+    if quality_policy is not None:result['quality_policy']=quality_policy
     return result
 
 

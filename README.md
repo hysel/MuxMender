@@ -29,6 +29,8 @@ where supported. Not every video will get smaller, and lossy encoding cannot
 promise an identical picture.
 
 Development also includes optional [resolution and bitrate presets](docs/output-presets.md).
+New jobs can choose Strict, Balanced or Space saver quality checks. Balanced is
+the default; all three keep the timing, audio, subtitle and size checks in place.
 Lower-resolution copies lose detail intentionally; they are checked against a
 reference resized to that resolution. GPU and HDR transformations still need
 qualification before release. Original resolution remains the default.
@@ -83,6 +85,10 @@ including known failures and the distinction between automatic and research use.
 
 The [status report](docs/STATUS.md) separates merged code, recorded tests and
 deployment. Merging code does not update a running TrueNAS app.
+
+For FFmpeg upgrades, the [fix ledger and compatibility tests](docs/ffmpeg-compatibility.md)
+track which workarounds are still needed. We compare raw upstream behavior with
+our shared workflow before considering removal; quality and preservation checks stay.
 
 ## Responsible use
 

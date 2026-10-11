@@ -41,7 +41,7 @@ class StagedPreflightTests(unittest.TestCase):
         self.data=dict(format={'duration':'10'},streams=[dict(index=0,codec_type='video'),dict(index=1,codec_type='audio'),dict(index=2,codec_type='subtitle')])
         self.hash=hashlib.sha256(self.source.read_bytes()).hexdigest()
 
-    def collect(self,ffprobe,source,directory,label,indices,*args):
+    def collect(self,ffprobe,source,directory,label,indices,*args,**kwargs):
         result={}
         for i in indices:
             p=directory/(label+f'-{i}.txt');p.write_text('evidence');result[i]=p

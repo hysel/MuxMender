@@ -13,7 +13,7 @@ MEDIA={'.mkv','.mp4','.mov','.avi','.hevc','.h265','.h264','.av1','.obu','.ivf',
 
 def disposable(path):
     return (path.suffix.lower() in MEDIA or path.suffix=='.framehash'
-            or path.name.endswith(('-frames.jsonl','-frames.json','-all-packets.txt','-vmaf.json'))
+            or path.name.endswith(('-frames.jsonl','-frames.json','-all-packets.txt','-preset-packets.txt','-vmaf.json'))
             or re.search(r'-stream-\d+\.txt$',path.name) is not None
             or path.name=='rpu.json' or path.name.endswith('-rpu.json')
             or path.name in ('timestamps.txt','source-rpu-packets.xml')

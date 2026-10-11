@@ -6,18 +6,63 @@ reducing picture dimensions. It remains the default.
 Lower-resolution presets make a different trade-off: less detail, smaller files.
 They never enlarge a smaller source or crop the picture.
 
-| Preset | Maximum picture size | Video bitrate ceiling | Quality score: mean / fifth percentile |
-| --- | --- | --- | --- |
-| Original resolution | Source dimensions | Automatic | Existing policy, normally 90 / 90 |
-| 1080p TV | 1920 × 1080 | 8 Mbps | 95 / 90 |
-| 720p | 1280 × 720 | 4 Mbps | 93 / 90 |
-| 480p | 854 × 480 | 1.5 Mbps | 90 / 90 |
+| Preset | Maximum picture size | Video bitrate ceiling |
+| --- | --- | --- |
+| Original resolution | Source dimensions | Automatic |
+| 1080p TV | 1920 × 1080 | 8 Mbps |
+| 720p | 1280 × 720 | 4 Mbps |
+| 480p | 854 × 480 | 1.5 Mbps |
 
 These are maximum bounds, not fixed output dimensions. A widescreen movie or a
 portrait clip keeps its display shape. Audio and subtitles are preserved, so
 the complete file's bitrate can be higher than the video ceiling.
 
 ## What a passing quality check means
+
+New jobs let you choose **Quality checks** separately from resolution and
+encoder tuning. Balanced is the default; Space saver accepts more compression
+damage, but still needs to pass every other check.
+
+| Quality profile | Minimum mean VMAF | Minimum fifth-percentile VMAF |
+| --- | --- | --- |
+| Strict | 95 | 90 |
+| Balanced (default) | 94 | 90 |
+| Space saver | 90 | 90 |
+
+The selected profile is saved with each job. A failed test never lowers it
+automatically. Changing it can re-check an earlier automatic “original kept”
+decision. Existing queued jobs retain their recorded settings; older jobs
+without a profile keep their legacy thresholds (original 90/90, 1080p 95/90,
+720p 93/90, 480p 90/90). Completed replacements and explicit keep decisions
+are not undone.
+
+The shared automatic CLI accepts `--quality-profile strict`, `balanced`, or
+`space-saver`. Its default is Balanced. The low-level engine preserves legacy
+thresholds when that flag is omitted; stricter explicit numeric thresholds
+still take precedence.
+
+## Automatic conversion
+
+Choose **Automatic** encoding, a quality profile and either **Create copies** or
+**Convert and replace**. MuxMender inspects the source and probes the available
+GPU encoders, compares measured candidates, and selects the smallest candidate
+that meets your quality and savings requirements. A bounded refinement search
+can try additional settings when the first candidates do not qualify. It does
+not silently switch to slow CPU encoding or relax your quality profile.
+
+The selected profile and effective thresholds are recorded with the trials,
+selection and final status. New trial reports require numeric scores to support
+their pass flags. Quality screening uses representative scenes (the whole source
+for sufficiently short inputs); full-output validation checks timing, picture
+properties, tracks, metadata and decoding. This is not whole-film VMAF scoring.
+
+Actual full-output savings are checked again. A sample estimate does not promise
+the same reduction for the entire video. If a check fails or the savings are not
+worthwhile, the original stays. Replacement uses the verified publication flow;
+copies remain separate when that is the chosen action. Temporary work is cleaned
+while compact evidence and history are retained. Existing route-specific
+qualification requirements still apply, including pending HDR-to-SDR or HDR
+resizing transformations.
 
 For a resized copy, we compare it against the original **resized to the selected
 dimensions**. This checks compression damage at that resolution. It does not

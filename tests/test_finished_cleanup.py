@@ -18,6 +18,8 @@ class FinishedCleanupTests(unittest.TestCase):
         self.layer=self.run/'admission-layers';self.layer.mkdir()
         for name in ['layered.hevc','base.hevc','metadata.rpu','metadata.json']:(self.layer/name).write_bytes(b'working')
         (self.run/'full-vmaf.json').write_text('{}')
+        (self.run/'full-preset-packets.txt').write_text('size=42|pts_time=0|duration_time=.041')
+        (self.run/'full-output-preset.json').write_text('{"passed":true}')
         (self.run/'trials.json').write_text('{}')
         (self.run/'summary.json').write_text('{"p5":91}')
         self.state=dict(state='validated-copy-awaiting-playback',source=str(self.source),original_retained=True,output=str(self.output))
@@ -33,6 +35,8 @@ class FinishedCleanupTests(unittest.TestCase):
         self.assertFalse((self.run/'duplicate.mkv').exists())
         self.assertFalse(any(self.layer.iterdir()))
         self.assertFalse((self.run/'full-vmaf.json').exists())
+        self.assertFalse((self.run/'full-preset-packets.txt').exists())
+        self.assertTrue((self.run/'full-output-preset.json').exists())
         self.assertTrue((self.run/'summary.json').exists())
         self.assertEqual(self.source.read_bytes(),b'original')
         self.assertEqual(cleanup_finished(self.run,execute=True)['files'],0)
@@ -88,7 +92,7 @@ class FinishedCleanupTests(unittest.TestCase):
         from amd_av1_batch import fingerprint
         for failure in [RuntimeError('fixture failure'),KeyboardInterrupt('cancelled')]:
             args=SimpleNamespace(execute=True,encode_best=False,playback_verified_codecs=['hevc'],
-                                 min_free_gib=1,ffmpeg='ffmpeg')
+                                 min_free_gib=1,ffmpeg='ffmpeg',vmaf_mean=90,vmaf_p5=90)
             data={'streams':[{'codec_type':'video','side_data_list':[{'dv_profile':7}]}]}
             folder=self.root/('cancelled' if isinstance(failure,KeyboardInterrupt) else 'failed')
             def extract(work,*unused):

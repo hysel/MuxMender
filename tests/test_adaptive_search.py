@@ -94,7 +94,7 @@ class AdaptiveTests(unittest.TestCase):
                         ('-peak' in label and rate_retry_passes))
                 return dict(mean=99 if label.startswith('self-') else 96,
                             p5=99 if label.startswith('self-') else 92 if passed else 85,
-                            passed=passed)
+                            passed=passed, frames=count)
             with patch.object(ao.Workflow,'probe',probe), \
                  patch.object(ao.Workflow,'execute',execute), \
                  patch.object(ao.Workflow,'frame_file',return_value=root/'frames'), \

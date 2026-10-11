@@ -141,7 +141,7 @@ def recover_reference(workflow, source, metadata, position, seconds, label, *, e
     def decimal(value):return format(float(value),'.9f')
     def packets(path,suffix,interval=None):
         evidence=workflow.directory/(label+'-'+suffix+'-packets.json')
-        command=[workflow.args.ffprobe,'-v','error',*workflow.decoder_options(path),*(input_options if path==source else [])]
+        command=[workflow.args.ffprobe,'-v','error',*workflow.reader_input_options(path),*workflow.decoder_options(path),*(input_options if path==source else [])]
         if interval:command+=['-read_intervals',interval]
         command+=['-show_packets','-show_data_hash','sha256','-show_entries',
                   'packet=stream_index,pts,dts,duration,pts_time,dts_time,duration_time,data_hash,flags','-of','json',str(path)]
@@ -207,7 +207,7 @@ def recover_reference(workflow, source, metadata, position, seconds, label, *, e
         evidence=workflow.directory/(label+'-'+suffix+'-decoded.md5')
         command=[workflow.args.ffmpeg,'-v','error','-nostdin','-xerror','-copyts']
         if is_source:command+=['-ss',decimal(begin-origin),'-t',decimal(end-begin)]
-        command+=[*workflow.decoder_options(path),'-noautorotate','-i',str(path),'-map','0:V:0','-an','-sn','-dn','-threads','2',
+        command+=[*workflow.reader_input_options(path),*workflow.decoder_options(path),'-noautorotate','-i',str(path),'-map','0:V:0','-an','-sn','-dn','-threads','2',
                   '-fps_mode','passthrough','-enc_time_base','demux','-f','framemd5','-']
         run_probe(command,evidence,'Verifying decoded sample identity: '+suffix,
                   workflow.args.timeout,workflow.guard)

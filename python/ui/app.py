@@ -70,7 +70,7 @@ HTML=redesign(HTML)
 HTML=HTML.replace('<button id="toggle-updates"',
     '<button id="clear-waiting-queue" type="button" disabled>Cancel jobs</button><button id="toggle-updates"',1)
 HTML=HTML.replace('<div id="current-work">',
-    '<p id="queue-clear-feedback" role="status" aria-live="polite"></p><div id="current-work">',1)
+    '<p id="queue-action-status" class="control-note" role="status" aria-live="polite">Connecting to queue controls…</p><p id="queue-clear-feedback" role="status" aria-live="polite"></p><div id="current-work">',1)
 HTML=HTML.replace('</main>', '''<dialog id="queue-clear-dialog" aria-labelledby="queue-clear-title" aria-describedby="queue-clear-description">
 <div class="queue-dialog-heading"><h2 id="queue-clear-title">Cancel jobs?</h2><button id="queue-clear-close" type="button" aria-label="Close cancel jobs dialog">×</button></div><p id="queue-clear-description"></p>
 <p>Active processing stops and waiting jobs are cancelled. The queue pauses. A replacement already committing finishes safely. History is kept; you can retry cancelled videos later.</p>
@@ -78,4 +78,15 @@ HTML=HTML.replace('</main>', '''<dialog id="queue-clear-dialog" aria-labelledby=
 HTML=HTML.replace('</head>','<style>dialog{max-width:min(540px,calc(100vw - 32px));border:1px solid var(--border);border-radius:14px;padding:24px;background:var(--panel);color:var(--text)}dialog::backdrop{background:rgb(0 0 0 / .5)}.queue-dialog-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}.queue-dialog-heading h2{margin:0}.queue-dialog-heading button{min-width:44px;min-height:44px;font-size:24px}</style></head>')
 
 from ui.workbench import restyle
+HTML=HTML.replace('<details class="queue-support">',
+    '<details id="waiting-queue" class="waiting-queue"><summary id="waiting-queue-title">Waiting videos</summary><p class="control-note">Remove a waiting video without stopping other jobs or deleting files. Its history is kept.</p><p id="waiting-queue-feedback" role="status" aria-live="polite"></p><div id="waiting-queue-items" tabindex="0" aria-label="Waiting videos"></div></details><details class="queue-support">',1)
 HTML=restyle(HTML)
+HTML=HTML.replace('<button id="save-resource-profile" type="button">Apply resource profile</button>',
+    '<button id="save-resource-profile" type="button" aria-describedby="resource-profile-current resource-profile-feedback">Apply resource profile</button><p id="resource-profile-feedback" role="status" aria-live="polite" aria-atomic="true"></p><p id="resource-profile-current" class="control-note">Loading saved resource setting…</p>')
+HTML=HTML.replace('<section id="queue-overview" aria-label="Queue at a glance">',
+    '<section id="queue-overview" aria-label="Queue at a glance"><p id="queue-source-size" class="control-note">Queue sizes appear once connected.</p>')
+HTML=HTML.replace('<strong id="queue-running">—</strong>',
+    '<strong id="queue-running">—</strong><small id="queue-running-size" class="queue-file-size">—</small>')
+HTML=HTML.replace('<strong id="queue-waiting">—</strong>',
+    '<strong id="queue-waiting">—</strong><small id="queue-waiting-size" class="queue-file-size">—</small>')
+HTML=HTML.replace('</head>', '<style>.queue-file-size{grid-column:1 / -1;color:var(--muted);font-size:.75rem;overflow-wrap:anywhere}.waiting-video-size{display:block;color:var(--muted);font-size:.72rem;margin-top:2px}#queue-source-size{font-size:.78rem;margin:6px 0 8px}</style></head>')
