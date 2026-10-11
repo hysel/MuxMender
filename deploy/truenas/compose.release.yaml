@@ -1,0 +1,38 @@
+# Template for a released image, not a claim that GHCR hosting is live.
+# Replace EVERY REPLACE_* value before using Install via YAML.
+services:
+  muxmender:
+    image: ghcr.io/hysel/muxmender:REPLACE_RELEASE_VERSION
+    user: "REPLACE_UID:REPLACE_GID"
+    init: true
+    restart: unless-stopped
+    ports:
+      - "REPLACE_HOST_PORT:8765"
+    environment:
+      MUXMENDER_CONTROLS_ENABLED: "true"
+      MUXMENDER_ALLOWED_HOSTS: "REPLACE_HOSTNAME:REPLACE_HOST_PORT"
+      MUXMENDER_PLAYBACK_CODECS: "hevc,av1"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,video,utility,graphics"
+    volumes:
+      - type: bind
+        source: /REPLACE_MEDIA_HOST_PATH
+        target: /media
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /REPLACE_OUTPUT_HOST_PATH
+        target: /output
+        bind:
+          create_host_path: false
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["REPLACE_GPU_UUID"]
+              capabilities: [gpu]
+    # Replacement: make the media mount writable deliberately, then choose
+    # replacement in the UI. Copy mode is the safer first-run default.
+    # GPU sharing is optional: install the host monitor, add its read-only
+    # mount and telemetry setting as documented in docs/gpu-monitor-setup.md.

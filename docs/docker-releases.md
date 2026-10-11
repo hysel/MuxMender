@@ -1,7 +1,9 @@
 # Docker releases and hosting plan
 
-Proposal, not a published service. The current release still uses a staged build
-package. No public image or automatic publishing workflow is configured yet.
+The current release still uses a staged build package. A manual publishing
+workflow and installation template are now prepared; no public image has been
+announced. See [release operations](container-release-operations.md) for the
+runner, review materials and remaining readiness requirements.
 
 ## Make installation a pull, not a build
 

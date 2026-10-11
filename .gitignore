@@ -15,6 +15,7 @@ vscode-extension/node_modules/
 test-output/
 tools/*
 !tools/build_app_release.py
+!tools/audit_public_release.py
 !tools/patch_cuda_ffprobe.py
 !tools/assemble_gpu_reader_bundle.py
 !tools/benchmark_hdr_gpu_reader.py
