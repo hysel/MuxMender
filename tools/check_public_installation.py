@@ -27,7 +27,7 @@ def copy_preview():
 def validated_copy(output):
     output=Path(output).resolve()
     matches=[]
-    for path in output.rglob('result.json'):
+    for path in output.rglob('status.json'):
         if path.is_symlink():continue
         try:record=json.loads(path.read_text())
         except (OSError,ValueError):continue

@@ -171,7 +171,11 @@ media during installation testing. Public download and installation claims must
 wait for these checks.
 
 The isolated security scan completed on 12 October 2026; the full safe-copy
-lifecycle script still needs administrator execution. The scanner receives an exported candidate image, not
+lifecycle rerun is pending. Its first generated conversion passed quality checks
+and reduced size by about 60%, but the harness used the wrong receipt filename
+and stopped before checking history after container recreation. The corrected
+lookup uses the engine's `status.json`; no validation gate was changed.
+The scanner receives an exported candidate image, not
 the Docker socket, GPU or media library. Its reports still need review even if
 the scan finishes successfully. The safe-copy check generates its own short
 video on Linux, uses the normal conversion and validation workflow, then checks
