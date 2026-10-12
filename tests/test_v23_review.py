@@ -125,9 +125,18 @@ class ReleaseReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)/'repo';root.mkdir();archive=Path(folder)/'release.tar'
             for name in ['python/ui/app.py','python/__pycache__/bad.pyc','tests/test.py',
+                         'README.md','pyproject.toml','deploy/truenas/stage-release.sh',
+                         'tools/smoke_app_release.py','tools/monitor_release_stage.py',
+                         'tools/benchmark_job_scheduling.py','tools/qualify_av1_intermediate.py',
+                         'tools/publish_approved_copies.py','tools/analyze_batch_performance.py',
+                         'tools/qualify_iso_container_recovery.py','tools/qualify_quality_profiles.py',
+                         'tools/qualify_real_quality_profiles.py','tools/research_hdr_sdr.py',
+                         'tools/research_hdr_sdr_long.py','docs/output-presets.md',
                          'deploy/truenas/Dockerfile.app','deploy/truenas/requirements-av1-runtime.txt','docs/note.md','docs/av1-hdr-metadata.md','docs/dv-aac-duration-validation.md',
                          'docs/cooperative-pause.md','docs/processing-timeouts.md',
                          'deploy/truenas/install_gpu_monitor.py','python/gpu_activity.py',
+                         'deploy/truenas/install_reader_qualification.py','docs/host-reader-qualification.md',
+                         'tools/benchmark_sdr_gpu_reader.py','tools/benchmark_shared_sdr_reader.py',
                          'docs/dashboard-polling.md','docs/validation-scheduling.md',
                          'docs/performance-results.md','docs/performance-qualification-plan.md','docs/gpu-monitor-setup.md',
                          'docs/per-video-codec-selection.md','tools/build_app_release.py',
@@ -148,6 +157,8 @@ class ReleaseReviewTests(unittest.TestCase):
             (root/'python/gpu_activity.py').write_text('pass\n')
             result=create_release(root,archive,'docs/note.md')
             self.assertIn('docs/gpu-monitor-setup.md',result['files'])
+            self.assertIn('deploy/truenas/install_reader_qualification.py',result['files'])
+            self.assertIn('docs/host-reader-qualification.md',result['files'])
             with tarfile.open(archive) as tar:
                 for member in tar:
                     self.assertEqual(member.mode,0o755 if member.isdir() else 0o644)

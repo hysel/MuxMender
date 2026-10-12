@@ -13,6 +13,13 @@ module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 
 
 class NativeHdrResearchTests(unittest.TestCase):
+    def test_sdr_workflow_refuses_windows_before_generating_media(self):
+        spec=importlib.util.spec_from_file_location('shared_sdr_research',path.with_name('benchmark_shared_sdr_reader.py'))
+        shared=importlib.util.module_from_spec(spec);spec.loader.exec_module(shared)
+        with patch.object(shared.sys,'platform','win32'),patch.object(shared.subprocess,'run') as process:
+            with self.assertRaisesRegex(RuntimeError,'Linux'):shared.main()
+            process.assert_not_called()
+
     def test_shared_integration_refuses_windows_before_generating_media(self):
         spec=importlib.util.spec_from_file_location('shared_reader_research',path.with_name('benchmark_shared_gpu_reader.py'))
         shared=importlib.util.module_from_spec(spec);spec.loader.exec_module(shared)

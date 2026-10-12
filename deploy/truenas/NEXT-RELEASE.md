@@ -1,6 +1,14 @@
 # Next release deployment checklist
 
-## Current package: v60, awaiting isolated image smoke tests
+## Next candidate: v61 — qualified SDR GPU frame checks
+
+The AV1 8-bit SDR full-source comparison and isolated public-runtime host-receipt
+check passed. Quality and preservation requirements are unchanged. GPU sharing
+also saves directly from its toggle. See RELEASE-20261012-v61.md for measured
+benefits and limits. Packaging and exact-image smoke checks passed; publication
+and deployment remain pending.
+
+## Earlier package: v60
 
 FFmpeg 9.0.2 becomes the default runtime. Build sources are checksum-pinned,
 NVENC API 13.0 remains compatible with the tested driver, and the existing

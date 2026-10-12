@@ -14,8 +14,11 @@ import stat
 import sys
 
 READER_ROOT=Path('/opt/muxmender-readers')
+HOST_QUALIFICATION_ROOT=Path('/opt/muxmender-host-qualification')
 PROOF_FIELDS=('full_eof','every_frame_cpu_gpu_equal','corrupt_controls_rejected')
-NATIVE_DEMUXERS=frozenset(('matroska','webm','mov','mp4','m4a','3gp','3g2','mj2','mpegts','hevc','obu'))
+# Raw HEVC currently emits no decoded frames with this native artifact. Keep
+# complete CPU reads there even when a containerized HEVC scope is attested.
+NATIVE_DEMUXERS=frozenset(('matroska','webm','mov','mp4','m4a','3gp','3g2','mj2','mpegts','obu'))
 
 
 def visibility_matches(expected,current,sole_uuid):
@@ -53,11 +56,24 @@ def trusted_file(path,limit):
         return stream.read(limit+1)
 
 
-def load_qualification(root=READER_ROOT):
+def load_qualification(root=READER_ROOT,qualification_root=None):
+    """Reuse host evidence across updates only when the shipped binary still matches.
+
+    The optional host mount is administrator-owned and read-only in the app;
+    it is never loaded from writable output/media or selected by a web request.
+    Existing private image receipts remain supported.
+    """
     if not sys.platform.startswith('linux'):return None
+    roots=[Path(qualification_root)] if qualification_root is not None else [Path(root),HOST_QUALIFICATION_ROOT]
+    for receipt_root in roots:
+        result=_load_qualification(Path(root),receipt_root)
+        if result is not None:return result
+    return None
+
+
+def _load_qualification(root,receipt_root):
     try:
-        root=Path(root)
-        receipt=json.loads(trusted_file(root/'qualification.json',65536))
+        receipt=json.loads(trusted_file(receipt_root/'qualification.json',65536))
         if not isinstance(receipt,dict) or receipt.get('schema')!=1:return None
         binary=root/'ffprobe-cuda'
         data=trusted_file(binary,64*1024*1024)
@@ -88,7 +104,7 @@ def select_reader(video,duration,hdr_mode,qualification):
         return dict(cpu,reason='Dolby Vision frame-reader parity is not qualified; complete CPU inspection is retained')
     if type(duration) not in (int,float) or not math.isfinite(duration) or duration<60:
         return dict(cpu,reason='CPU reader avoids GPU startup cost for short inputs')
-    if hdr_mode not in ('hdr10','hdr10plus','pq','hlg'):return cpu
+    if hdr_mode not in ('sdr','hdr10','hdr10plus','pq','hlg'):return cpu
     scopes=qualification.get('scopes',[])
     if not isinstance(scopes,list):return cpu
     for scope in scopes:
@@ -101,13 +117,35 @@ def select_reader(video,duration,hdr_mode,qualification):
         if type(reduction) not in (int,float) or not math.isfinite(reduction) or reduction<=0:continue
         binary=qualification.get('binary')
         if not isinstance(binary,str) or not PurePosixPath(binary).is_absolute():continue
-        return dict(backend='cuda',binary=binary,
+        return dict(backend='cuda',binary=binary,containers=scope.get('containers'),
                     reason='Qualified GPU reader; complete frames and all existing checks retained')
     return dict(cpu,reason='No matching GPU reader qualification; continuing with CPU inspection')
 
 
 def reader_environment():
     return dict(os.environ,MUXMENDER_RESEARCH_CUDA_READER='1')
+
+
+SDR_FRAME_FIELDS='best_effort_timestamp_time,width,height,pix_fmt,sample_aspect_ratio,interlaced_frame,top_field_first,repeat_pict,color_primaries,color_transfer,color_space,color_range'
+
+
+def sdr_reader_request(cpu,source,video,duration,qualification,threads=2,decoder_options=(),container=None):
+    """Complete SDR inspection with exactly the existing fields and output syntax."""
+    plan=select_reader(video,float(duration),'sdr',qualification)
+    names=set(container.split(',')) if isinstance(container,str) else set()
+    if plan['backend']=='cuda' and (not names or not names<=NATIVE_DEMUXERS):
+        plan=dict(backend='cpu',reason='This native reader lacks the container reader; complete CPU inspection is retained')
+    if plan['backend']=='cuda' and plan.get('containers') is not None:
+        qualified=plan['containers']
+        if not isinstance(qualified,list) or not all(isinstance(item,str) for item in qualified) or not names<=set(qualified):
+            plan=dict(backend='cpu',reason='This container has no matching SDR frame-reader evidence; complete CPU inspection is retained')
+    gpu=plan['backend']=='cuda'
+    # Match the qualified native decoder scheduling: retain strict errors in
+    # one frame context rather than relying on asynchronous frame threading.
+    command=[plan['binary'] if gpu else cpu,'-v','error',*(['-err_detect','explode'] if gpu else []),
+             '-threads',str(threads),*(['-thread_type','slice'] if gpu else []),'-select_streams','V:0','-show_frames',
+             '-show_entries','frame='+SDR_FRAME_FIELDS,'-of','compact=p=0',*decoder_options,str(source)]
+    return command,(dict(env=reader_environment()) if gpu else {}),plan
 
 
 def hdr_reader_request(cpu,source,video,duration,mode,qualification,decoder_options=(),container=None):

@@ -1,7 +1,36 @@
 # Publish an app image
 
-The manual workflow is prepared, not enabled or exercised. No public GHCR image
-has been announced. Do not use a production TrueNAS host as the Actions runner.
+The v60 public image is available at `ghcr.io/hysel/muxmender:20261010-v60`.
+The browser-approved publication workflow uploads the exact qualified image;
+it does not rebuild it or update TrueNAS. The historical preparation notes below
+describe earlier blockers, not the current publication status.
+
+## Moving upgrades out of the shell
+
+The intended user flow is: approve a tested release in GitHub, then select its
+version in TrueNAS and click Update. Publication and deployment stay separate.
+The existing workflow already handles publication with GitHub's temporary
+credentials. Automatic hardware qualification is not installed yet.
+
+For the GPU step, do not attach a general-purpose public-repository Actions
+runner or expose the Docker socket on the production TrueNAS host. GitHub warns
+against self-hosted runners for public repositories because untrusted workflow
+code can compromise the runner. See the [GitHub security guidance](https://docs.github.com/en/actions/reference/security/secure-use).
+
+A future host-side test service should accept only reviewed, digest-pinned
+candidates through an explicitly approved release request. It must use a fixed
+test command, generated media, no library mounts, no privileged containers, no
+host Docker socket inside test containers, bounded resources and a fresh idle
+queue check. Its receipt must identify the image, source revision, GPU, driver
+and exact test results. Missing or failed hardware evidence blocks publication.
+Setting up this service requires one administrator installation; it is not
+enabled by changing the app image. Do not expose host administration to GitHub
+or accept arbitrary shell commands from release metadata.
+
+Until that service is qualified, the one-time administrator test remains the
+hardware step. This does not justify weakening checks or describing manual
+qualification as automated. Retain the previous image for rollback and finish
+active work before a user-approved production update.
 
 ## Outstanding requirements
 

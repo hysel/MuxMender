@@ -113,6 +113,8 @@ def create_release(root, archive, release_note, hdr_tool_archive=None, dovi_tool
               'tools/research_hdr_sdr.py','tools/research_hdr_sdr_long.py',
               'docs/av1-hdr-metadata.md','docs/dv-aac-duration-validation.md',
               'docs/cooperative-pause.md','docs/processing-timeouts.md','deploy/truenas/install_gpu_monitor.py',
+              'deploy/truenas/install_reader_qualification.py','docs/host-reader-qualification.md',
+              'tools/benchmark_sdr_gpu_reader.py','tools/benchmark_shared_sdr_reader.py',
               'docs/dashboard-polling.md','docs/validation-scheduling.md','docs/gpu-monitor-setup.md',
               'docs/performance-results.md','docs/performance-qualification-plan.md',
               'docs/per-video-codec-selection.md','docs/adaptive-gpu-admission.md','docs/processing-dashboard.md','docs/app-api.md','docs/output-presets.md','tools/build_app_release.py',
