@@ -21,7 +21,7 @@ class PublicInstallation(unittest.TestCase):
             root=Path(folder);copy=root/'output.mkv';copy.write_bytes(b'fixture')
             record=dict(state='validated-copy-awaiting-playback',output=str(copy),
                         output_sha256=hashlib.sha256(b'fixture').hexdigest())
-            (root/'result.json').write_text(json.dumps(record))
+            (root/'status.json').write_text(json.dumps(record))
             self.assertEqual(target.validated_copy(root)['path'],'output.mkv')
             copy.write_bytes(b'changed')
             with self.assertRaisesRegex(AssertionError,'checksum changed'):target.validated_copy(root)
