@@ -81,6 +81,10 @@ from ui.workbench import restyle
 HTML=HTML.replace('<details class="queue-support">',
     '<details id="waiting-queue" class="waiting-queue"><summary id="waiting-queue-title">Waiting videos</summary><p class="control-note">Remove a waiting video without stopping other jobs or deleting files. Its history is kept.</p><p id="waiting-queue-feedback" role="status" aria-live="polite"></p><div id="waiting-queue-items" tabindex="0" aria-label="Waiting videos"></div></details><details class="queue-support">',1)
 HTML=restyle(HTML)
+HTML=HTML.replace('<button id="save-gpu-yield" type="button">Apply GPU sharing</button>',
+    '<p id="gpu-yield-feedback" role="status" aria-live="polite" aria-atomic="true">Loading saved setting…</p>')
+HTML=HTML.replace('aria-describedby="gpu-yield-help"',
+    'aria-describedby="gpu-yield-help gpu-yield-feedback" disabled')
 HTML=HTML.replace('<button id="save-resource-profile" type="button">Apply resource profile</button>',
     '<button id="save-resource-profile" type="button" aria-describedby="resource-profile-current resource-profile-feedback">Apply resource profile</button><p id="resource-profile-feedback" role="status" aria-live="polite" aria-atomic="true"></p><p id="resource-profile-current" class="control-note">Loading saved resource setting…</p>')
 HTML=HTML.replace('<section id="queue-overview" aria-label="Queue at a glance">',

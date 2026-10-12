@@ -52,7 +52,7 @@ function all(n){return [n,...n.children.flatMap(all)]}
 ''')
 
     def test_resource_apply_feedback_busy_and_failure_recovery(self):
-        source=CONTROLS[CONTROLS.index('let resourceProfileBusy='):CONTROLS.index("controlElement('save-gpu-yield')")]
+        source=CONTROLS[CONTROLS.index('let resourceProfileBusy='):CONTROLS.index('let gpuSharingBusy=')]
         self.run_js(source,r'''
 const assert=require('node:assert/strict'),vm=require('vm');
 class Element{constructor(){this.attrs={};this.events={}}setAttribute(k,v){this.attrs[k]=v}removeAttribute(k){delete this.attrs[k]}addEventListener(k,v){this.events[k]=v}}

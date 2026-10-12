@@ -52,34 +52,35 @@ assert.equal(context.outcomeLabel({state:'failed',outcome_category:'error'}),'Pr
                 attrs=dict(attrs)
                 if tag not in self.void:self.stack.append((tag,attrs))
                 identity=attrs.get('id')
-                if identity in ('resource-profile','save-resource-profile','gpu-yield-enabled','save-gpu-yield'):
+                if identity in ('resource-profile','save-resource-profile','gpu-yield-enabled','gpu-yield-feedback'):
                     self.rows[identity]=next((id(a) for _,a in reversed(self.stack) if a.get('class')=='settings-row'),None)
             def handle_endtag(self,tag):
                 for i in range(len(self.stack)-1,-1,-1):
                     if self.stack[i][0]==tag:self.stack=self.stack[:i];break
         parser=Parser();parser.feed(HTML)
-        for field,button in [('resource-profile','save-resource-profile'),('gpu-yield-enabled','save-gpu-yield')]:
+        for field,button in [('resource-profile','save-resource-profile'),('gpu-yield-enabled','gpu-yield-feedback')]:
             self.assertIsNotNone(parser.rows[field]);self.assertEqual(parser.rows[field],parser.rows[button])
-        self.assertEqual(HTML.count('id="save-gpu-yield"'),1)
+        self.assertNotIn('id="save-gpu-yield"',HTML)
 
     def test_resume_requires_pending_work(self):
-        self.assertIn("controlElement('resume-selected').disabled=!body.ready||!body.paused||!(body.counts.pending>0)",HTML)
+        self.assertIn('resume.disabled=queueActionBusy||unavailable||!ready||!paused||!pending',HTML)
         self.assertIn('No waiting jobs to resume',HTML)
 
     @unittest.skipUnless(shutil.which('node'),'Node required for queue-control behavior test')
     def test_resume_button_state_matrix(self):
         from ui.controls import SCRIPT
-        start=SCRIPT.index(' controlReady=body.ready;')
-        source=SCRIPT[start:SCRIPT.index('\n',SCRIPT.index("controlElement('resume-selected').title=",start))]
+        start=SCRIPT.index('function renderQueueActions(')
+        source=SCRIPT[start:SCRIPT.index('async function refreshControls(',start)]
         harness=r'''
 const assert=require('node:assert/strict'),vm=require('vm');
 const source=JSON.parse(require('fs').readFileSync(0,'utf8'));
-for(const ready of [false,true])for(const paused of [false,true])for(const pending of [0,1,4]){
- const elements={};const context=vm.createContext({body:{ready,paused,counts:{pending}},workspaceReady:true,
-   controlElement:id=>(elements[id]??={})});
+for(const ready of [false,true])for(const paused of [false,true])for(const pending of [0,1,4])for(const busy of [false,true])for(const unavailable of [false,true]){
+ const elements={};const context=vm.createContext({queueActionBusy:busy,queueActionError:'',
+   controlElement:id=>(elements[id]??={setAttribute(){}})});
  vm.runInContext(source,context);
- assert.equal(elements['resume-selected'].disabled,!(ready&&paused&&pending>0));
- if(!pending)assert.equal(elements['resume-selected'].title,'No waiting jobs to resume');
+ context.renderQueueActions({ready,paused,counts:{pending}},unavailable);
+ assert.equal(elements['resume-selected'].disabled,!(ready&&paused&&pending>0&&!busy&&!unavailable));
+ if(!pending&&ready&&!busy&&!unavailable)assert.equal(elements['resume-selected'].title,'No waiting jobs to resume');
 }
 '''
         result=subprocess.run([shutil.which('node'),'-e',harness],input=json.dumps(source),text=True,capture_output=True,timeout=10)

@@ -19,6 +19,13 @@ Add a read-only Host Path mount from `/var/lib/muxmender-gpu-monitor` to
 Then enable **Yield GPU to other apps** in the dashboard. Its status explains
 whether current telemetry is available and whether other GPU work is detected.
 
+In the next UI update, the toggle saves immediately and shows **Saving…**, then
+**Saved: On/Off**. A failed request restores the previous displayed setting and
+checks the server again, because a timed-out request may still have been saved.
+The published v60 UI still uses **Apply GPU sharing**. The live activity status
+is separate: an enabled setting does not mean another app is currently using
+the GPU.
+
 The host directory persists across normal reboots, so app updates can validate
 the mount even before the monitor starts. The monitor's executable and service
 are restored at startup. Following a TrueNAS system upgrade, verify the startup

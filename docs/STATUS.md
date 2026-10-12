@@ -2,6 +2,13 @@
 
 ## Current checkpoint: 12 October 2026
 
+Next-update UI change: GPU sharing saves directly from its toggle, without an
+Apply button. Saving feedback, duplicate-submit protection, a bounded request,
+failure rollback and server reconciliation are tested with mocked requests.
+Older in-flight polls cannot undo an acknowledged setting change. The live
+sharing status remains separate from the saved preference. Not deployed to v60;
+the existing server-side yielding policy and media checks are unchanged.
+
 The public preview image `ghcr.io/hysel/muxmender:20261010-v60` was uploaded by
 browser-approved run 38268420839. Registry digest:
 `sha256:89d4bf3fc38f2198ea4df7d576f00ce6841899022a13bdb21ace80fc3e6aa7d3`.
