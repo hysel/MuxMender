@@ -64,7 +64,7 @@ document.querySelectorAll('a[href="#workflow"]').forEach(link=>link.addEventList
  const section=controlElement('workflow');if(section?.tagName==='DETAILS')section.open=true;
 }));
 async function controlCall(action,extra={}){
- const response=await fetch('/api/control',{method:'POST',...(action==='resource-profile'?{signal:AbortSignal.timeout(15000)}:{}),headers:{'Content-Type':'application/json','X-MuxMender-CSRF':controlToken||''},body:JSON.stringify({action,...extra})});
+ const response=await fetch('/api/control',{method:'POST',...(['resource-profile','gpu-yield'].includes(action)?{signal:AbortSignal.timeout(15000)}:{}),headers:{'Content-Type':'application/json','X-MuxMender-CSRF':controlToken||''},body:JSON.stringify({action,...extra})});
  const body=await response.json();if(!response.ok)throw Error(body.error||'Request failed');return body;
 }
 async function browseMedia(path='',offset=0){try{
@@ -153,7 +153,26 @@ async function applyResourceProfile(){
  finally{resourceProfileBusy=false;button.disabled=false;select.disabled=false;button.textContent='Apply resource profile';button.removeAttribute('aria-busy');refreshControls()}
 }
 controlElement('save-resource-profile').addEventListener('click',applyResourceProfile);
-controlElement('save-gpu-yield')?.addEventListener('click',async()=>{try{const body=await controlCall('gpu-yield',{enabled:controlElement('gpu-yield-enabled').checked});controlMessage(body.message);refreshControls()}catch(error){controlMessage(error.message)}});
+let gpuSharingBusy=false,gpuSharingSaved=null,gpuSharingError='';
+function renderGpuSharing(body){
+ const input=controlElement('gpu-yield-enabled'),feedback=controlElement('gpu-yield-feedback'),sharing=body.gpu_yield||{};
+ if(!input)return;
+ controlElement('gpu-yield-status').textContent=sharing.reason||'GPU activity status unavailable';
+ if(gpuSharingBusy)return;
+ if(typeof sharing.enabled==='boolean'&&!body.snapshot_stale&&!body.snapshot_error){gpuSharingSaved=sharing.enabled;input.checked=gpuSharingSaved}
+ input.disabled=!body.ready||gpuSharingSaved===null;
+ feedback.textContent=(gpuSharingError?gpuSharingError+' ':'')+(gpuSharingSaved===null?'Loading saved setting…':'Saved: '+(gpuSharingSaved?'On':'Off')+'. Changes save automatically.');
+}
+async function saveGpuSharing(){
+ if(gpuSharingBusy||gpuSharingSaved===null)return;
+ const input=controlElement('gpu-yield-enabled'),feedback=controlElement('gpu-yield-feedback');
+ const previous=gpuSharingSaved,enabled=input.checked;
+ gpuSharingBusy=true;gpuSharingError='';queueActionVersion++;input.disabled=true;input.setAttribute('aria-busy','true');feedback.textContent='Saving…';
+ try{await controlCall('gpu-yield',{enabled});gpuSharingSaved=enabled;input.checked=enabled;feedback.textContent='Saved: '+(enabled?'On':'Off')+'.'}
+ catch(error){input.checked=previous;gpuSharingError='Could not confirm the change: '+error.message+'.';feedback.textContent=gpuSharingError+' Showing the previous setting while we check the server.'}
+ finally{gpuSharingBusy=false;queueActionVersion++;input.disabled=!lastQueueControl?.ready;input.removeAttribute('aria-busy');refreshControls()}
+}
+controlElement('gpu-yield-enabled')?.addEventListener('change',saveGpuSharing);
 let queueClearToken=null,queueClearBusy=false;
 function closeQueueClearDialog(){
  queueClearToken=null;controlElement('queue-clear-dialog').close();
@@ -212,8 +231,7 @@ async function refreshControls(){if(controlPollBusy)return;controlPollBusy=true;
  lastQueueControl=body;queueStatusUnavailable=false;renderQueueActions(body,false);
  if(!resourceProfileBusy&&!resourceProfileDirty){controlElement('resource-profile').value=body.resource_profile||'shared';controlElement('resource-profile').initialized=true}
  const savedProfile=controlElement('resource-profile-current');if(savedProfile){const names={quiet:'Quiet — up to one file',shared:'Shared host — up to two files',faster:'Faster — up to four files'};savedProfile.textContent='Saved setting: '+(names[body.resource_profile]||'Unavailable')}
- const sharing=body.gpu_yield||{},sharingInput=controlElement('gpu-yield-enabled');
- if(sharingInput){if(!sharingInput.initialized){sharingInput.checked=!!sharing.enabled;sharingInput.initialized=true}controlElement('gpu-yield-status').textContent=sharing.reason||'Automatic GPU yielding is off';controlElement('save-gpu-yield').disabled=!body.ready}
+ renderGpuSharing(body);
  const resource=body.resources||{},metrics=resource.telemetry||{};
  const metric=(key,suffix,digits=0)=>Number.isFinite(metrics[key])?metrics[key].toFixed(digits)+suffix:'Unavailable';
  controlElement('resource-status').textContent=(body.snapshot_stale||body.snapshot_error)?'Resource readings are delayed; queue status is current.':'Host CPU '+metric('cpu_percent','%')+(Number.isFinite(metrics.container_cpu_percent)?' · App CPU allocation '+metric('container_cpu_percent','%'):'')+' · Available RAM '+metric('available_gib',' GiB',1)+' · GPU compute '+metric('gpu_compute_percent','%')+' · GPU encode '+metric('gpu_encode_percent','%')+' · GPU decode '+metric('gpu_decode_percent','%')+' · Free VRAM '+metric('vram_free_gib',' GiB',1)+' · '+(resource.active||0)+' workers · '+(resource.reason||'Collecting measurements');
