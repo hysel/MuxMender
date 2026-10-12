@@ -39,8 +39,9 @@ keep history across an image update. They did not exercise a processing worker.
 Matching Ubuntu, conda, wheel and Rust dependency sources have been collected,
 including a superseded Ubuntu version recovered from its source descriptor.
 The review bundle retains sources and notices without shipping private hardware
-receipts. Final compatibility/privacy review, vulnerability scanning, complete
-safe-copy lifecycle checks and public installation/pull checks remain open.
+receipts. The exact-candidate scan and generated safe-copy/recreation checks have
+completed. Final compatibility/privacy review, security findings, cancellation
+and public installation/pull checks remain open.
 
 1. Provision a disposable Linux amd64 NVIDIA runner with Docker, Python 3.12 and
    GitHub CLI. Label it `muxmender-release-nvidia`. Limit it to this repository;
@@ -97,8 +98,9 @@ The isolated installation harness uses generated media and an explicit
 keep-original decision to check API access, cross-site write rejection, retained
 history after upgrading, source preservation and clean shutdown. It does not
 exercise a processing worker or bypass resource admission. Runtime regression
-and generated GPU encoding smoke checks are separate; full safe-copy lifecycle
-and public installation checks are still needed.
+and generated GPU encoding smoke checks are separate. The expanded full safe-copy
+harness has now also passed conversion and recreation with an unchanged source
+and output hash. Public installation and cancellation checks are still needed.
 
 Dependency review also includes what is inside prebuilt packages. The PyAV wheel
 bundles its own FFmpeg and other native libraries; collecting PyAV's Python source
@@ -171,10 +173,10 @@ media during installation testing. Public download and installation claims must
 wait for these checks.
 
 The isolated security scan completed on 12 October 2026; the full safe-copy
-lifecycle rerun is pending. Its first generated conversion passed quality checks
-and reduced size by about 60%, but the harness used the wrong receipt filename
-and stopped before checking history after container recreation. The corrected
-lookup uses the engine's `status.json`; no validation gate was changed.
+lifecycle rerun passed conversion and container recreation. Its first attempt
+used the wrong receipt filename and stopped after conversion; the corrected
+lookup uses the engine's `status.json`. The rerun verified retained history,
+source preservation and the validated output hash without changing quality gates.
 The scanner receives an exported candidate image, not
 the Docker socket, GPU or media library. Its reports still need review even if
 the scan finishes successfully. The safe-copy check generates its own short
