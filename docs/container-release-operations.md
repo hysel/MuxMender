@@ -144,6 +144,14 @@ work. Separate isolated API/history checks are recorded above.
 
 ## Source bundle preparation
 
+For the revised candidate, `check-revised-public-release.sh` runs generated
+safe-copy and cancellation checks with retained history after recreation, then
+collects source/notices and a read-only Docker storage inventory. It is bound to
+the tested image digest, verifies production is idle before GPU work, and changes
+APT sources only inside a disposable container. A completed collection can still
+contain missing source versions; inspect its inventory rather than treating a
+successful command exit as license clearance. Nothing is published or deleted.
+
 `tools/assemble_release_materials.py` makes a review-only source archive outside
 the repository. It verifies collected archive checksums, recovered Ubuntu source
 descriptor fields and Rust notice coverage, and includes a Git source archive at

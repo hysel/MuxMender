@@ -3,6 +3,11 @@ from tools.monitor_release_stage import interpret,read_command
 
 
 class ReleaseMonitorTests(unittest.TestCase):
+    def test_revised_materials_observer_tracks_separate_batch(self):
+        command=read_command('20261010-v60',public_materials=True,candidate_revision='r3')
+        self.assertIn('public-final-checks-20261012-r1',command)
+        self.assertIn('source_progress=',command)
+        self.assertNotIn('docker ',command)
     def test_cancellation_observer_is_read_only_and_scoped(self):
         command=read_command('20261010-v60',public_cancel=True)
         self.assertIn('public-cancellation-20261012-r1',command)

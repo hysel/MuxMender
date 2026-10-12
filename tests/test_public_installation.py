@@ -15,6 +15,16 @@ def module(name):
 
 
 class PublicInstallation(unittest.TestCase):
+    def test_revised_batch_is_digest_bound_and_preserves_library(self):
+        text=(Path(__file__).resolve().parents[1]/'deploy/truenas/check-revised-public-release.sh').read_text()
+        self.assertIn('image=sha256:e57d69f29e4c6d144cce5a3ab0be79f3afc56d165a4d8f35d89acd3760a2a9ec',text)
+        self.assertIn('for kind in copy cancel',text)
+        self.assertIn('collect_release_sources.py',text)
+        self.assertIn('inventory-release-storage.sh',text)
+        for value in ('dst=/media','docker stop','docker start','docker.sock','docker push','docker system prune'):
+            self.assertNotIn(value,text)
+        self.assertIn("assert state=='false'",text)
+        self.assertIn('Source completeness and license compatibility still need review',text)
     def test_cancel_requires_native_work_and_verifies_it_stopped(self):
         target=module('check_public_installation')
         get=Mock(side_effect=[dict(jobs=[dict(state='running')]),
