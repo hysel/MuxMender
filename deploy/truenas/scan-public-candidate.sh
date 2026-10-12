@@ -2,12 +2,22 @@
 set -euo pipefail
 stage=/mnt/FR4G/Apps/muxmender/public-security-20261011-r1
 image=sha256:48a3b7a7b3f516225a9c98f7f025d5746ea23579ff4f57aa99864d833fe64b03
+unit=muxmender-public-security-20261011-r1
+scan_args=()
+if [[ ${1:-} = --revised-candidate ]]; then
+  stage=/mnt/FR4G/Apps/muxmender/public-security-20261012-r1
+  image=sha256:e57d69f29e4c6d144cce5a3ab0be79f3afc56d165a4d8f35d89acd3760a2a9ec
+  unit=muxmender-public-security-20261012-r1
+  scan_args=(--revised-candidate)
+  shift
+fi
+[[ $# = 0 || ( $# = 1 && $1 = --run ) ]] || exit 2
 scanner_sha=c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
 [[ $(id -u) = 0 ]] || { echo 'Run with sudo.' >&2; exit 1; }
 printf '%s  %s\n' "$scanner_sha" "$stage/trivy_0.75.0_Linux-64bit.tar.gz" | sha256sum -c -
 if [[ ${1:-} != --run ]]; then
-  systemd-run --unit=muxmender-public-security-20261011-r1 --collect --no-block \
-    /usr/bin/bash "$stage/scan-public-candidate.sh" --run
+  systemd-run --unit="$unit" --collect --no-block \
+    /usr/bin/bash "$stage/scan-public-candidate.sh" "${scan_args[@]}" --run
   echo "Isolated scan started. Status: $stage/result.txt"
   exit 0
 fi
