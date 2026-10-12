@@ -20,6 +20,7 @@ class ReleaseMonitorTests(unittest.TestCase):
         self.assertEqual(status['state'],'pending')
 
     def test_public_scan_is_read_only_and_scoped(self):
+        self.assertIn('public-security-20261012-r1',read_command('20261010-v60',public_scan=True,candidate_revision='r3'))
         command=read_command('20261010-v60',public_scan=True)
         self.assertIn('public-security-20261011-r1',command)
         self.assertNotIn('docker ',command)

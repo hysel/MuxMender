@@ -17,9 +17,11 @@ image. It keeps hash verification and does not alter conversion or quality check
 Deleting pip in a later layer would leave its files in distributed earlier layers;
 the separate stage avoids adding those installer layers to the final image.
 
-This revised recipe is not yet image-qualified. We must rebuild it, repeat
-runtime/GPU/service checks, recollect its exact dependency materials and scan the
-new image. Do not subtract six findings from the release report until a new scan
+The revised image passed runtime and generated NVIDIA checks on 12 October.
+Its digest is `sha256:e57d69f29e4c6d144cce5a3ab0be79f3afc56d165a4d8f35d89acd3760a2a9ec`.
+The separate scanner is bound to that digest, not its mutable image tag. The new
+scan, exact dependency-material refresh and service lifecycle repeat remain
+pending. Do not subtract six findings from the release report until the rescan
 confirms what is actually shipped.
 
 Ubuntu's [pip advisory](https://ubuntu.com/security/CVE-2024-35195) distinguishes

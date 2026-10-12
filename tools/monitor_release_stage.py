@@ -24,8 +24,9 @@ def read_command(version, public_candidate=False, public_materials=False, candid
         stage='/mnt/FR4G/Apps/muxmender/public-materials-20261011-r1'
         unit='muxmender-public-materials-20261011-r1'
     if public_scan:
-        stage='/mnt/FR4G/Apps/muxmender/public-security-20261011-r1'
-        unit='muxmender-public-security-20261011-r1'
+        scan_suffix='20261012-r1' if candidate_revision=='r3' else '20261011-r1'
+        stage='/mnt/FR4G/Apps/muxmender/public-security-'+scan_suffix
+        unit='muxmender-public-security-'+scan_suffix
     if public_copy:
         stage='/mnt/FR4G/Apps/muxmender/public-copy-lifecycle-20261011-r1'
         unit='muxmender-public-copy-lifecycle-20261011-r1'

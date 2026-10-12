@@ -23,10 +23,11 @@ not real-library replacement, cancellation or public-installation certification.
 Dependency review and anonymous-pull checks remain open.
 
 The public recipe now keeps pip/wheel installation in a separate build stage.
-This is prepared code, not a rebuilt or rescanned image. The isolated active-stage
+The revised candidate passed runtime and generated NVIDIA image checks; its
+security rescan remains pending. The isolated active-stage
 cancellation test passed: observed native work stopped, the source was unchanged
-and cancelled history survived recreation. A separate revised-image build is
-being staged; production will not be redeployed. See the
+and cancelled history survived recreation on the earlier candidate. Production
+was not redeployed. See the
 [security review](public-image-security-review.md) for findings and remaining work.
 
 The installed app and library were not changed. The latest isolated GPU check
