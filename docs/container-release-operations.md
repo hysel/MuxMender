@@ -143,6 +143,13 @@ executing them. `tools/fetch_pinned_materials.py` downloads checksum-pinned publ
 archives and records its progress on the development dashboard. These tools do
 not grant redistribution approval, process videos or change the installed app.
 
+`tools/verify_wheel_rpm_sources.py` closes the wheel's system-library mapping:
+it reads official repository metadata, verifies its recorded archive hashes and
+compares ELF code sections with the pinned wheel inventory. It reads RPMs as
+archives through bsdtar; it never loads their libraries. The six distribution
+library matches complement the 26 upstream matches. RPM signature verification
+and bit-for-bit reproducible builds are not claimed.
+
 Public contexts exclude private GPU reader receipts and research evidence. The
 GPU can still encode with NVENC; the accelerated HDR frame-inspection reader
 requires a trusted, host-specific qualification receipt. Without one, the shared

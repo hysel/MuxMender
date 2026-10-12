@@ -62,6 +62,23 @@ and media binaries and does not approve registry publication. The one-time
 TrueNAS publication script passed four Linux static/mock-shell tests, including
 dry-run and rejected image/research-placeholder cases; no real upload was run.
 
+The notice-bearing candidate has now passed: 203 runtime tests, eight skipped,
+and ten generated NVIDIA tests. Its image ID is
+`sha256:20bceb9acd80f3bcf9e6a81312f4eede6d576b06fab978ab48e5da48f10c8c04`.
+All 148 installed package versions and the three checked FFmpeg/reader hashes
+match the preceding qualified runtime; Docker reused its executable layers.
+The prior runtime scan remains relevant, not a new scan of this image digest.
+
+The remaining six PyAV wheel system libraries matched the exact AlmaLinux RPM
+code sections and recorded source RPM identities. Together with the previous
+26 upstream matches, all 32 embedded library code sections now have matching
+evidence. This is not whole-file reproducible-build or RPM-signature proof.
+
+Reviewed source and notice assets are uploaded to a draft GitHub preview release
+and staged on TrueNAS with matching checksums. Conditional public publication was
+approved; the registry credential must be entered on the server. No image has
+been pushed, no public download announced, and cleanup has not started.
+
 The installed app and library were not changed. The latest isolated GPU check
 confirmed that the installed app was stopped; it was not restarted by the test.
 Do not read this checkpoint as a live production queue report.
