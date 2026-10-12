@@ -25,9 +25,10 @@ and vulnerability identifiers confirms the six missing findings are the five
 pip findings and one wheel finding. Neither package has a finding in the new
 report. No high or critical findings were reported.
 
-This is a verified improvement, not full release clearance. The exact dependency
-materials need refresh, the revised image's service lifecycle needs repeating,
-and custom native-library coverage and remaining findings still need review.
+This is a verified improvement, not full release clearance. Exact dependency
+materials have been refreshed and the revised image passed its generated-file
+service lifecycle. Custom native-library coverage and remaining findings still
+need review.
 
 Ubuntu's [pip advisory](https://ubuntu.com/security/CVE-2024-35195) distinguishes
 the standard package from an Ubuntu Pro fix. A missing scanner `FixedVersion`
@@ -53,6 +54,8 @@ requires an observed native media subprocess before cancelling, then checks that
 the subprocess disappears, the queue pauses, the source stays unchanged and the
 cancelled history survives container recreation. Finishing before cancellation
 is a failed test interception, not a pass. Both cancellation and recreation passed
-on 12 October against the r2 candidate. The test mounted no library media and did
-not restart production. This does not qualify the revised installer-isolation
-image until that image is built and tested.
+on 12 October against both the r2 and revised r3 candidates. The revised candidate
+also passed safe-copy conversion and recreation with retained output hashes and
+history. These tests mounted no library media and did not restart production.
+They do not establish anonymous public installation or real-library replacement
+qualification.

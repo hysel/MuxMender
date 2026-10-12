@@ -28,7 +28,6 @@ A unit-test pass does not qualify every video or GPU.
 - [x] Add isolated startup/history checks and generated NVIDIA image checks.
 - [x] Collect matching dependency source archives and recover missing notice material.
 - [ ] Finish the source-and-license release bundle and its privacy review.
-- [ ] Produce a complete software inventory and run a dependency vulnerability scan.
 - [x] Run the exact-candidate dependency scan and retain its software inventory;
   review of findings and manually bundled native-library coverage remains open.
 - [x] Verify generated safe-copy conversion, retained history and unchanged file
@@ -37,11 +36,12 @@ A unit-test pass does not qualify every video or GPU.
   container recreation on the tested candidate.
 - [x] Rebuild and rescan the public recipe with build-only Python installers
   excluded from its runtime layers; repeat image checks on the new digest.
-- [ ] Review the revised candidate's remaining findings and custom-library
-  coverage, refresh its source materials and repeat its service lifecycle.
+- [x] Refresh revised-image source materials and pass its safe-copy/cancellation
+  lifecycle checks, including retained history after container recreation.
+- [ ] Review the revised candidate's remaining findings and custom-library coverage.
 - [ ] After publication and installation checks, execute the reviewed
   [release cleanup plan](release-cleanup.md), preserving evidence and rollback.
-- [ ] Verify a fresh safe-copy installation, cancellation and retained history.
+- [ ] Verify installation from the published registry image after an anonymous pull.
 - [ ] Choose the publication runner, publish an immutable Docker tag, and verify an
   anonymous pull before announcing it. No public registry image is available yet.
 
