@@ -12,8 +12,8 @@ sys.path.insert(0,str(ROOT/'python'))
 from job_tracking import Job
 
 
-def read_command(version, public_candidate=False, public_materials=False, candidate_revision='r1',public_scan=False,public_copy=False,public_cancel=False):
-    if sum(map(bool,(public_candidate,public_materials,public_scan,public_copy,public_cancel)))>1:
+def read_command(version, public_candidate=False, public_materials=False, candidate_revision='r1',public_scan=False,public_copy=False,public_cancel=False,public_export=False):
+    if sum(map(bool,(public_candidate,public_materials,public_scan,public_copy,public_cancel,public_export)))>1:
         raise ValueError('Choose one isolated release task')
     if not re.fullmatch(r'\d{8}-v\d+',version):raise ValueError('Invalid release version')
     if candidate_revision not in ('r1','r2','r3','r4'):raise ValueError('Invalid candidate revision')
@@ -36,6 +36,9 @@ def read_command(version, public_candidate=False, public_materials=False, candid
         stage='/mnt/FR4G/Apps/muxmender/public-cancellation-20261012-r1'
         unit='muxmender-public-cancellation-20261012-r1'
     progress=''
+    if public_export:
+        stage='/mnt/FR4G/Apps/muxmender/public-image-export-20261012-r1'
+        unit='muxmender-public-export-20261012-r1'
     if public_materials:
         # Fixed-stage read-only glob: select the most recently started run.
         progress=(f' latest=$(ls -td {stage}/work-* 2>/dev/null | head -n 1); '
@@ -85,15 +88,18 @@ def main():
     parser.add_argument('--public-scan',action='store_true',help='Observe the isolated candidate software/security scan')
     parser.add_argument('--public-copy',action='store_true',help='Observe generated-media safe-copy lifecycle checks')
     parser.add_argument('--public-cancel',action='store_true',help='Observe generated native-stage cancellation checks')
-    args=parser.parse_args();command=read_command(args.version,args.public_candidate,args.public_materials,args.candidate_revision,args.public_scan,args.public_copy,args.public_cancel)
-    title=('Public generated cancellation lifecycle' if args.public_cancel else
+    parser.add_argument('--public-export',action='store_true',help='Observe export of the already-qualified image')
+    args=parser.parse_args();command=read_command(args.version,args.public_candidate,args.public_materials,args.candidate_revision,args.public_scan,args.public_copy,args.public_cancel,args.public_export)
+    title=('Qualified image export for browser-approved publication' if args.public_export else
+           'Public generated cancellation lifecycle' if args.public_cancel else
            'Public generated safe-copy lifecycle' if args.public_copy else
            'Public candidate software and security scan' if args.public_scan else
            'Revised public lifecycle and source materials' if args.public_materials and args.candidate_revision=='r3' else
            'Public installation and source materials' if args.public_materials else
            ('Public clean-base candidate '+args.candidate_revision if args.public_candidate else args.version)+' image build and smoke tests')
     job=Job(args.output,title)
-    waiting_phase=('Waiting for administrator to start cancellation checks' if args.public_cancel else
+    waiting_phase=('Waiting for administrator to export the tested image' if args.public_export else
+                   'Waiting for administrator to start cancellation checks' if args.public_cancel else
                    'Waiting for administrator to start safe-copy checks' if args.public_copy else
                    'Waiting for administrator to start security scan' if args.public_scan else
                    'Waiting for administrator to collect source materials' if args.public_materials else
@@ -105,6 +111,8 @@ def main():
                 capture_output=True,text=True,timeout=15)
             if result.returncode:raise RuntimeError('Build status connection unavailable')
             status,terminal=interpret(result.stdout,args.checksum,waiting_phase)
+            if args.public_export and status.get('state')=='completed':
+                status.update(phase='Qualified image export completed',detail='Export only; no registry login, publication or deployment')
             if args.public_materials and status.get('state')=='completed':
                 status.update(phase='Installation checks and source collection finished',
                               detail='Separate generated-media checks; source inventory still requires review. Nothing published or deployed.')

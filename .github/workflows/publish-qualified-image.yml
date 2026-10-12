@@ -1,0 +1,107 @@
+name: Publish already-tested image
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Draft release tag and exact app version
+        required: true
+        default: '20261010-v60'
+      image_archive_sha256:
+        description: SHA256 from the administrator image export receipt
+        required: true
+      review_sha256:
+        description: SHA256 of the approved public-release.json asset
+        required: true
+        default: afae01587c348215e14af4dc103f8397f6470e2116da5e0987f99ede459449e1
+permissions:
+  contents: read
+concurrency:
+  group: container-release
+  cancel-in-progress: false
+jobs:
+  publish:
+    environment: container-release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ inputs.version }}
+      IMAGE_SHA: ${{ inputs.image_archive_sha256 }}
+      REVIEW_SHA: ${{ inputs.review_sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Validate inputs
+        run: |
+          python3 - <<'PY'
+          import os,re
+          assert os.environ['GITHUB_REF']=='refs/heads/main'
+          assert re.fullmatch(r'\d{8}-v\d+',os.environ['VERSION'])
+          for key in ('IMAGE_SHA','REVIEW_SHA'):
+              assert re.fullmatch('[0-9a-f]{64}',os.environ[key])
+          PY
+      - name: Download reviewed assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download "$VERSION" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/release" \
+            --pattern qualified-image.tar --pattern public-release.json \
+            --pattern notices-and-review.tar --pattern corresponding-source-review.tar
+      - name: Audit release materials and load the exact image
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,os,re,shutil,sys
+          from pathlib import Path
+          sys.path.insert(0,'tools')
+          from audit_public_release import audit,extract_context
+          root=Path(os.environ['RUNNER_TEMP'])/'release'
+          for name,key in [('qualified-image.tar','IMAGE_SHA'),('public-release.json','REVIEW_SHA')]:
+              with (root/name).open('rb') as stream:
+                  assert hashlib.file_digest(stream,'sha256').hexdigest()==os.environ[key], name
+          manifest=json.loads((root/'public-release.json').read_text())
+          image=manifest['qualified_image_id']
+          assert re.fullmatch('sha256:[0-9a-f]{64}',image)
+          assert manifest['repository']=='ghcr.io/'+os.environ['GITHUB_REPOSITORY'].lower()
+          extract_context(root/'notices-and-review.tar',root/'review')
+          # The separately pinned manifest is authoritative, not an archive substitute.
+          shutil.copyfile(root/'public-release.json',root/'review/public-release.json')
+          os.link(root/'corresponding-source-review.tar',root/'review/corresponding-source-review.tar')
+          audit(root/'review',os.environ['VERSION'],manifest['revision'])
+          for notice in json.loads((root/'review/public-materials/notice-index.json').read_text()):
+              path=root/'review'/notice['path']
+              assert path.resolve().is_relative_to((root/'review').resolve()) and not path.is_symlink()
+              with path.open('rb') as stream:
+                  assert hashlib.file_digest(stream,'sha256').hexdigest()==notice['sha256']
+          with open(os.environ['GITHUB_ENV'],'a') as env:
+              env.write('QUALIFIED_IMAGE='+image+'\n')
+          PY
+          docker load --input "$RUNNER_TEMP/release/qualified-image.tar"
+      - name: Verify loaded identity
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect --format '{{.Id}}' "$QUALIFIED_IMAGE")" = "$QUALIFIED_IMAGE"
+      - name: Publish with automatic GitHub credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG="$(mktemp -d "$RUNNER_TEMP/registry-XXXXXXXX")"
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          target="ghcr.io/${GITHUB_REPOSITORY,,}:$VERSION"
+          if docker manifest inspect "$target" >/dev/null 2>"$RUNNER_TEMP/manifest-error"; then
+            echo 'Tag exists; refusing overwrite.' >&2; exit 1
+          fi
+          grep -Eqi 'manifest unknown|manifest_unknown' "$RUNNER_TEMP/manifest-error" || { cat "$RUNNER_TEMP/manifest-error"; exit 1; }
+          docker tag "$QUALIFIED_IMAGE" "$target"
+          docker push "$target" | tee "$RUNNER_TEMP/push-result.txt"
+          echo "Uploaded $target from $QUALIFIED_IMAGE without rebuilding. Visibility and anonymous pull remain to be verified." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: qualified-image-publication-receipt
+          path: ${{ runner.temp }}/push-result.txt
