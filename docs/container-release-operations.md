@@ -76,6 +76,31 @@ other than a missing tag stop publication.
 
 ## Redistribution inventory: initial review
 
+### One-time TrueNAS publication route
+
+The repository also provides `deploy/truenas/publish-reviewed-image.sh` for a
+one-time administrator session instead of a permanent Actions runner. Stage it
+with `tools/audit_public_release.py` in the same repository-relative layout.
+First run it without `--publish`, using an absolute reviewed context path and
+an exact `sha256:` image ID. This local preflight uses the shared release audit,
+compares the image's actual notices against the reviewed files and checks its
+app version. It does not start the container or access the GPU or library.
+
+The approved manifest must additionally identify `qualified_image_id` and
+`repository: "ghcr.io/hysel/muxmender"`. Private review drafts are not approved
+manifests. The research placeholder is rejected. No publication is authorized
+merely because an image build passes.
+
+Only after explicit publication approval, add `--publish`. The script requests
+the exact version, GitHub username and a hidden short-lived GHCR token on the
+server. Never paste that token into chat, command arguments or the repository.
+Registry credentials use a temporary private Docker configuration, which is
+removed on exit. Revoke the token after use. Existing tags and ambiguous registry
+errors stop the upload. The script does not build, restart, deploy or prune.
+After uploading, check package visibility and verify an anonymous pull before
+calling the image publicly available. The Linux shell integration uses fake
+Docker calls; a real authenticated upload has not yet been exercised.
+
 | Component | Finding | Remaining work |
 | --- | --- | --- |
 | MuxMender | MIT license in repository | Include license in distributed image/materials. |
@@ -174,7 +199,9 @@ archive paths. Its `release-review.json` is deliberately not the approved
 `public-release.json`: notice discovery and matching hashes do not establish
 license compatibility, full build reproduction or publication permission.
 
-The first run retained 2,213 notice/recipe files (8,806,705 bytes). A targeted
+The first run retained 2,213 notice/recipe files (8,806,705 bytes). The expanded
+draft also reads upstream license files without executing code: 2,307 files,
+9,606,710 bytes in total. Four offline notice tests passed. A targeted
 private-host/path/key-marker check found no matches in that draft; this is not
 a comprehensive privacy audit of every nested upstream archive.
 

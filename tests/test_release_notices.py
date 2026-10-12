@@ -13,6 +13,19 @@ spec.loader.exec_module(module)
 
 
 class NoticePreparation(unittest.TestCase):
+    def test_nested_upstream_notices_only(self):
+        content = io.BytesIO()
+        with tarfile.open(fileobj=content, mode='w:gz') as archive:
+            for name in ('package/LICENSE', 'package/NOTICE.txt', 'package/main.c'):
+                member = tarfile.TarInfo(name)
+                member.size = 4
+                archive.addfile(member, io.BytesIO(b'text'))
+        content.seek(0)
+        with tempfile.TemporaryDirectory() as temp:
+            rows = module.copy_upstream_notices(content, Path(temp), 'fixture.tar.gz')
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(all('main.c' not in row['path'] for row in rows))
+
     def fixture(self, root, name='ubuntu-notices/package/copyright'):
         data = b'Original notice text\n'
         archive = root / 'sources.tar'

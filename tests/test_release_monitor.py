@@ -30,6 +30,8 @@ class ReleaseMonitorTests(unittest.TestCase):
         self.assertIn('public-security-20261011-r1',command)
         self.assertNotIn('docker ',command)
     def test_candidate_revision_is_fixed_and_read_only(self):
+        self.assertIn('public-image-20261012-r2',read_command('20261010-v60',True,candidate_revision='r4'))
+        with self.assertRaises(ValueError):read_command('20261010-v60',public_scan=True,candidate_revision='r4')
         self.assertIn('public-image-20261012-r1',read_command('20261010-v60',True,candidate_revision='r3'))
         self.assertIn('public-image-20261011-r2',read_command('20261010-v60',True,candidate_revision='r2'))
         with self.assertRaises(ValueError):read_command('20261010-v60',True,candidate_revision='r2;whoami')

@@ -55,6 +55,13 @@ archive is not copied into the image. Three new offline packaging tests passed;
 the preparation result is retained on the development dashboard. Final custom
 component notice/license review remains open.
 
+Upstream archive notices have since been added: the expanded draft contains
+2,307 files (9,606,710 bytes). A notice-bearing candidate context is prepared
+for a separate administrator-launched image build. It preserves the tested app
+and media binaries and does not approve registry publication. The one-time
+TrueNAS publication script passed four Linux static/mock-shell tests, including
+dry-run and rejected image/research-placeholder cases; no real upload was run.
+
 The installed app and library were not changed. The latest isolated GPU check
 confirmed that the installed app was stopped; it was not restarted by the test.
 Do not read this checkpoint as a live production queue report.

@@ -4,7 +4,7 @@ checksum=${1:?Candidate archive SHA256 required}
 [[ "$checksum" =~ ^[a-f0-9]{64}$ ]] || exit 2
 stage=$(cd -- "$(dirname -- "$0")" && pwd)
 case "$stage" in
-  /mnt/FR4G/Apps/muxmender/public-image-20261011-r1|/mnt/FR4G/Apps/muxmender/public-image-20261011-r2|/mnt/FR4G/Apps/muxmender/public-image-20261012-r1) ;;
+  /mnt/FR4G/Apps/muxmender/public-image-20261011-r1|/mnt/FR4G/Apps/muxmender/public-image-20261011-r2|/mnt/FR4G/Apps/muxmender/public-image-20261012-r1|/mnt/FR4G/Apps/muxmender/public-image-20261012-r2) ;;
   *) exit 2 ;;
 esac
 revision=${stage##*/public-image-}

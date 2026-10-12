@@ -16,8 +16,9 @@ def read_command(version, public_candidate=False, public_materials=False, candid
     if sum(map(bool,(public_candidate,public_materials,public_scan,public_copy,public_cancel)))>1:
         raise ValueError('Choose one isolated release task')
     if not re.fullmatch(r'\d{8}-v\d+',version):raise ValueError('Invalid release version')
-    if candidate_revision not in ('r1','r2','r3'):raise ValueError('Invalid candidate revision')
-    candidate_suffix='20261012-r1' if candidate_revision=='r3' else '20261011-'+candidate_revision
+    if candidate_revision not in ('r1','r2','r3','r4'):raise ValueError('Invalid candidate revision')
+    if candidate_revision=='r4' and not public_candidate:raise ValueError('Notice revision supports image monitoring only')
+    candidate_suffix={'r3':'20261012-r1','r4':'20261012-r2'}.get(candidate_revision,'20261011-'+candidate_revision)
     stage='/mnt/FR4G/Apps/muxmender/public-image-'+candidate_suffix if public_candidate else '/mnt/FR4G/Apps/muxmender/release-stage-'+version
     unit='muxmender-public-build-'+candidate_suffix if public_candidate else 'muxmender-build-'+version
     if public_materials:
@@ -80,7 +81,7 @@ def main():
     parser.add_argument('--checksum',help='Bind progress to the exact staged archive')
     parser.add_argument('--public-candidate', action='store_true', help='Observe the separate clean-base research candidate')
     parser.add_argument('--public-materials', action='store_true', help='Observe installation checks and source collection')
-    parser.add_argument('--candidate-revision', choices=('r1','r2','r3'), default='r1')
+    parser.add_argument('--candidate-revision', choices=('r1','r2','r3','r4'), default='r1')
     parser.add_argument('--public-scan',action='store_true',help='Observe the isolated candidate software/security scan')
     parser.add_argument('--public-copy',action='store_true',help='Observe generated-media safe-copy lifecycle checks')
     parser.add_argument('--public-cancel',action='store_true',help='Observe generated native-stage cancellation checks')

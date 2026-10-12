@@ -15,6 +15,30 @@ from job_tracking import Job
 
 NOTICE_GROUPS = {'ubuntu-notices', 'python-notices', 'rust-notices-r2',
                  'recovered-notices-r2', 'conda-materials'}
+CUSTOM_GROUPS = {'custom-sources', 'upstream', 'wheel-sources'}
+
+
+def copy_upstream_notices(source, destination, label):
+    """Read upstream archives as data, retaining short license/notice files."""
+    copied = []
+    with tarfile.open(fileobj=source, mode='r|*') as archive:
+        for member in archive:
+            path = PurePosixPath(member.name)
+            if not member.isfile() or len(path.parts) > 4:
+                continue
+            if not re.match(r'^(LICENSE|COPYING|NOTICE|COPYRIGHT|AUTHORS)([._-]|$)', path.name, re.I):
+                continue
+            if path.is_absolute() or '..' in path.parts or '\\' in member.name or ':' in member.name:
+                raise ValueError('Unsafe upstream notice path')
+            if member.size > 1024**2:
+                raise ValueError('Oversized upstream notice')
+            target = destination/'public-materials/notices/upstream'/label/member.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.extractfile(member) as stream, target.open('xb') as output:
+                shutil.copyfileobj(stream, output)
+            copied.append(dict(path=target.relative_to(destination).as_posix(),
+                               sha256=digest(target), size=member.size))
+    return copied
 
 
 def digest(path):
@@ -47,6 +71,10 @@ def prepare(bundle_dir, destination, root=ROOT):
                     or ':' in member.name or member.name in seen or not member.isfile()):
                 raise ValueError('Unsafe source bundle member')
             seen.add(member.name)
+            if path.parts and path.parts[0] in CUSTOM_GROUPS and member.name.endswith(('.tar.gz', '.tar.xz', '.tar.bz2')):
+                # The outer bundle was checksum-verified before reading any nested data.
+                with archive.extractfile(member) as stream:
+                    copied.extend(copy_upstream_notices(stream, destination, member.name))
             if not path.parts or path.parts[0] not in NOTICE_GROUPS:
                 continue
             # Keep original notice bytes and recipe/patch context, never execute them.
