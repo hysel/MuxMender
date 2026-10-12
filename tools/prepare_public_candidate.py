@@ -17,17 +17,30 @@ def public_reader_member(name):
     return name == 'vendor/gpu-reader/ffprobe-cuda' or name.startswith('vendor/gpu-reader/source/')
 
 
-def prepare(root, original, expected, destination):
+def prepare(root, original, expected, destination, materials=None):
     root = Path(root)
     with Path(original).open('rb') as stream:
         if hashlib.file_digest(stream, 'sha256').hexdigest() != expected:
             raise ValueError('Original context checksum mismatch')
     additions = {name: (root / name).read_bytes() for name in FILES}
-    additions['public-materials/REVIEW-PENDING.md'] = (
-        b'Private research candidate only. Redistribution materials are incomplete. Do not publish.\n')
+    if materials is None:
+        additions['public-materials/REVIEW-PENDING.md'] = (
+            b'Private research candidate only. Redistribution materials are incomplete. Do not publish.\n')
+    else:
+        materials = Path(materials)
+        if materials.is_symlink() or not materials.is_dir():
+            raise ValueError('Use an existing unlinked notice directory')
+        for path in sorted(materials.rglob('*')):
+            if path.is_symlink():
+                raise ValueError('Linked release material')
+            if path.is_file():
+                additions['public-materials/' + path.relative_to(materials).as_posix()] = path.read_bytes()
+        if not any(name.startswith('public-materials/') for name in additions):
+            raise ValueError('Empty release material directory')
     with tarfile.open(original) as source, tarfile.open(destination, 'x') as target:
         for member in source.getmembers():
-            if member.name not in additions and public_reader_member(member.name):
+            if (member.name not in additions and public_reader_member(member.name)
+                    and not member.name.startswith('public-materials/')):
                 target.addfile(member, source.extractfile(member) if member.isfile() else None)
         for name, content in additions.items():
             if name.endswith('.sh') or Path(name).name.startswith('Dockerfile'):
@@ -46,5 +59,6 @@ if __name__ == '__main__':
     parser.add_argument('--original', type=Path, required=True)
     parser.add_argument('--sha256', required=True)
     parser.add_argument('--destination', type=Path, required=True)
+    parser.add_argument('--materials', type=Path, help='Prepared notices only; does not grant publication approval')
     args = parser.parse_args()
-    print(prepare(args.root, args.original, args.sha256, args.destination))
+    print(prepare(args.root, args.original, args.sha256, args.destination, args.materials))
