@@ -33,6 +33,10 @@ A unit-test pass does not qualify every video or GPU.
   review of findings and manually bundled native-library coverage remains open.
 - [x] Verify generated safe-copy conversion, retained history and unchanged file
   hashes after container recreation.
+- [x] Verify cancellation during observed native work and cancelled history after
+  container recreation on the tested candidate.
+- [ ] Rebuild and rescan the public recipe with build-only Python installers
+  excluded from its runtime layers; repeat image checks on the new digest.
 - [ ] Verify a fresh safe-copy installation, cancellation and retained history.
 - [ ] Choose the publication runner, publish an immutable Docker tag, and verify an
   anonymous pull before announcing it. No public registry image is available yet.

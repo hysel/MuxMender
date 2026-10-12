@@ -45,5 +45,7 @@ The isolated cancellation test uses generated video and the normal app API. It
 requires an observed native media subprocess before cancelling, then checks that
 the subprocess disappears, the queue pauses, the source stays unchanged and the
 cancelled history survives container recreation. Finishing before cancellation
-is a failed test interception, not a pass. The test is staged for administrator
-execution and does not mount library media or restart production.
+is a failed test interception, not a pass. Both cancellation and recreation passed
+on 12 October against the r2 candidate. The test mounted no library media and did
+not restart production. This does not qualify the revised installer-isolation
+image until that image is built and tested.
