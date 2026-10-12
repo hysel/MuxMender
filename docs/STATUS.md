@@ -22,6 +22,11 @@ log; the successful rerun has separate receipts. These are generated-file checks
 not real-library replacement, cancellation or public-installation certification.
 Dependency review and anonymous-pull checks remain open.
 
+The public recipe now keeps pip/wheel installation in a separate build stage.
+This is prepared code, not a rebuilt or rescanned image. An isolated active-stage
+cancellation/recreation test is staged for administrator launch. See the
+[security review](public-image-security-review.md) for findings and remaining work.
+
 The installed app and library were not changed. The latest isolated GPU check
 confirmed that the installed app was stopped; it was not restarted by the test.
 Do not read this checkpoint as a live production queue report.

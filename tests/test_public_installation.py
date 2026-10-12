@@ -4,7 +4,7 @@ import tempfile
 import hashlib
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch,Mock
 
 
 def module(name):
@@ -15,6 +15,25 @@ def module(name):
 
 
 class PublicInstallation(unittest.TestCase):
+    def test_cancel_requires_native_work_and_verifies_it_stopped(self):
+        target=module('check_public_installation')
+        get=Mock(side_effect=[dict(jobs=[dict(state='running')]),
+                             dict(jobs=[dict(state='cancelled')],paused=True)])
+        post=Mock(side_effect=[dict(count=1,confirmation_id='fixture'),dict(cancelled=1)])
+        with patch.object(target,'native_children',side_effect=[{100},set()]):
+            self.assertEqual(target.cancel_active_copy(get,post,50)['state'],'cancelled')
+        self.assertEqual(post.call_args.args[0],dict(action='clear-queue-confirm',confirmation_id='fixture'))
+
+    def test_finished_copy_cannot_be_claimed_as_active_cancellation(self):
+        target=module('check_public_installation')
+        with self.assertRaisesRegex(AssertionError,'did not intercept'):
+            target.cancel_active_copy(lambda _:dict(jobs=[dict(state='awaiting-playback')]),Mock(),50)
+
+    def test_process_inspection_never_signals_windows(self):
+        target=module('check_public_installation')
+        with patch.object(target.sys,'platform','win32'):
+            with self.assertRaisesRegex(RuntimeError,'Linux-only'):target.native_children(1)
+
     def test_retained_copy_hash_is_checked_independently(self):
         target=module('check_public_installation')
         with tempfile.TemporaryDirectory() as folder:
@@ -32,6 +51,11 @@ class PublicInstallation(unittest.TestCase):
         for value in ('dst=/media','docker start','docker stop','docker.sock'):
             self.assertNotIn(value,text)
         self.assertIn("assert running=='false'",text)
+        cancel=(Path(__file__).resolve().parents[1]/'deploy/truenas/check-public-cancellation.sh').read_text()
+        for value in ('dst=/media','docker start','docker stop','docker.sock'):
+            self.assertNotIn(value,cancel)
+        self.assertIn('initialize-cancel',cancel)
+        self.assertIn('upgrade-cancel',cancel)
     def test_full_copy_uses_existing_ui_settings_and_quality_profile(self):
         target=module('check_public_installation')
         settings=target.copy_preview()['settings']
