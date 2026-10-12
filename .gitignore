@@ -98,3 +98,4 @@ tools/*
 !tools/prepare_rust_source_pins.py
 !tools/audit_crate_notices.py
 !tools/recover_crate_notices.py
+!tools/assemble_release_materials.py

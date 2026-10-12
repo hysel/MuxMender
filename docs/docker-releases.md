@@ -32,7 +32,9 @@ until the complete image and shared workflow support them.
 Use immutable version tags and record image digests. A later correction gets a
 new version; don't silently overwrite an existing release. A moving `stable`
 tag may be convenient later, but exact versions should remain the documented
-choice. Don't promote the currently building v60 until its image checks finish.
+choice. The isolated clean-base candidate passed its image checks, but public
+promotion still waits for complete release materials, security review and
+installation/pull checks. A candidate-test pass is not a publication announcement.
 
 ## Repository work before the first public image
 

@@ -53,6 +53,18 @@ finished file must meet the actual requirement too.
 
 ## Other options
 
+### GPU encoding and file checks
+
+A GPU can encode a video while other steps still use the CPU or storage. An
+idle GPU during inspection or validation does not necessarily mean the job is
+stuck. Look at the current step and its last update before changing settings.
+
+Some checks can use the GPU only after that GPU and driver combination has been
+tested. Otherwise, they run on the CPU; GPU encoding can still work. Don't copy
+another server's acceleration record or disable quality checks to speed things up.
+
+### Age filters and time limits
+
 Use the creation-age filter to select all files or recently created files by
 hours, days or weeks. Filesystem dates may reflect copying rather than when a
 video was made.

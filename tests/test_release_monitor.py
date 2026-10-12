@@ -3,6 +3,20 @@ from tools.monitor_release_stage import interpret,read_command
 
 
 class ReleaseMonitorTests(unittest.TestCase):
+    def test_conflicting_tasks_are_rejected(self):
+        with self.assertRaises(ValueError):
+            read_command('20261010-v60',public_scan=True,public_copy=True)
+
+    def test_unstarted_scan_has_no_build_or_success_claim(self):
+        status,terminal=interpret('status=awaiting-admin\nunit=inactive',waiting_phase='Waiting for administrator to start security scan')
+        self.assertEqual(status['phase'],'Waiting for administrator to start security scan')
+        self.assertFalse(terminal)
+        self.assertEqual(status['state'],'pending')
+
+    def test_public_scan_is_read_only_and_scoped(self):
+        command=read_command('20261010-v60',public_scan=True)
+        self.assertIn('public-security-20261011-r1',command)
+        self.assertNotIn('docker ',command)
     def test_candidate_revision_is_fixed_and_read_only(self):
         self.assertIn('public-image-20261011-r2',read_command('20261010-v60',True,candidate_revision='r2'))
         with self.assertRaises(ValueError):read_command('20261010-v60',True,candidate_revision='r2;whoami')

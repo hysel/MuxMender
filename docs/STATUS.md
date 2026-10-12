@@ -1,6 +1,31 @@
 # Project status
 
-## Current checkpoint: 10 October 2026
+## Current checkpoint: 12 October 2026
+
+The clean-base public candidate completed runtime and generated NVIDIA image
+checks. It does not inherit the private image's nonfree FFmpeg fallback or ship
+another host's GPU qualification receipt. The shared conversion engine and
+quality checks are unchanged.
+
+Public Docker hosting is not available yet. A separate source-and-notice bundle
+has been assembled for review, with recovered dependency notices and checksum
+records. It has not been uploaded or marked approved for redistribution.
+The isolated software/security scan completed against the exact tested candidate.
+It reported 28 package findings: 21 medium and seven low, with no high or critical
+findings reported. None listed a fixed package version. These are scanner results,
+not a claim that every bundled native library is covered or that publication is
+approved. Dependency findings still require review.
+Full safe-copy installation, dependency findings and anonymous-pull checks still
+need completion before a public release.
+
+The installed app and library were not changed. The latest isolated GPU check
+confirmed that the installed app was stopped; it was not restarted by the test.
+Do not read this checkpoint as a live production queue report.
+
+The README and user guide distinguish local/development packages from future
+public image tags. Detailed test and dependency evidence stays out of the wiki.
+
+## Historical checkpoint: 10 October 2026
 
 Production remains on v59. The revised v60 package is building in isolation;
 it enables checksum-pinned FFmpeg 9.0.2 by default while retaining the existing

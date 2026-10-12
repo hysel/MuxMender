@@ -9,6 +9,9 @@ download videos, bypass copy protection, or help distribute unauthorized copies.
 
 ## Start here
 
+Public Docker hosting is still being prepared. Use the installation guide for
+setup, but don't assume that a public image tag already exists.
+
 - [Set up the app](Installation.md)
 - [Run your first conversion](First-conversion.md)
 - [Choose quality and size settings](Settings.md)

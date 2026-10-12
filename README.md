@@ -10,6 +10,22 @@ It works with files you already have. It does not find, download or share videos
 
 [User guide](docs/wiki/Home.md) · [Get started](docs/GETTING-STARTED.md) · [Project status](docs/STATUS.md) · [Roadmap](docs/TODO.md)
 
+## Installation and availability
+
+The first app release focuses on Linux/TrueNAS with NVIDIA GPUs. Your server
+needs a working driver and container GPU access; MuxMender does not install or
+change host drivers. AMD and Intel app qualification are deferred for now.
+
+The [public wiki](https://github.com/hysel/MuxMender/wiki) explains the everyday
+workflow. A public Docker image is being prepared, but has **not been published**.
+For now, use a locally built or supplied development package and its matching
+installation instructions. Don't guess a registry tag or use an old research
+template as the full app. See [installation](docs/wiki/Installation.md).
+
+Public releases will include third-party notices and matching source/build
+materials alongside the image. Those archives are for transparency and rebuilding;
+they do not need to live in your media library or conversion output folder.
+
 ## How it works
 
 1. Choose a video or folder. Subfolders are included by default.

@@ -22,10 +22,21 @@ See the [status report](STATUS.md) for recorded results. Priorities are not rele
 These features still need deployment and real-file checks where noted below.
 A unit-test pass does not qualify every video or GPU.
 
+## Next: make installation easier
+
+- [x] Prepare a clean-base public image recipe that excludes private hardware receipts.
+- [x] Add isolated startup/history checks and generated NVIDIA image checks.
+- [x] Collect matching dependency source archives and recover missing notice material.
+- [ ] Finish the source-and-license release bundle and its privacy review.
+- [ ] Produce a complete software inventory and run a dependency vulnerability scan.
+- [ ] Verify a fresh safe-copy installation, cancellation and retained history.
+- [ ] Choose the publication runner, publish an immutable Docker tag, and verify an
+  anonymous pull before announcing it. No public registry image is available yet.
+
 ## Next: finish the current library checks
 
-- [ ] Ship and image-test empty-queue auto-start. The local implementation and
-  regression tests are complete; v57 does not include it.
+- [x] Include empty-queue auto-start in prepared app code and image regression
+  coverage. Older installed images still need an explicit update.
 - [ ] Finish the current production batch, review errors and keep decisions,
   and verify terminal scratch cleanup without disturbing active work.
 

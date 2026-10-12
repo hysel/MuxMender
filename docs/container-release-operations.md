@@ -5,7 +5,7 @@ has been announced. Do not use a production TrueNAS host as the Actions runner.
 
 ## Outstanding requirements
 
-**Public image blocker:** the upstream Dockerfile for our current LinuxServer
+**Do not publish the private app image:** the upstream Dockerfile for its LinuxServer
 base enables FFmpeg `--enable-nonfree` alongside GPL components and libfdk_aac.
 The app image retains that FFmpeg 8 fallback. Our separate FFmpeg 9 build does
 not make the inherited binary redistributable. Do not publish the current image.
@@ -18,26 +18,29 @@ Source: [upstream base build recipe](https://github.com/linuxserver/docker-ffmpe
 Exact digest runtime inspection is still required; a tag's source recipe is not
 substituted for inspecting the binary actually shipped.
 
-The clean-base candidate is `deploy/truenas/Dockerfile.public`. It builds the
-same FFmpeg 9 recipe on pinned Ubuntu and copies the same app code. It isn't
-image-qualified yet; in particular the packaged GPU reader's dynamic libraries
-may need additional clean-base packages. The production Dockerfile is unchanged.
+The public candidate uses `deploy/truenas/Dockerfile.public`. It builds the same
+FFmpeg 9 recipe on pinned Ubuntu and copies the same app code. The privacy-clean
+candidate passed packaged runtime and generated NVIDIA checks. This qualifies
+that tested image for those checks, not every input, GPU or installation.
+The private production Dockerfile is unchanged.
 
 TrueNAS may run an administrator-launched, isolated candidate build instead of
 hosting an Actions runner. `launch-public-candidate.sh` uses a separate context
 and image, survives shell timeout and mounts no library media. Generated GPU
-checks require a fresh idle production queue snapshot. This is research, not
+checks require a fresh idle production queue snapshot, or explicit confirmation
+that the installed app container is stopped. An unreachable API alone never
+counts as an idle queue. This is research, not
 permission to publish an incompletely reviewed image. No permanent Actions
 runner is installed on the shared production host.
 
-The first clean-base candidate passed runtime and generated NVIDIA checks. The
-next isolated package checks service startup, browser/API responses, cross-site
-write rejection, an inspection of a generated clip and retained history when
-moving from the installed image to the candidate. It also collects exact Ubuntu
-source packages and version-matched upstream archives. These checks and source
-collection do not authorize public distribution: missing package versions,
-transitive Rust/conda dependencies and the wheel's bundled libraries still need
-their corresponding source and review.
+Separate isolated checks passed service startup, browser/API responses,
+cross-site write rejection, source preservation, shutdown and retained explicit
+keep history across an image update. They did not exercise a processing worker.
+Matching Ubuntu, conda, wheel and Rust dependency sources have been collected,
+including a superseded Ubuntu version recovered from its source descriptor.
+The review bundle retains sources and notices without shipping private hardware
+receipts. Final compatibility/privacy review, vulnerability scanning, complete
+safe-copy lifecycle checks and public installation/pull checks remain open.
 
 1. Provision a disposable Linux amd64 NVIDIA runner with Docker, Python 3.12 and
    GitHub CLI. Label it `muxmender-release-nvidia`. Limit it to this repository;
@@ -75,7 +78,7 @@ other than a missing tag stop publication.
 | --- | --- | --- |
 | MuxMender | MIT license in repository | Include license in distributed image/materials. |
 | FFmpeg 9 custom build | GPL and version3 enabled; source archives pinned | Preserve source, build options, dependency source and GPL notices. Check generated configuration for nonfree flags. |
-| Base image and FFmpeg 8 fallback | Pinned third-party image; separate build | Inventory its libraries and obtain matching source/build materials; our FFmpeg 9 source isn't a substitute. |
+| Public base / private fallback | Public recipe uses pinned Ubuntu without the nonfree fallback | Keep private-image layers out of public distribution. Review exact installed Ubuntu package sources/notices. |
 | Custom GPU reader | Patched FFmpeg 8 with source and notices | Review complete build reproduction and private qualification evidence. |
 | dovi_tool / hdr10plus_tool | Upstream MIT licenses | Bundle version-matched notices and review transitive dependencies. |
 | FelBaker 1.0.0 | Upstream GPLv3, notice includes derived work | Supply corresponding source/build materials and review dependency obligations. |
@@ -134,12 +137,52 @@ credentials; confirm that with a clean Docker configuration on a separate machin
 Record the registry digest, inspect the SBOM/provenance and dependency scan, and
 perform a clean TrueNAS install using `deploy/truenas/compose.release.yaml`.
 The present workflow does not yet generate SBOM/provenance, scan dependencies or
-test the browser/API service lifecycle; these remain release-readiness work.
+run its own browser/API service lifecycle checks; these remain release-readiness
+work. Separate isolated API/history checks are recorded above.
+
+## Source bundle preparation
+
+`tools/assemble_release_materials.py` makes a review-only source archive outside
+the repository. It verifies collected archive checksums, recovered Ubuntu source
+descriptor fields and Rust notice coverage, and includes a Git source archive at
+the recorded revision. It skips prebuilt wheels, bytecode and incomplete downloads.
+The source descriptor's signature is recorded as unverified rather than silently
+claimed valid. Assembly never sets privacy or redistribution approval to true.
+
+Keep the corresponding-source archive as a separate release asset, outside
+`public-materials/` in the runtime build context. That folder is for the small
+notices, source index and build instructions shipped with the image. Do not add
+roughly a gigabyte of source archives to every runtime image layer. When a build
+recipe or source revision changes, regenerate the source archive and checksum
+catalog before approving publication.
+
+The canonical review bundle preserves source archive bytes and their checksums.
+An optional `--omit-media-fixtures` draft omits recognized media test assets and
+records original and transformed hashes without listing media titles. This draft
+is for rights/privacy review, not a drop-in build input: original `.dsc`, Cargo
+and download checksum pins no longer match transformed archives. Do not replace
+the canonical bundle or claim reproducibility/completed redistribution review
+just because media fixtures were removed. Keep the original downloads private
+until their publication rights and the preferred-source coverage are reviewed.
 
 Check source browsing, a safe-copy job, retained history after an image update,
 cancellation, permissions and the host-port portal link. Don't replace source
 media during installation testing. Public download and installation claims must
 wait for these checks.
+
+The isolated security scan completed on 12 October 2026; the full safe-copy
+lifecycle script still needs administrator execution. The scanner receives an exported candidate image, not
+the Docker socket, GPU or media library. Its reports still need review even if
+the scan finishes successfully. The safe-copy check generates its own short
+video on Linux, uses the normal conversion and validation workflow, then checks
+source and output hashes after recreating the container. It does not certify
+real-library replacements, cancellation or a public installation by itself.
+The scan reported 28 package findings (21 medium and seven low), no high or
+critical findings, and no fixed package versions. Review those findings and
+check coverage of manually bundled native libraries separately; an empty high
+severity list is not release clearance.
+Both tasks have read-only observers on the development dashboard. Pending means
+the administrator command has not run, not that the test passed.
 
 ## Rollback
 

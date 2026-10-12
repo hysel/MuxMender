@@ -12,7 +12,9 @@ sys.path.insert(0,str(ROOT/'python'))
 from job_tracking import Job
 
 
-def read_command(version, public_candidate=False, public_materials=False, candidate_revision='r1'):
+def read_command(version, public_candidate=False, public_materials=False, candidate_revision='r1',public_scan=False,public_copy=False):
+    if sum(map(bool,(public_candidate,public_materials,public_scan,public_copy)))>1:
+        raise ValueError('Choose one isolated release task')
     if not re.fullmatch(r'\d{8}-v\d+',version):raise ValueError('Invalid release version')
     if candidate_revision not in ('r1','r2'):raise ValueError('Invalid candidate revision')
     stage='/mnt/FR4G/Apps/muxmender/public-image-20261011-'+candidate_revision if public_candidate else '/mnt/FR4G/Apps/muxmender/release-stage-'+version
@@ -20,6 +22,12 @@ def read_command(version, public_candidate=False, public_materials=False, candid
     if public_materials:
         stage='/mnt/FR4G/Apps/muxmender/public-materials-20261011-r1'
         unit='muxmender-public-materials-20261011-r1'
+    if public_scan:
+        stage='/mnt/FR4G/Apps/muxmender/public-security-20261011-r1'
+        unit='muxmender-public-security-20261011-r1'
+    if public_copy:
+        stage='/mnt/FR4G/Apps/muxmender/public-copy-lifecycle-20261011-r1'
+        unit='muxmender-public-copy-lifecycle-20261011-r1'
     progress=''
     if public_materials:
         # Fixed-stage read-only glob: select the most recently started run.
@@ -32,7 +40,7 @@ def read_command(version, public_candidate=False, public_materials=False, candid
             f'printf "unit="; systemctl is-active {unit} || true')
 
 
-def interpret(text,expected_checksum=None):
+def interpret(text,expected_checksum=None,waiting_phase='Waiting for admin build command'):
     record=dict(line.split('=',1) for line in text.splitlines() if '=' in line)
     if expected_checksum and record.get('status')!='awaiting-admin' and record.get('archive_sha256')!=expected_checksum:
         return dict(state='pending',phase='Waiting for revised package build',detail='Previous build status belongs to another package; no current-image qualification claimed'),False
@@ -53,7 +61,7 @@ def interpret(text,expected_checksum=None):
             except (ValueError,TypeError,KeyError):
                 pass  # A concurrent/partial progress write cannot fail the observer.
         return values,not active
-    if status=='awaiting-admin':return dict(state='pending',phase='Waiting for admin build command',detail='No Docker image qualification has run yet'),False
+    if status=='awaiting-admin':return dict(state='pending',phase=waiting_phase,detail='This isolated task has not started; no result claimed'),False
     raise ValueError('Unrecognized build status')
 
 
@@ -67,18 +75,34 @@ def main():
     parser.add_argument('--public-candidate', action='store_true', help='Observe the separate clean-base research candidate')
     parser.add_argument('--public-materials', action='store_true', help='Observe installation checks and source collection')
     parser.add_argument('--candidate-revision', choices=('r1','r2'), default='r1')
-    args=parser.parse_args();command=read_command(args.version,args.public_candidate,args.public_materials,args.candidate_revision)
-    job=Job(args.output,'Public installation and source materials' if args.public_materials else ('Public clean-base candidate '+args.candidate_revision if args.public_candidate else args.version)+' image build and smoke tests')
-    job.save(state='pending',phase='Waiting for admin build command',detail='Sources and production queue are not mounted into image tests')
+    parser.add_argument('--public-scan',action='store_true',help='Observe the isolated candidate software/security scan')
+    parser.add_argument('--public-copy',action='store_true',help='Observe generated-media safe-copy lifecycle checks')
+    args=parser.parse_args();command=read_command(args.version,args.public_candidate,args.public_materials,args.candidate_revision,args.public_scan,args.public_copy)
+    title=('Public generated safe-copy lifecycle' if args.public_copy else
+           'Public candidate software and security scan' if args.public_scan else
+           'Public installation and source materials' if args.public_materials else
+           ('Public clean-base candidate '+args.candidate_revision if args.public_candidate else args.version)+' image build and smoke tests')
+    job=Job(args.output,title)
+    waiting_phase=('Waiting for administrator to start safe-copy checks' if args.public_copy else
+                   'Waiting for administrator to start security scan' if args.public_scan else
+                   'Waiting for administrator to collect source materials' if args.public_materials else
+                   'Waiting for admin build command')
+    job.save(state='pending',phase=waiting_phase,detail='Sources and production queue are not mounted into image tests')
     while True:
         try:
             result=subprocess.run(['ssh','-i',args.key,'-o','BatchMode=yes','-o','ConnectTimeout=5',args.host,command],
                 capture_output=True,text=True,timeout=15)
             if result.returncode:raise RuntimeError('Build status connection unavailable')
-            status,terminal=interpret(result.stdout,args.checksum)
+            status,terminal=interpret(result.stdout,args.checksum,waiting_phase)
             if args.public_materials and status.get('state')=='completed':
                 status.update(phase='Installation checks and source collection finished',
                               detail='Separate generated-media checks; source inventory still requires review. Nothing published or deployed.')
+            if args.public_scan and status.get('state')=='completed':
+                status.update(phase='Security scan completed; findings need review',
+                              detail='Scan completion does not mean zero vulnerabilities. No deployment or publication.')
+            if args.public_copy and status.get('state')=='completed':
+                status.update(phase='Generated safe-copy lifecycle checks passed',
+                              detail='Normal quality gates retained; generated sources unchanged. No real-file or public-install certification claimed.')
             job.save(**status)
             if terminal:break
         except Exception as exc:
