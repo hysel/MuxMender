@@ -9,8 +9,8 @@ download videos, bypass copy protection, or help distribute unauthorized copies.
 
 ## Start here
 
-Public Docker hosting is still being prepared. Use the installation guide for
-setup, but don't assume that a public image tag already exists.
+The public preview is available as `ghcr.io/hysel/muxmender:20261010-v60`.
+Follow the installation guide and start with a small safe-copy run.
 
 - [Set up the app](Installation.md)
 - [Run your first conversion](First-conversion.md)

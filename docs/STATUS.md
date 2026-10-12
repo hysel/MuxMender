@@ -2,6 +2,19 @@
 
 ## Current checkpoint: 12 October 2026
 
+The public preview image `ghcr.io/hysel/muxmender:20261010-v60` was uploaded by
+browser-approved run 38268420839. Registry digest:
+`sha256:89d4bf3fc38f2198ea4df7d576f00ce6841899022a13bdb21ace80fc3e6aa7d3`.
+Anonymous download verification passed for the manifest and all 19 blobs
+(239,514,350 bytes), including the exact qualified configuration image ID.
+This was a complete registry-content download check, not a fresh Docker
+installation or execution. Existing runtime/lifecycle qualification remains
+applicable; production was not deployed or restarted. Cleanup still waits for
+installation and rollback verification. The README and wiki now describe the
+public preview; source, notice and build materials accompany the release.
+
+## Earlier preparation on 12 October 2026
+
 The browser-approved publication reached GitHub but stopped at downloading the
 draft assets: the job had read-only repository permission. All four draft assets
 remain present with verified hashes; no registry upload occurred. The publication

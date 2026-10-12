@@ -57,12 +57,15 @@ is recovering it.
 
 ## Which image should I install?
 
-There is no published public Docker image yet. Use a locally built or supplied
-development package with its matching installation instructions. Don't guess a
-registry address, and don't use a one-shot research or preflight template as the
-everyday app. This guide explains the normal setup; it isn't a download announcement.
+Use **`ghcr.io/hysel/muxmender:20261010-v60`** for the first public preview.
+No registry login is required. Read the
+[release notes](https://github.com/hysel/MuxMender/releases/tag/20261010-v60)
+before installing; this preview targets Linux amd64 with NVIDIA GPU access.
 
-When public images are available, the release page will give you an exact image
-tag and installation template. It will also provide third-party notices and
-source/build materials. You do not need those source archives in `/media` or
-`/output` to use the app.
+The release includes `compose.release.yaml`. Replace every `REPLACE_*` value
+with your own settings and use `20261010-v60` for `REPLACE_RELEASE_VERSION`.
+Create the host folders first and grant the selected user access. The template
+keeps your media read-only for the first safe-copy run.
+
+Source/build archives and third-party notices are also available on the release
+page. You do not need those archives in `/media` or `/output` to use the app.
