@@ -4,17 +4,17 @@ checksum=${1:?Candidate archive SHA256 required}
 [[ "$checksum" =~ ^[a-f0-9]{64}$ ]] || exit 2
 stage=$(cd -- "$(dirname -- "$0")" && pwd)
 case "$stage" in
-  /mnt/FR4G/Apps/muxmender/public-image-20261011-r1|/mnt/FR4G/Apps/muxmender/public-image-20261011-r2) ;;
+  /mnt/FR4G/Apps/muxmender/public-image-20261011-r1|/mnt/FR4G/Apps/muxmender/public-image-20261011-r2|/mnt/FR4G/Apps/muxmender/public-image-20261012-r1) ;;
   *) exit 2 ;;
 esac
-revision=${stage##*-}
+revision=${stage##*/public-image-}
 archive=$stage/public-candidate.tar
-image=muxmender-public-candidate:20261011-$revision
+image=muxmender-public-candidate:$revision
 version=20261010-v60
 [[ $(id -u) = 0 ]] || { echo 'Run with sudo.' >&2; exit 1; }
 printf '%s  %s\n' "$checksum" "$archive" | sha256sum -c -
 if [[ ${2:-} != --run ]]; then
-  systemd-run --unit=muxmender-public-build-20261011-$revision --collect --no-block \
+  systemd-run --unit=muxmender-public-build-$revision --collect --no-block \
     /usr/bin/bash "$stage/launch-public-candidate.sh" "$checksum" --run
   echo "Isolated build launched. Status: $stage/result.txt"
   exit 0
