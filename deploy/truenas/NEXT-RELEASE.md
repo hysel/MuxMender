@@ -5,8 +5,8 @@
 The AV1 8-bit SDR full-source comparison and isolated public-runtime host-receipt
 check passed. Quality and preservation requirements are unchanged. GPU sharing
 also saves directly from its toggle. See RELEASE-20261012-v61.md for measured
-benefits and limits. Packaging and exact-image smoke checks passed; publication
-and deployment remain pending.
+benefits and limits. Packaging, exact-image smoke checks and public GHCR download
+verification passed. Production deployment remains a separate user action.
 
 ## Earlier package: v60
 

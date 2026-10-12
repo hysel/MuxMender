@@ -38,7 +38,12 @@ workflow was 10.59% faster, with identical quality scores and exact frame record
 The initial launcher used a disallowed localhost API address and received 403;
 the corrected launcher resumed against the same image without rebuilding.
 Image ID: `sha256:a2cd06a2d83e3a32ed0557edcb3b787cde832c4d8e0dc4e360df69ed848c255c`.
-Publication to GHCR is still pending. Production remains unchanged.
+Publication to GHCR completed through browser-approved run 38287403275.
+`ghcr.io/hysel/muxmender:20261012-v61` has manifest digest
+`sha256:8990089f357812f3c1eed5b70461c4ccb1a44dd8ac8c251d82ba8b7a700f8df0`.
+Anonymous download verified all 21 blobs (239,898,918 bytes), with the exact
+qualified image configuration. This is not a new installation test. Production
+remains unchanged; the host qualification mount is required for accelerated reads.
 
 Next-update UI change: GPU sharing saves directly from its toggle, without an
 Apply button. Saving feedback, duplicate-submit protection, a bounded request,
