@@ -76,6 +76,30 @@ other than a missing tag stop publication.
 
 ## Redistribution inventory: initial review
 
+### Browser-approved publication of an already-tested image
+
+Use **Publish already-tested image** in GitHub Actions when you do not want to
+enter a registry credential on TrueNAS. The workflow runs on a temporary
+GitHub-hosted Linux runner and uses its automatic `GITHUB_TOKEN`; the configured
+`container-release` environment requires browser approval. No permanent runner
+or GitHub credential is installed on the media server.
+
+The administrator first runs `deploy/truenas/export-qualified-public-image.sh`
+on TrueNAS. It exports only the fixed, tested image and records the archive hash.
+It does not build, push, restart anything or mount media. The prepared export
+survives the shell session and has a read-only development-dashboard observer.
+
+Upload `qualified-image.tar` to the draft release alongside the reviewed source
+and notices. Dispatch `.github/workflows/publish-qualified-image.yml` from main
+with the version, export checksum and approved manifest checksum. The workflow
+checks both pins, audits source/notices, loads the image and verifies its exact
+image ID before pushing. It neither rebuilds the image nor reruns GPU tests.
+It refuses an existing tag or an ambiguous registry error. After upload, package
+visibility, source availability and an anonymous pull still need verification.
+
+The earlier manual-token script remains optional; it is not needed for this
+browser-approved route. A TrueNAS sudo password is separate from GitHub login.
+
 ### One-time TrueNAS publication route
 
 The repository also provides `deploy/truenas/publish-reviewed-image.sh` for a

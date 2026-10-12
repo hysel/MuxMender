@@ -79,6 +79,13 @@ and staged on TrueNAS with matching checksums. Conditional public publication wa
 approved; the registry credential must be entered on the server. No image has
 been pushed, no public download announced, and cleanup has not started.
 
+Publication is switching to browser approval in GitHub Actions at the user's
+request. A hosted-runner workflow is prepared to load and publish the exact
+tested image with automatic credentials, without rebuilding or GPU access.
+The export script is staged for an administrator command on TrueNAS. Three
+targeted workflow/export tests and ten monitor tests passed; live export and
+authenticated publication are still pending.
+
 The installed app and library were not changed. The latest isolated GPU check
 confirmed that the installed app was stopped; it was not restarted by the test.
 Do not read this checkpoint as a live production queue report.
