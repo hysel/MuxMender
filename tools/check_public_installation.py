@@ -24,6 +24,45 @@ def copy_preview():
         savings_mode='fixed',minimum_savings=25))
 
 
+def native_children(parent):
+    """Read Linux process ownership; never send probe signals."""
+    if sys.platform!='linux':raise RuntimeError('Process inspection is Linux-only')
+    rows={}
+    for path in Path('/proc').glob('[0-9]*/status'):
+        try:
+            fields=dict(line.split(':',1) for line in path.read_text().splitlines() if ':' in line)
+            rows[int(path.parent.name)]=(int(fields['PPid']),fields['Name'].strip())
+        except (OSError,KeyError,ValueError):continue
+    owned={parent}
+    while True:
+        added={pid for pid,(ppid,name) in rows.items() if ppid in owned}-owned
+        if not added:break
+        owned.update(added)
+    return {pid for pid in owned if pid!=parent and rows[pid][1] in ('ffmpeg','ffprobe','ffprobe-cuda','mkvmerge')}
+
+
+def cancel_active_copy(get,post,service_pid):
+    deadline=time.monotonic()+120
+    while True:
+        jobs=get('/api/controls')['jobs']
+        if jobs and jobs[0]['state']=='running' and native_children(service_pid):break
+        if jobs and jobs[0]['state'] in ('failed','skipped','cancelled','awaiting-playback'):
+            raise AssertionError('Cancellation did not intercept an active native stage')
+        if time.monotonic()>deadline:raise TimeoutError('No active native stage observed')
+        time.sleep(.1)
+    preview=post(dict(action='clear-queue-preview',include_running=True))
+    assert preview['count']==1
+    post(dict(action='clear-queue-confirm',confirmation_id=preview['confirmation_id']))
+    deadline=time.monotonic()+45
+    while True:
+        controls=get('/api/controls')
+        if controls['jobs'][0]['state']=='cancelled' and not native_children(service_pid):
+            assert controls['paused'] is True
+            return controls['jobs'][0]
+        if time.monotonic()>deadline:raise TimeoutError('Cancellation did not stop native work')
+        time.sleep(.1)
+
+
 def validated_copy(output):
     output=Path(output).resolve()
     matches=[]
@@ -50,11 +89,14 @@ def check(phase, work):
     media.mkdir(exist_ok=True)
     output.mkdir(exist_ok=True)
     source = media / 'Example.mkv'
+    cancellation=phase in ('initialize-cancel','upgrade-cancel')
     full_copy=phase in ('initialize-copy','upgrade-copy')
-    initializing=phase in ('initialize','initialize-copy')
-    if phase == 'initialize-copy':
+    initializing=phase in ('initialize','initialize-copy','initialize-cancel')
+    if phase in ('initialize-copy','initialize-cancel'):
+        video='testsrc2=s=1280x720:r=24:d=30' if cancellation else 'testsrc2=s=640x360:r=24:d=5'
+        audio='sine=frequency=440:sample_rate=48000:duration='+('30' if cancellation else '5')
         subprocess.run(['ffmpeg','-v','error','-nostdin','-f','lavfi','-i',
-            'testsrc2=s=640x360:r=24:d=5','-f','lavfi','-i','sine=frequency=440:sample_rate=48000:duration=5',
+            video,'-f','lavfi','-i',audio,
             '-c:v','libx264','-preset','ultrafast','-crf','0','-threads','2',
             '-pix_fmt','yuv420p','-color_range','tv','-colorspace','bt709',
             '-color_primaries','bt709','-color_trc','bt709','-c:a','aac','-ac','2',
@@ -108,11 +150,12 @@ def check(phase, work):
                 raise AssertionError('Cross-site write was accepted')
             except urllib.error.HTTPError as exc:
                 assert exc.code == 403
-            expected_state='awaiting-playback' if full_copy else 'kept-original'
+            expected_state='cancelled' if cancellation else 'awaiting-playback' if full_copy else 'kept-original'
             if initializing:
-                preview = post(copy_preview() if full_copy else history_preview())
+                preview = post(copy_preview() if full_copy or cancellation else history_preview())
                 submitted = post(dict(action='submit', preview_id=preview['preview_id']))
                 assert submitted['queued'] == 1
+                if cancellation:cancel_active_copy(get,post,process.pid)
                 deadline=time.monotonic()+(600 if full_copy else 90)
                 while True:
                     jobs = get('/api/controls')['jobs']
@@ -153,7 +196,8 @@ def check(phase, work):
         assert process.returncode == 0, 'Service did not shut down cleanly'
     result = dict(phase=phase, passed=True, app_version=api['app_version'],
                   source_unchanged=True, persistent_history=True,
-                  scope='generated safe-copy workflow and history; normal quality gates retained' if full_copy else
+                  scope='generated native-stage cancellation and retained history; no replacement' if cancellation else
+                        'generated safe-copy workflow and history; normal quality gates retained' if full_copy else
                         'service API and explicit keep history; no processing worker exercised')
     (work / (phase + '-result.json')).write_text(json.dumps(result, indent=2))
     print(json.dumps(result))
@@ -161,7 +205,7 @@ def check(phase, work):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=('initialize', 'upgrade','initialize-copy','upgrade-copy'))
+    parser.add_argument('phase', choices=('initialize', 'upgrade','initialize-copy','upgrade-copy','initialize-cancel','upgrade-cancel'))
     parser.add_argument('--work', type=Path, required=True)
     args = parser.parse_args()
     check(args.phase, args.work)

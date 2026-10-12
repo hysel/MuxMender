@@ -3,6 +3,12 @@ from tools.monitor_release_stage import interpret,read_command
 
 
 class ReleaseMonitorTests(unittest.TestCase):
+    def test_cancellation_observer_is_read_only_and_scoped(self):
+        command=read_command('20261010-v60',public_cancel=True)
+        self.assertIn('public-cancellation-20261012-r1',command)
+        self.assertNotIn('docker ',command)
+        with self.assertRaises(ValueError):
+            read_command('20261010-v60',public_cancel=True,public_copy=True)
     def test_conflicting_tasks_are_rejected(self):
         with self.assertRaises(ValueError):
             read_command('20261010-v60',public_scan=True,public_copy=True)

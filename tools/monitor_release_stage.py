@@ -12,8 +12,8 @@ sys.path.insert(0,str(ROOT/'python'))
 from job_tracking import Job
 
 
-def read_command(version, public_candidate=False, public_materials=False, candidate_revision='r1',public_scan=False,public_copy=False):
-    if sum(map(bool,(public_candidate,public_materials,public_scan,public_copy)))>1:
+def read_command(version, public_candidate=False, public_materials=False, candidate_revision='r1',public_scan=False,public_copy=False,public_cancel=False):
+    if sum(map(bool,(public_candidate,public_materials,public_scan,public_copy,public_cancel)))>1:
         raise ValueError('Choose one isolated release task')
     if not re.fullmatch(r'\d{8}-v\d+',version):raise ValueError('Invalid release version')
     if candidate_revision not in ('r1','r2'):raise ValueError('Invalid candidate revision')
@@ -28,6 +28,9 @@ def read_command(version, public_candidate=False, public_materials=False, candid
     if public_copy:
         stage='/mnt/FR4G/Apps/muxmender/public-copy-lifecycle-20261011-r1'
         unit='muxmender-public-copy-lifecycle-20261011-r1'
+    if public_cancel:
+        stage='/mnt/FR4G/Apps/muxmender/public-cancellation-20261012-r1'
+        unit='muxmender-public-cancellation-20261012-r1'
     progress=''
     if public_materials:
         # Fixed-stage read-only glob: select the most recently started run.
@@ -77,13 +80,16 @@ def main():
     parser.add_argument('--candidate-revision', choices=('r1','r2'), default='r1')
     parser.add_argument('--public-scan',action='store_true',help='Observe the isolated candidate software/security scan')
     parser.add_argument('--public-copy',action='store_true',help='Observe generated-media safe-copy lifecycle checks')
-    args=parser.parse_args();command=read_command(args.version,args.public_candidate,args.public_materials,args.candidate_revision,args.public_scan,args.public_copy)
-    title=('Public generated safe-copy lifecycle' if args.public_copy else
+    parser.add_argument('--public-cancel',action='store_true',help='Observe generated native-stage cancellation checks')
+    args=parser.parse_args();command=read_command(args.version,args.public_candidate,args.public_materials,args.candidate_revision,args.public_scan,args.public_copy,args.public_cancel)
+    title=('Public generated cancellation lifecycle' if args.public_cancel else
+           'Public generated safe-copy lifecycle' if args.public_copy else
            'Public candidate software and security scan' if args.public_scan else
            'Public installation and source materials' if args.public_materials else
            ('Public clean-base candidate '+args.candidate_revision if args.public_candidate else args.version)+' image build and smoke tests')
     job=Job(args.output,title)
-    waiting_phase=('Waiting for administrator to start safe-copy checks' if args.public_copy else
+    waiting_phase=('Waiting for administrator to start cancellation checks' if args.public_cancel else
+                   'Waiting for administrator to start safe-copy checks' if args.public_copy else
                    'Waiting for administrator to start security scan' if args.public_scan else
                    'Waiting for administrator to collect source materials' if args.public_materials else
                    'Waiting for admin build command')
@@ -103,6 +109,9 @@ def main():
             if args.public_copy and status.get('state')=='completed':
                 status.update(phase='Generated safe-copy lifecycle checks passed',
                               detail='Normal quality gates retained; generated sources unchanged. No real-file or public-install certification claimed.')
+            if args.public_cancel and status.get('state')=='completed':
+                status.update(phase='Generated cancellation lifecycle checks passed',
+                              detail='Observed native stage stopped; cancelled history persisted. No publication or production changes.')
             job.save(**status)
             if terminal:break
         except Exception as exc:

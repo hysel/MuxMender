@@ -39,7 +39,7 @@ class ReleaseSmokeTests(unittest.TestCase):
     def test_public_base_does_not_inherit_nonfree_image(self):
         text=(Path(__file__).resolve().parents[1]/'deploy/truenas/Dockerfile.public').read_text()
         bases=[line for line in text.splitlines() if line.startswith('FROM ')]
-        self.assertEqual(len(bases),2)
+        self.assertEqual(len(bases),3)
         self.assertTrue(all('ubuntu:24.04@sha256:' in line for line in bases))
         self.assertNotIn('linuxserver/ffmpeg',text)
         self.assertIn('COPY LICENSE',text)
