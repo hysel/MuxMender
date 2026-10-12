@@ -21,8 +21,9 @@ def read_command(version, public_candidate=False, public_materials=False, candid
     stage='/mnt/FR4G/Apps/muxmender/public-image-'+candidate_suffix if public_candidate else '/mnt/FR4G/Apps/muxmender/release-stage-'+version
     unit='muxmender-public-build-'+candidate_suffix if public_candidate else 'muxmender-build-'+version
     if public_materials:
-        stage='/mnt/FR4G/Apps/muxmender/public-materials-20261011-r1'
-        unit='muxmender-public-materials-20261011-r1'
+        name='public-final-checks-20261012-r1' if candidate_revision=='r3' else 'public-materials-20261011-r1'
+        stage='/mnt/FR4G/Apps/muxmender/'+name
+        unit='muxmender-'+name
     if public_scan:
         scan_suffix='20261012-r1' if candidate_revision=='r3' else '20261011-r1'
         stage='/mnt/FR4G/Apps/muxmender/public-security-'+scan_suffix
@@ -87,6 +88,7 @@ def main():
     title=('Public generated cancellation lifecycle' if args.public_cancel else
            'Public generated safe-copy lifecycle' if args.public_copy else
            'Public candidate software and security scan' if args.public_scan else
+           'Revised public lifecycle and source materials' if args.public_materials and args.candidate_revision=='r3' else
            'Public installation and source materials' if args.public_materials else
            ('Public clean-base candidate '+args.candidate_revision if args.public_candidate else args.version)+' image build and smoke tests')
     job=Job(args.output,title)

@@ -36,6 +36,11 @@ Post-publication cleanup is being prepared from a read-only inventory. No files
 have been deleted. The [cleanup plan](release-cleanup.md) protects source/license
 materials, compact evidence, production history and rollback assets.
 
+One consolidated administrator-launched batch is staged to repeat safe-copy and
+cancellation lifecycle checks on the revised digest, collect its exact installed
+source/notices and record Docker references for later cleanup. Its observer is
+read-only. Completion will not automatically approve publication or cleanup.
+
 The installed app and library were not changed. The latest isolated GPU check
 confirmed that the installed app was stopped; it was not restarted by the test.
 Do not read this checkpoint as a live production queue report.
