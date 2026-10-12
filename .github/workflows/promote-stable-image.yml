@@ -1,0 +1,55 @@
+name: Promote tested image to stable
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Already published qualified version (YYYYMMDD-vNN)
+        required: true
+      manifest_digest:
+        description: Verified public registry manifest digest (sha256:...)
+        required: true
+      review_sha256:
+        description: SHA256 of the reviewed public-release.json asset
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: container-release
+  cancel-in-progress: false
+jobs:
+  promote:
+    environment: container-release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ inputs.version }}
+      MANIFEST_DIGEST: ${{ inputs.manifest_digest }}
+      REVIEW_SHA: ${{ inputs.review_sha256 }}
+      REVIEW_PATH: release-review/public-release.json
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Validate request
+        run: |
+          python3 - <<'PY'
+          import os,re
+          assert os.environ['GITHUB_REF']=='refs/heads/main'
+          assert re.fullmatch(r'\d{8}-v\d+',os.environ['VERSION'])
+          assert re.fullmatch(r'sha256:[0-9a-f]{64}',os.environ['MANIFEST_DIGEST'])
+          assert re.fullmatch(r'[0-9a-f]{64}',os.environ['REVIEW_SHA'])
+          PY
+      - name: Download release review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$VERSION" --repo "$GITHUB_REPOSITORY" --dir release-review --pattern public-release.json
+      - name: Promote exact manifest and verify stable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B tools/promote_stable_image.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: stable-promotion-receipt
+          path: stable-promotion.json

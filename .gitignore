@@ -105,3 +105,4 @@ tools/*
 !tools/recover_crate_notices.py
 !tools/assemble_release_materials.py
 !tools/prepare_v61_candidate.py
+!tools/promote_stable_image.py
