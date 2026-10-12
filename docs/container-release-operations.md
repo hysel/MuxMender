@@ -192,6 +192,11 @@ the administrator command has not run, not that the test passed.
 
 ## Rollback
 
+After publication and installation checks, use the
+[release cleanup plan](release-cleanup.md) to review old exports, contexts and
+generated fixtures. Keep final reports, corresponding sources and a verified
+rollback image. The inventory script is read-only; it does not prune other apps.
+
 Pause new starts, let active work finish and preserve both mounted directories.
 Select the previous known-good image version, then verify history and queue state.
 If a release changes stored-state formats, document its rollback procedure before

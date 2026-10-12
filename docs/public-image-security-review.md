@@ -19,10 +19,15 @@ the separate stage avoids adding those installer layers to the final image.
 
 The revised image passed runtime and generated NVIDIA checks on 12 October.
 Its digest is `sha256:e57d69f29e4c6d144cce5a3ab0be79f3afc56d165a4d8f35d89acd3760a2a9ec`.
-The separate scanner is bound to that digest, not its mutable image tag. The new
-scan, exact dependency-material refresh and service lifecycle repeat remain
-pending. Do not subtract six findings from the release report until the rescan
-confirms what is actually shipped.
+The separate scanner is bound to that digest, not its mutable image tag. Its
+completed rescan reported 22 findings: 16 medium and six low. Comparing package
+and vulnerability identifiers confirms the six missing findings are the five
+pip findings and one wheel finding. Neither package has a finding in the new
+report. No high or critical findings were reported.
+
+This is a verified improvement, not full release clearance. The exact dependency
+materials need refresh, the revised image's service lifecycle needs repeating,
+and custom native-library coverage and remaining findings still need review.
 
 Ubuntu's [pip advisory](https://ubuntu.com/security/CVE-2024-35195) distinguishes
 the standard package from an Ubuntu Pro fix. A missing scanner `FixedVersion`

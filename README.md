@@ -102,6 +102,10 @@ including known failures and the distinction between automatic and research use.
 The [status report](docs/STATUS.md) separates merged code, recorded tests and
 deployment. Merging code does not update a running TrueNAS app.
 
+For storage maintenance, see [what remains after a task](docs/post-task-cleanup.md)
+and the [post-release cleanup plan](docs/release-cleanup.md). Keep history and
+recovery records; don't delete the whole output folder to clear old test files.
+
 For FFmpeg upgrades, the [fix ledger and compatibility tests](docs/ffmpeg-compatibility.md)
 track which workarounds are still needed. We compare raw upstream behavior with
 our shared workflow before considering removal; quality and preservation checks stay.

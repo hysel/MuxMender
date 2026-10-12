@@ -56,3 +56,7 @@ Check whether you created a copy or actually replaced the original. Then check
 retained copies, unresolved work and storage snapshots. Don't delete the entire
 output folder: it contains the records the app uses to avoid repeating work and
 recover interrupted replacements.
+
+Old release downloads and development test files are separate from your library.
+They can be reviewed after an update is working, but keep a known-good rollback
+image. Avoid broad Docker cleanup commands on a server that runs other apps.

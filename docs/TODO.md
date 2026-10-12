@@ -35,8 +35,12 @@ A unit-test pass does not qualify every video or GPU.
   hashes after container recreation.
 - [x] Verify cancellation during observed native work and cancelled history after
   container recreation on the tested candidate.
-- [ ] Rebuild and rescan the public recipe with build-only Python installers
+- [x] Rebuild and rescan the public recipe with build-only Python installers
   excluded from its runtime layers; repeat image checks on the new digest.
+- [ ] Review the revised candidate's remaining findings and custom-library
+  coverage, refresh its source materials and repeat its service lifecycle.
+- [ ] After publication and installation checks, execute the reviewed
+  [release cleanup plan](release-cleanup.md), preserving evidence and rollback.
 - [ ] Verify a fresh safe-copy installation, cancellation and retained history.
 - [ ] Choose the publication runner, publish an immutable Docker tag, and verify an
   anonymous pull before announcing it. No public registry image is available yet.
