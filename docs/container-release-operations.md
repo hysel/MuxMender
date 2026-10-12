@@ -40,8 +40,9 @@ Matching Ubuntu, conda, wheel and Rust dependency sources have been collected,
 including a superseded Ubuntu version recovered from its source descriptor.
 The review bundle retains sources and notices without shipping private hardware
 receipts. The exact-candidate scan and generated safe-copy/recreation checks have
-completed. Final compatibility/privacy review, security findings, cancellation
-and public installation/pull checks remain open.
+completed, including active cancellation and retained history on the revised
+image. Final compatibility/privacy review, security findings and public
+installation/pull checks remain open.
 
 1. Provision a disposable Linux amd64 NVIDIA runner with Docker, Python 3.12 and
    GitHub CLI. Label it `muxmender-release-nvidia`. Limit it to this repository;
@@ -100,7 +101,8 @@ history after upgrading, source preservation and clean shutdown. It does not
 exercise a processing worker or bypass resource admission. Runtime regression
 and generated GPU encoding smoke checks are separate. The expanded full safe-copy
 harness has now also passed conversion and recreation with an unchanged source
-and output hash. Public installation and cancellation checks are still needed.
+and output hash. Active-stage cancellation and retained history have also passed.
+Public registry installation checks are still needed.
 
 Dependency review also includes what is inside prebuilt packages. The PyAV wheel
 bundles its own FFmpeg and other native libraries; collecting PyAV's Python source
@@ -152,12 +154,29 @@ APT sources only inside a disposable container. A completed collection can still
 contain missing source versions; inspect its inventory rather than treating a
 successful command exit as license clearance. Nothing is published or deleted.
 
+The 12 October revised-image batch passed all four generated lifecycle receipts
+and collected 111 Ubuntu source versions. Assembly incorporated the previously
+checksum-verified missing source supplement and reported no notice-discovery
+gaps. Source/privacy review remains separate from collection and test completion.
+
 `tools/assemble_release_materials.py` makes a review-only source archive outside
 the repository. It verifies collected archive checksums, recovered Ubuntu source
 descriptor fields and Rust notice coverage, and includes a Git source archive at
 the recorded revision. It skips prebuilt wheels, bytecode and incomplete downloads.
 The source descriptor's signature is recorded as unverified rather than silently
 claimed valid. Assembly never sets privacy or redistribution approval to true.
+
+`tools/prepare_release_notices.py` prepares a small `public-materials/` review
+directory from that canonical bundle. It verifies the bundle checksum and each
+copied notice, keeps source archives outside the image, and writes source and
+notice indexes plus build pointers. It refuses existing destinations and unsafe
+archive paths. Its `release-review.json` is deliberately not the approved
+`public-release.json`: notice discovery and matching hashes do not establish
+license compatibility, full build reproduction or publication permission.
+
+The first run retained 2,213 notice/recipe files (8,806,705 bytes). A targeted
+private-host/path/key-marker check found no matches in that draft; this is not
+a comprehensive privacy audit of every nested upstream archive.
 
 Keep the corresponding-source archive as a separate release asset, outside
 `public-materials/` in the runtime build context. That folder is for the small
@@ -191,8 +210,10 @@ the scan finishes successfully. The safe-copy check generates its own short
 video on Linux, uses the normal conversion and validation workflow, then checks
 source and output hashes after recreating the container. It does not certify
 real-library replacements, cancellation or a public installation by itself.
-The scan reported 28 package findings (21 medium and seven low), no high or
-critical findings, and no fixed package versions. Review those findings and
+The earlier candidate scan reported 28 package findings (21 medium and seven low).
+The revised image's rescan reported 22 (16 medium and six low), with the six
+pip/wheel findings removed. Neither scan reported high or critical findings or
+listed fixed package versions. Review remaining findings and
 check coverage of manually bundled native libraries separately; an empty high
 severity list is not release clearance.
 Both tasks have read-only observers on the development dashboard. Pending means

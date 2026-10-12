@@ -36,10 +36,24 @@ Post-publication cleanup is being prepared from a read-only inventory. No files
 have been deleted. The [cleanup plan](release-cleanup.md) protects source/license
 materials, compact evidence, production history and rollback assets.
 
-One consolidated administrator-launched batch is staged to repeat safe-copy and
-cancellation lifecycle checks on the revised digest, collect its exact installed
-source/notices and record Docker references for later cleanup. Its observer is
-read-only. Completion will not automatically approve publication or cleanup.
+The consolidated batch passed all four revised-image lifecycle checks: safe-copy
+conversion, active-stage cancellation and history retention after recreation for
+both workflows. Source files stayed unchanged. The batch also collected installed
+dependency sources/notices and a read-only Docker inventory for later cleanup.
+
+The refreshed canonical source bundle covers 111 Ubuntu source versions and 332
+Rust crates, with no notice-discovery gaps. One Ubuntu source version came from
+the previously checksum-verified supplement; its descriptor signature remains
+unverified. The bundle SHA-256 is
+`da587f868087b0bba52b40257a9d56cd23641fbdc6cf97e24ae41a5cb3cffda7`.
+Privacy and redistribution review, final release materials and public-pull checks
+remain open. Passing these checks does not approve publication or cleanup.
+
+The compact image-materials draft now contains 2,213 notice/recipe files with
+verified hashes, source references and build pointers. The separate source
+archive is not copied into the image. Three new offline packaging tests passed;
+the preparation result is retained on the development dashboard. Final custom
+component notice/license review remains open.
 
 The installed app and library were not changed. The latest isolated GPU check
 confirmed that the installed app was stopped; it was not restarted by the test.
