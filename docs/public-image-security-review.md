@@ -25,6 +25,19 @@ and vulnerability identifiers confirms the six missing findings are the five
 pip findings and one wheel finding. Neither package has a finding in the new
 report. No high or critical findings were reported.
 
+The later notice-bearing image
+`sha256:20bceb9acd80f3bcf9e6a81312f4eede6d576b06fab978ab48e5da48f10c8c04`
+retains identical versions for all 148 installed packages and identical hashes
+for the three inventoried FFmpeg/readers. The build reused its runtime layers.
+This carries forward the earlier runtime findings; it is not described as a
+fresh security scan of the new digest. Remaining medium/low findings are retained
+in the preview disclosure, not suppressed or treated as fixed.
+
+The PyAV native-library provenance check now covers all 32 ELF code sections:
+26 match the upstream build and six match checksum-verified distribution RPMs
+with the collected source RPM identities. This strengthens source matching,
+not vulnerability detection or whole-file reproducible-build certification.
+
 This is a verified improvement, not full release clearance. Exact dependency
 materials have been refreshed and the revised image passed its generated-file
 service lifecycle. Custom native-library coverage and remaining findings still
