@@ -5,6 +5,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class QualifiedPublication(unittest.TestCase):
+    def test_draft_access_is_scoped_to_approved_job(self):
+        text=(ROOT/'.github/workflows/publish-qualified-image.yml').read_text()
+        defaults, job=text.split('jobs:',1)
+        self.assertIn('contents: read',defaults)
+        self.assertNotIn('contents: write',defaults)
+        self.assertIn('contents: write',job)
+        self.assertIn('environment: container-release',job)
+        self.assertIn('persist-credentials: false',job)
+        self.assertNotIn('gh release edit',job)
+
     def test_hosted_workflow_does_not_build_or_run_media(self):
         text=(ROOT/'.github/workflows/publish-qualified-image.yml').read_text()
         self.assertIn('runs-on: ubuntu-24.04',text)

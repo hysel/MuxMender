@@ -23,7 +23,9 @@ jobs:
     environment: container-release
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      # Draft releases are visible only with push access, even for downloads.
+      # Scoped to this browser-approved job; checkout never persists credentials.
+      contents: write
       packages: write
     env:
       VERSION: ${{ inputs.version }}

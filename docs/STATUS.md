@@ -2,6 +2,13 @@
 
 ## Current checkpoint: 12 October 2026
 
+The browser-approved publication reached GitHub but stopped at downloading the
+draft assets: the job had read-only repository permission. All four draft assets
+remain present with verified hashes; no registry upload occurred. The publication
+job now requests contents-write access behind the same browser approval, with
+checkout credentials disabled and all image/material hash checks unchanged.
+Four offline publication checks pass; the corrected live run remains pending.
+
 The clean-base public candidate completed runtime and generated NVIDIA image
 checks. It does not inherit the private image's nonfree FFmpeg fallback or ship
 another host's GPU qualification receipt. The shared conversion engine and
