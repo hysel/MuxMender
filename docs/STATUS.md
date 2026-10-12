@@ -24,11 +24,17 @@ Dependency review and anonymous-pull checks remain open.
 
 The public recipe now keeps pip/wheel installation in a separate build stage.
 The revised candidate passed runtime and generated NVIDIA image checks; its
-security rescan remains pending. The isolated active-stage
+security rescan completed with 22 findings (16 medium, six low). All six previous
+pip/wheel findings were absent; remaining findings and custom-library coverage
+still require review. The isolated active-stage
 cancellation test passed: observed native work stopped, the source was unchanged
 and cancelled history survived recreation on the earlier candidate. Production
 was not redeployed. See the
 [security review](public-image-security-review.md) for findings and remaining work.
+
+Post-publication cleanup is being prepared from a read-only inventory. No files
+have been deleted. The [cleanup plan](release-cleanup.md) protects source/license
+materials, compact evidence, production history and rollback assets.
 
 The installed app and library were not changed. The latest isolated GPU check
 confirmed that the installed app was stopped; it was not restarted by the test.
