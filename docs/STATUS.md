@@ -15,11 +15,12 @@ It reported 28 package findings: 21 medium and seven low, with no high or critic
 findings reported. None listed a fixed package version. These are scanner results,
 not a claim that every bundled native library is covered or that publication is
 approved. Dependency findings still require review.
-The generated full safe-copy conversion passed: its output was about 60% smaller
-and the original was retained. The lifecycle harness then failed because it
-looked for `result.json` instead of the engine's `status.json` receipt. That lookup
-is corrected with a regression test; the container-recreation check still needs
-a rerun. Dependency review and anonymous-pull checks also remain open.
+The corrected generated safe-copy lifecycle passed both conversion and container
+recreation. The source stayed unchanged, and the validated output hash and history
+were retained. The earlier receipt-filename failure remains in the append-only
+log; the successful rerun has separate receipts. These are generated-file checks,
+not real-library replacement, cancellation or public-installation certification.
+Dependency review and anonymous-pull checks remain open.
 
 The installed app and library were not changed. The latest isolated GPU check
 confirmed that the installed app was stopped; it was not restarted by the test.

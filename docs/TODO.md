@@ -29,6 +29,10 @@ A unit-test pass does not qualify every video or GPU.
 - [x] Collect matching dependency source archives and recover missing notice material.
 - [ ] Finish the source-and-license release bundle and its privacy review.
 - [ ] Produce a complete software inventory and run a dependency vulnerability scan.
+- [x] Run the exact-candidate dependency scan and retain its software inventory;
+  review of findings and manually bundled native-library coverage remains open.
+- [x] Verify generated safe-copy conversion, retained history and unchanged file
+  hashes after container recreation.
 - [ ] Verify a fresh safe-copy installation, cancellation and retained history.
 - [ ] Choose the publication runner, publish an immutable Docker tag, and verify an
   anonymous pull before announcing it. No public registry image is available yet.
