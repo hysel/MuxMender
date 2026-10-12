@@ -55,5 +55,14 @@ An interrupted job may need recovery or a retry; it doesn't necessarily resume
 at the exact frame where it stopped. Don't delete its work folder while the app
 is recovering it.
 
-Public image hosting is being planned. Until it is published, use the supplied
-release package—there isn't a public image address to pull yet.
+## Which image should I install?
+
+There is no published public Docker image yet. Use a locally built or supplied
+development package with its matching installation instructions. Don't guess a
+registry address, and don't use a one-shot research or preflight template as the
+everyday app. This guide explains the normal setup; it isn't a download announcement.
+
+When public images are available, the release page will give you an exact image
+tag and installation template. It will also provide third-party notices and
+source/build materials. You do not need those source archives in `/media` or
+`/output` to use the app.
