@@ -18,7 +18,8 @@ class PackageTests(unittest.TestCase):
         for name in ('patch_cuda_ffprobe','assemble_gpu_reader_bundle',
                 'benchmark_hdr_gpu_reader','benchmark_native_hdr_reader',
                 'benchmark_native_av1_reader','benchmark_real_av1_reader',
-                'benchmark_shared_gpu_reader','capture_reader_provenance_remote',
+                'benchmark_shared_gpu_reader','benchmark_shared_sdr_reader','benchmark_sdr_gpu_reader',
+                'run_sdr_reader_research','capture_reader_provenance_remote',
                 'qualify_hdr_gpu_remote','qualify_reader_controls_remote',
                 'qualify_shared_gpu_reader_remote','stage_reader_integration'):
             with self.subTest(tool=name):

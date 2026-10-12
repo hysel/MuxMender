@@ -367,3 +367,82 @@ frame by frame. A synthetic Windows microbenchmark (20,000 static metadata
 records, median of three runs, identical results asserted) measured 0.385 seconds
 without reuse and 0.0364 seconds with reuse, about 90.5% less time for this
 operation. This is not an end-to-end conversion performance claim.
+
+## SDR reader integration follow-up — 12 October 2026
+
+The first generated SDR AV1 10-bit comparison on the existing RTX 5050 passed:
+three alternating complete CPU/GPU read pairs of a 61-second 1080p fixture,
+1,464 exactly matching records in every pair, and all seven deliberately damaged
+controls rejected by the GPU reader. Healthy elementary-stream controls passed
+on both readers. Median reader time was 8.5215 seconds on FFprobe 8.0.1 CPU and
+1.9731 seconds on the existing native GPU reader (76.85% less reader time).
+The generated source hash stayed unchanged and 108,713,503 bytes of temporary
+fixtures/evidence were removed after retaining the compact report.
+
+The repeat with the exported FFprobe 9.0.2 CPU build also passed exact field
+equality and all seven damaged controls: CPU median 8.5698 seconds, GPU 1.9685
+seconds (77.03% less reader time). Generated sources were unchanged and temporary
+fixtures/evidence were removed. These exported-runtime results are not a fresh
+public-image installation test, real full-length source qualification, other
+codec/pixel coverage, or end-to-end conversion speedup. No production SDR receipt
+is installed; shared dispatch and persistent host receipt support are unreleased.
+
+The 8-bit AV1 control also passed (77.02% less reader time). The first 8/10-bit
+HEVC SDR controls matched healthy frames but accepted deliberately damaged
+elementary streams, so neither scope is qualified. The follow-up uses the
+existing HDR native reader's slice-thread scheduling and explicitly verifies
+nonempty, equal healthy elementary-stream frame counts before corruption tests.
+These failures remain in the dashboard; they are not converted into passes by
+the healthy-frame timing results.
+
+The follow-up isolated the raw HEVC issue: healthy raw HEVC emitted zero GPU
+frames despite a successful exit. Raw HEVC now falls back to the CPU reader;
+containerized HEVC is tested separately. Its healthy Matroska control emitted
+50 frames on both readers, and the 1,464-frame comparison remained exact (CPU
+7.6221 seconds versus GPU 2.2171 seconds). Six packet-damage controls were
+rejected by both readers; an arbitrary late-header mutation was accepted by
+both. This remains a failed qualification, not a production speed claim. The
+next control targets the specified HEVC forbidden-zero bit in an actual VCL NAL
+instead of assuming an arbitrary packet offset always produces invalid syntax.
+
+The completed follow-up found that the invalid terminal header silently removed
+one frame on both readers (49 rather than 50). The benchmark now records decoder
+error handling separately from known-fixture completeness. The unchanged
+production frame-completeness requirement must not be replaced by exit-code
+checks. All four generated combinations passed these combined controls: HEVC
+10-bit saved 70.92% of reader time, HEVC 8-bit 67.51%, AV1 10-bit 76.76%, and
+AV1 8-bit 77.03%. This does not mean every malformed packet produces a decoder
+error; the terminal-header case is rejected by completeness instead.
+
+A serial read-only complete-source SDR comparison has started against the
+approved existing AV1 8-bit source. It hashes the source before and after,
+compares every requested frame field exactly, and retains the generated damage
+controls. Only explicitly created research artifacts are cleaned up. Full-source
+results, installed-image dispatch and end-to-end benefit are still pending;
+generated fixture results alone cannot enable a production receipt.
+
+The full-length 1080p AV1 8-bit SDR comparison subsequently passed on the RTX
+5050: 136,818 frame records matched exactly, including timestamps, geometry,
+scan flags and all requested color fields. FFprobe 9.0.2 CPU took 1,620.7709
+seconds; the qualified native GPU artifact took 174.5022 seconds (89.23% less
+reader time, about 24 minutes saved for this one scan). The 8,935,545,571-byte
+source hash was unchanged, all seven damage controls were rejected, and
+173,842,461 bytes of generated fixtures and frame evidence were cleaned up after
+retaining the report. The reader hash was independently rechecked afterward.
+
+This qualifies only the measured AV1 8-bit SDR Matroska frame-reader scope on
+the recorded GPU/driver/binary binding. A private receipt bundle preserves the
+three earlier HDR scopes and adds this scope.
+The 89.23% figure is not an end-to-end conversion speedup.
+
+The generated shared-workflow comparison passed at unchanged 94 mean / 90 p5
+quality floors: CPU readers took 65.63 seconds and GPU readers 58.46 seconds
+(10.92% less). A separate isolated check then used the public v60 runtime with
+updated shared code mounted read-only and the actual root-owned host receipt.
+That loader selected GPU reads for both source and output. CPU took 64.85899
+seconds and GPU 58.06804 seconds (10.47% less), with all 1,464 frame records
+exactly equal. Both outputs were 39,572,560 bytes, with identical quality scores
+(99.99806 mean, 100 p5), and the generated source remained unchanged. Cleanup
+removed 146,546,042 temporary bytes. Neither run includes codec-discovery trials
+or predicts a universal library speedup. No media library was mounted in the
+isolated check. A final packaged-image smoke check remains before release.

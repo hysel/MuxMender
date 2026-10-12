@@ -27,6 +27,11 @@ tools/*
 !tools/benchmark_native_av1_reader.py
 !tools/benchmark_real_av1_reader.py
 !tools/benchmark_shared_gpu_reader.py
+!tools/benchmark_sdr_gpu_reader.py
+!tools/benchmark_shared_sdr_reader.py
+!tools/extend_host_reader_bundle.py
+!tools/stage_sdr_host_check.py
+!tools/run_sdr_reader_research.py
 !tools/capture_reader_provenance_remote.py
 !tools/qualify_hdr_gpu_remote.py
 !tools/qualify_reader_controls_remote.py
@@ -99,3 +104,4 @@ tools/*
 !tools/audit_crate_notices.py
 !tools/recover_crate_notices.py
 !tools/assemble_release_materials.py
+!tools/prepare_v61_candidate.py

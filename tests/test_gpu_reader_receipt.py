@@ -1,9 +1,53 @@
 import copy
 import unittest
-from gpu_reader_receipt import qualified_scope
+from gpu_reader_receipt import qualified_scope,sdr_comparison_pair
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_sdr_comparison_normalization_cannot_promote_generated_results(self):
+        real,controls=self.sdr_evidence()
+        report=dict(scope='Read-only complete approved SDR source and generated controls',
+            controls_passed=True,source_unchanged=True,binary_sha256=real['binary_sha256'],
+            source=real['source'],codec='av1',pixel_format='yuv420p',
+            exact_pairwise_proof=dict(frames=240,every_field_exact=True,frame_timestamps_exact=True),
+            measurements=[dict(backend=backend,strict_success=True,error=None,stderr_bytes=0,seconds=seconds)
+                          for backend,seconds in [('cpu',20),('cuda',5)]],
+            raw_healthy=controls['healthy'],corruption=controls['corruption'],false_passes=[])
+        pair=sdr_comparison_pair(report,'matroska,webm')
+        self.assertEqual(qualified_scope(**pair)['time_reduction_percent'],75)
+        for field,value in [('scope','Generated SDR controls only'),('controls_passed',False),
+                            ('source_unchanged',False),('measurements',[]),('source_container','mov,mp4'),
+                            ('exact_pairwise_proof',{}),('error','incomplete')]:
+            altered=copy.deepcopy(report);altered[field]=value
+            with self.assertRaises(ValueError):sdr_comparison_pair(altered,'matroska,webm')
+
+    def sdr_evidence(self):
+        real,controls=self.evidence()
+        real['source'].update(pix_fmt='yuv420p',container='matroska,webm')
+        real['full_pairwise_proof'].update(mode='sdr',every_field_exact=True)
+        real['full_pairwise_proof'].pop('hdr_metadata_exact')
+        controls.update(pixel_format='yuv420p',healthy={key:dict(strict_success=True,frames=50) for key in ('cpu','cuda')},
+            corruption=[dict(case=name,cuda=dict(strict_success=False)) for name in
+                ('early-header','early-entropy','middle-header','middle-entropy','late-header','late-entropy','truncated')])
+        return real,controls
+
+    def test_sdr_scope_needs_exact_full_source_and_distributed_controls(self):
+        real,controls=self.sdr_evidence()
+        result=qualified_scope(real,controls)
+        self.assertEqual(result['hdr_modes'],['sdr'])
+        self.assertEqual(result['containers'],['matroska','webm'])
+        self.assertEqual(result['pixel_format'],'yuv420p')
+        for mutate in (lambda r,c:r['full_pairwise_proof'].pop('every_field_exact'),
+                       lambda r,c:r['source'].pop('container'),
+                       lambda r,c:r['source'].update(container='hevc'),
+                       lambda r,c:c.update(pixel_format='yuv420p10le'),
+                       lambda r,c:c['healthy']['cuda'].update(frames=0),
+                       lambda r,c:c['healthy']['cuda'].update(frames=49),
+                       lambda r,c:c['corruption'].pop(),
+                       lambda r,c:r.pop('full_reads')):
+            real,controls=self.sdr_evidence();mutate(real,controls)
+            with self.assertRaises(ValueError):qualified_scope(real,controls)
+
     def evidence(self):
         read=dict(strict_success=True,returncode=0,error='',seconds=20)
         real=dict(binary_sha256='a'*64,source_changed=False,

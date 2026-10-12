@@ -2,6 +2,44 @@
 
 ## Current checkpoint: 12 October 2026
 
+Performance integration work is active, not released: SDR now has an explicit
+shared GPU-reader dispatch path, but it requires a separate SDR scope. Existing
+HDR qualification does not enable it. The public reader still has HEVC/AV1
+decoder support only; H.264 needs a separately built and checked artifact.
+An optional root-owned host receipt can be loaded from
+`/opt/muxmender-host-qualification/qualification.json`, checked against the
+image's exact reader hash, GPU, driver and visibility. This retains private
+host evidence without putting it in a public image or trusting writable output.
+The completed generated matrix now covers AV1 and HEVC, each at 8 and 10 bits,
+with 67–77% less reader time. Decoder errors and dropped-frame detection are
+reported separately. Generated fixtures alone do not grant a production scope.
+
+The full-source AV1 8-bit SDR comparison has since passed: 136,818 exact frame
+records, unchanged source hash, all damage controls rejected, and reader time
+reduced from 27m 1s to 2m 55s (89.23%). A private bundle now combines this measured
+Matroska SDR scope with the existing three HDR scopes.
+The generated shared-workflow comparison also passed: encoding, full validation
+and quality scoring took 65.63 seconds with CPU readers and about 58.46 seconds
+with GPU readers, a 10.92% reduction at unchanged 94/90 quality thresholds. This
+short-fixture timing excludes source generation and codec-discovery trials; it
+is not a projected speedup for every library file. The isolated published-image
+runtime check also passed with the updated shared code mounted read-only: the
+real host-receipt loader selected GPU reads, all 1,464 frame records matched,
+and unchanged quality checks passed. CPU and GPU workflows took 64.86 and 58.07
+seconds respectively (10.47% less). The run removed 146,546,042 temporary bytes.
+The private receipt is installed for the isolated check, not enabled in production.
+The final image has now also passed qualification; no deployment occurred.
+
+The v61 code-only candidate is built and qualified. It inherits the exact
+published v60 digest, so runtime dependencies are unchanged. The runtime suite
+passed 227 tests with nine skips. Generated GPU checks and final host-reader
+checks passed without mounting development application code. The final shared
+workflow was 10.59% faster, with identical quality scores and exact frame records.
+The initial launcher used a disallowed localhost API address and received 403;
+the corrected launcher resumed against the same image without rebuilding.
+Image ID: `sha256:a2cd06a2d83e3a32ed0557edcb3b787cde832c4d8e0dc4e360df69ed848c255c`.
+Publication to GHCR is still pending. Production remains unchanged.
+
 Next-update UI change: GPU sharing saves directly from its toggle, without an
 Apply button. Saving feedback, duplicate-submit protection, a bounded request,
 failure rollback and server reconciliation are tested with mocked requests.

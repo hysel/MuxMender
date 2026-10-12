@@ -8,10 +8,65 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from gpu_frame_reader import select_reader,load_qualification,hdr_reader_request,visibility_matches
+from gpu_frame_reader import select_reader,load_qualification,hdr_reader_request,sdr_reader_request,visibility_matches,SDR_FRAME_FIELDS
 
 
 class ReaderTests(unittest.TestCase):
+    def test_sdr_requires_separate_evidence_and_preserves_cpu_fields(self):
+        source=Path('input.mkv');video=self.video();receipt=self.qualification()
+        for profile,expected in [(None,'cpu'),(receipt,'cpu')]:
+            command,options,plan=sdr_reader_request('ffprobe',source,video,600,profile,2,container='matroska,webm')
+            self.assertEqual(plan['backend'],expected)
+            self.assertEqual(command,['ffprobe','-v','error','-threads','2','-select_streams','V:0',
+                '-show_frames','-show_entries','frame='+SDR_FRAME_FIELDS,'-of','compact=p=0','input.mkv'])
+            self.assertEqual(options,{})
+        receipt['scopes'][0]['hdr_modes']=['sdr']
+        command,options,plan=sdr_reader_request('ffprobe',source,video,600,receipt,2,container='matroska,webm')
+        self.assertEqual(plan['backend'],'cuda');self.assertIn('-err_detect',command)
+        self.assertEqual(command[command.index('-thread_type')+1],'slice')
+        self.assertEqual(options['env']['MUXMENDER_RESEARCH_CUDA_READER'],'1')
+        self.assertNotIn('-read_intervals',command)
+        self.assertIn('frame='+SDR_FRAME_FIELDS,command)
+        for container in ('avi','hevc',None):
+            self.assertEqual(sdr_reader_request('ffprobe',source,video,600,receipt,container=container)[2]['backend'],'cpu')
+        receipt['scopes'][0]['containers']=['matroska','webm']
+        self.assertEqual(sdr_reader_request('ffprobe',source,video,600,receipt,container='matroska,webm')[2]['backend'],'cuda')
+        self.assertEqual(sdr_reader_request('ffprobe',source,video,600,receipt,container='mov,mp4')[2]['backend'],'cpu')
+        receipt['scopes'][0]['containers']=[{}]
+        self.assertEqual(sdr_reader_request('ffprobe',source,video,600,receipt,container='matroska')[2]['backend'],'cpu')
+
+    def test_persistent_receipt_is_bound_to_shipped_binary(self):
+        binary=b'qualified-binary';receipt=dict(schema=1,binary_sha256=hashlib.sha256(binary).hexdigest(),
+            adapter=dict(uuid='GPU-neutral',driver='test-driver'),visibility={k:None for k in
+                ('CUDA_VISIBLE_DEVICES','NVIDIA_VISIBLE_DEVICES','CUDA_DEVICE_ORDER')})
+        def read(path,limit):
+            if path.name=='ffprobe-cuda':return binary
+            if path.parent==Path('/opt/muxmender-readers'):raise FileNotFoundError()
+            self.assertEqual(path,Path('/opt/muxmender-host-qualification/qualification.json'))
+            return json.dumps(receipt).encode()
+        with patch('gpu_frame_reader.sys.platform','linux'),patch('gpu_frame_reader.trusted_file',side_effect=read), \
+             patch('gpu_frame_reader.os.access',return_value=True),patch.dict('gpu_frame_reader.os.environ',{},clear=True), \
+             patch('encoder_capabilities.nvidia_adapters',return_value=[receipt['adapter']]):
+            self.assertIsNotNone(load_qualification())
+            receipt['binary_sha256']='0'*64
+            self.assertIsNone(load_qualification())
+
+    def test_sdr_workflow_uses_qualified_reader_and_propagates_decode_failure(self):
+        from auto_optimize import Workflow
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'neutral.mkv';source.touch()
+            args=SimpleNamespace(hdr_mode=None,ffprobe='ffprobe',timeout=120)
+            receipt=self.qualification();receipt['scopes'][0]['hdr_modes']=['sdr']
+            data=dict(streams=[dict(self.video(),codec_type='video',index=0)],format=dict(duration='600',format_name='matroska,webm'))
+            workflow=Workflow(args,root,lambda:None)
+            with patch('gpu_frame_reader.load_qualification',return_value=receipt),patch.object(workflow,'probe',return_value=data), \
+                 patch.object(workflow,'decoder_options',return_value=[]),patch.object(workflow,'reader_input_options',return_value=[]), \
+                 patch('auto_optimize.run_probe',side_effect=subprocess.CalledProcessError(1,['reader'])) as run:
+                with self.assertRaises(subprocess.CalledProcessError):workflow.frame_file(source,'test',data['format'])
+                run.assert_called_once()
+                self.assertEqual(run.call_args.args[0][0],receipt['binary'])
+                self.assertIn('GPU reader',run.call_args.args[2])
+
     def test_only_the_attested_sole_uuid_and_all_are_equivalent_selectors(self):
         expected=dict(CUDA_VISIBLE_DEVICES=None,NVIDIA_VISIBLE_DEVICES='all',CUDA_DEVICE_ORDER=None)
         current=dict(expected,NVIDIA_VISIBLE_DEVICES='GPU-neutral')
@@ -53,7 +108,7 @@ class ReaderTests(unittest.TestCase):
         self.assertNotIn('-read_intervals',command)
 
     def test_missing_native_container_is_cpu_routing_not_video_rejection(self):
-        for container in ('avi','asf',None):
+        for container in ('avi','asf','hevc',None):
             command,options,plan=hdr_reader_request('ffprobe',Path('input.mkv'),self.video(),600,
                 'hdr10',self.qualification(),container=container)
             self.assertEqual(command[0],'ffprobe')

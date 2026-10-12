@@ -31,7 +31,9 @@ def runtime(version, public_runtime=False):
                             'tv1080',encoder='hevc_nvenc')
     assert options[-2:]==['-cq','0']
     sys.path.insert(0,'/qualification')
-    patterns=('quality_profiles','quality_automation','quality_profile_qualification',
+    patterns=('gpu_frame_reader','gpu_reader_receipt','host_reader_qualification',
+              'sdr_reader_benchmark','gpu_sharing_autosave_ui',
+              'quality_profiles','quality_automation','quality_profile_qualification',
               'real_quality_qualification','sampling_timing_edges','reference_sampling',
               'finished_cleanup','queue_action_status','queue_cancellation','queue_sizes_ui','remove_queued_ui','workbench',
               'control_service','copy_approval','copy_approval_ui','release_monitor','job_scheduling_benchmark','iso_container_recovery','aac_priming','staged_preflight',

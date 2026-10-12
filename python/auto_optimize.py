@@ -631,11 +631,12 @@ class Workflow:
     def frame_file(self, source, label, metadata=None):
         metadata=metadata if metadata is not None else self.probe(source)['format']
         path = self.directory/(label+'-frames.jsonl')
+        from gpu_frame_reader import load_qualification
+        if not self.frame_reader_checked and float(metadata['duration'])>=60:
+            self.frame_reader_qualification=load_qualification()
+            self.frame_reader_checked=True
         if self.hdr_mode:
-            from gpu_frame_reader import load_qualification,hdr_reader_request
-            if not self.frame_reader_checked and float(metadata['duration'])>=60:
-                self.frame_reader_qualification=load_qualification()
-                self.frame_reader_checked=True
+            from gpu_frame_reader import hdr_reader_request
             video=main_video(self.probe(source)) if self.frame_reader_qualification else None
             command,options,plan=hdr_reader_request(self.args.ffprobe,source,video,metadata['duration'],
                 self.hdr_mode,self.frame_reader_qualification,[*self.reader_input_options(source),*self.decoder_options(source)],metadata.get('format_name'))
@@ -650,10 +651,16 @@ class Workflow:
             return path
         # Bound CPU contention between queue workers. Do not drop side-data or
         # frames: identical validation fields and full EOF draining are retained.
-        run_probe([self.args.ffprobe, '-v', 'error', '-threads', str(self.performance_threads()), '-select_streams', 'V:0', '-show_frames',
-                '-show_entries', 'frame=best_effort_timestamp_time,width,height,pix_fmt,sample_aspect_ratio,interlaced_frame,top_field_first,repeat_pict,color_primaries,color_transfer,color_space,color_range',
-                '-of', 'compact=p=0', *self.reader_input_options(source),*self.decoder_options(source),str(source)],path,'Checking frame timing: '+label,
-                self.args.timeout,self.guard,float(metadata['duration']),float(metadata.get('start_time',0)))
+        from gpu_frame_reader import sdr_reader_request
+        from gpu_admission import stage_context
+        video=main_video(self.probe(source)) if self.frame_reader_qualification else None
+        command,options,plan=sdr_reader_request(self.args.ffprobe,source,video,metadata['duration'],
+            self.frame_reader_qualification,self.performance_threads(),
+            [*self.reader_input_options(source),*self.decoder_options(source)],metadata.get('format_name'))
+        progress('Selecting frame inspection backend',detail=plan['reason'])
+        with stage_context(video):
+            run_probe(command,path,'Checking frame timing: '+label+' · '+('GPU' if plan['backend']=='cuda' else 'CPU')+' reader',
+                      self.args.timeout,self.guard,float(metadata['duration']),float(metadata.get('start_time',0)),**options)
         if path.with_suffix(path.suffix+'.stderr').stat().st_size:
             raise ValueError('Frame decoder reported errors: '+label)
         if any(row.get('best_effort_timestamp_time') in (None,'N/A') for row in compact_rows(path,'width')):
