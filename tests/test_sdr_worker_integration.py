@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -32,6 +33,12 @@ class SDRWorkerIntegrationTests(unittest.TestCase):
         self.workflow.hdr_quality_budget.threads.assert_not_called()
 
     def setUp(self):
+        # Graph assertions must not depend on the test host's CPU quota or
+        # inherited user preferences. Exercise smaller budgets separately.
+        self.capacity_patch=patch('cpu_allocation.capacity',return_value=dict(effective_cpus=8,logical_cpus=8))
+        self.capacity_patch.start();self.addCleanup(self.capacity_patch.stop)
+        self.preference_patch=patch.dict(os.environ,{'MUXMENDER_CPU_MODE':'automatic'})
+        self.preference_patch.start();self.addCleanup(self.preference_patch.stop)
         self.temp=tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
@@ -98,6 +105,19 @@ class SDRWorkerIntegrationTests(unittest.TestCase):
         self.workflow.performance_video=dict(self.profile,pix_fmt='yuv420p10le')
         self.assertEqual(self.workflow.performance_threads(),2)
         self.workflow.worker_budget.threads.assert_not_called()
+
+    def test_scoring_respects_actual_allocation_and_user_ceiling(self):
+        self.workflow.probe=Mock(return_value={'streams':[self.profile]})
+        def execute(*args,**kwargs):
+            (self.root/'check-vmaf.json').write_text(json.dumps({'frames':[{'metrics':{'vmaf':95}}]}))
+        self.workflow.execute=Mock(side_effect=execute)
+        for cpus,mode,ceiling,expected in ((4,'automatic','4',2),(2,'automatic','4',1),(8,'custom','1',1),(8,'shared','4',2)):
+            with self.subTest(cpus=cpus,mode=mode),patch('cpu_allocation.capacity',return_value=dict(effective_cpus=cpus,logical_cpus=8)),patch.dict(os.environ,{'MUXMENDER_CPU_MODE':mode,'MUXMENDER_SCORING_CEILING':ceiling}):
+                result=self.workflow.quality(self.root/'reference.mkv',self.root/'output.mkv','check',1,10)
+                command=self.workflow.execute.call_args.args[0]
+                self.assertIn(f'libvmaf=n_threads={expected}:',command[command.index('-filter_complex')+1])
+                self.assertTrue(result['passed'])
+                self.assertEqual(result['mean'],95)
 
     def test_av1_scoring_uses_separate_budget_and_keeps_decoder_scope(self):
         self.profile=dict(self.profile,codec_name='av1')
