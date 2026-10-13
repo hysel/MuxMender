@@ -1,5 +1,10 @@
 # TrueNAS NVIDIA bootstrap
 
+Current preflight uses the pinned v61 MuxMender image with FFmpeg 9.0.2.
+The older deployment notes below are historical. For current app installation,
+see [APP-SETUP.md](APP-SETUP.md); for runtime migration limits, see
+[the FFmpeg migration notes](../../docs/ffmpeg-runtime-migration.md).
+
 Prepared for TrueNAS 25.10.7, muxmender UID/GID 3005, and the discovered RTX 5050 UUID.
 This is a one-shot FFmpeg preflight, not the full MuxMender service. No Python,
 dashboard, media scan, or media conversion is launched. Four sequential checks
@@ -16,7 +21,7 @@ test HEVC/AV1 encoder initialization with 8/10-bit generated frames.
 
 2. Apps > Discover Apps > three-dot menu > Install via YAML. Use app name
    `muxmender-preflight` and paste `nvidia-preflight.yaml`.
-3. Installation downloads the LinuxServer FFmpeg image. No host packages or
+3. Installation downloads the pinned MuxMender FFmpeg 9 image. No host packages or
    drivers are changed. Existing TrueNAS NVIDIA runtime support is required;
    do not install the toolkit with host apt if startup fails.
 4. Watch the app logs. A successful run prints four PASS lines and exits 0.

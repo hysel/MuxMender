@@ -81,7 +81,7 @@ class PackageTests(unittest.TestCase):
         (root/'evidence.json').write_text(json.dumps(dict(pairs=[dict(real=real,controls=controls)])))
         (root/'source').mkdir()
         checksums={}
-        for name in ('ffmpeg-8.0.1.tar.xz','nv-codec-headers-n13.0.19.0.tar.gz',
+        for name in ('ffmpeg-9.0.2.tar.xz','nv-codec-headers-n13.0.19.0.tar.gz',
                      'patch_cuda_ffprobe.py','COPYING.LGPLv2.1','LICENSE.md'):
             content=b'synthetic artifact '+name.encode()
             (root/'source'/name).write_bytes(content)

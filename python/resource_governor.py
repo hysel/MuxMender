@@ -125,6 +125,14 @@ def parallel_sdr_profile(video):
             video.get('color_transfer') not in ('smpte2084','arib-std-b67'))
 
 
+def parallel_sdr_quality_profile(video):
+    """Scoring-only qualification; does not widen decoder/reader scope."""
+    return parallel_sdr_profile(video) or (
+        video.get('codec_name')=='av1' and video.get('pix_fmt')=='yuv420p'
+        and video.get('field_order')=='progressive'
+        and video.get('color_transfer') not in ('smpte2084','arib-std-b67'))
+
+
 class SDRWorkerBudget:
     """Cache brief, read-only allocation samples; never add a GPU tool invocation."""
     def __init__(self):
@@ -184,6 +192,10 @@ class Governor:
 
     def sample(self, *, include_gpu=True):
         values={}
+        values['host_cpus']=os.cpu_count() or 1
+        # Only a dedicated container provides useful app-versus-host accounting.
+        # A native root cgroup measures other applications too.
+        values['app_cpu_scope']=bool(Path('/.dockerenv').exists() or Path('/run/.containerenv').exists())
         values.update(container_task_usage())
         try:
             counters=list(map(int,Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))

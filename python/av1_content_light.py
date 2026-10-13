@@ -101,7 +101,7 @@ def available():
     """Optional packet-copy dependency; ordinary AV1 validation remains usable."""
     try:
         import av
-        return av.__version__=='18.1.0'
+        return av.__version__=='19.0.0'
     except ImportError:
         return False
 

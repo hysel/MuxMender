@@ -58,10 +58,13 @@ def interpret(text,expected_checksum=None,waiting_phase='Waiting for admin build
     if status=='passed':return dict(state='completed',phase='Image smoke tests passed',finished=time.time(),detail='Separate image built; production app and queue unchanged'),True
     if status=='failed':return dict(state='failed',phase='Image build or smoke check failed',finished=time.time(),detail='Exit code: '+record.get('exit_code','unknown')),True
     if status in ('building','running'):
+        if record.get('unit') not in ('active','activating','inactive','failed','deactivating'):
+            return dict(state='stale',phase=record.get('phase','Build status unavailable'),
+                        detail='Service state was not reported; execution is unconfirmed'),False
         active=record.get('unit') in ('active','activating')
         values=dict(state='running' if active else 'failed',phase=record.get('phase','Building image'),
                     detail='Read-only TrueNAS build observer' if active else 'Build unit is not active; last status is unconfirmed')
-        if active and record.get('phase')=='Collecting exact Ubuntu sources and license notices' and record.get('source_progress'):
+        if active and record.get('source_progress'):
             try:
                 progress=json.loads(record['source_progress'])
                 done,total=progress['completed'],progress['total']

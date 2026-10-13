@@ -106,3 +106,9 @@ tools/*
 !tools/assemble_release_materials.py
 !tools/prepare_v61_candidate.py
 !tools/promote_stable_image.py
+!tools/benchmark_encode_feeding.py
+!tools/qualify_gpu_encode_input.py
+!tools/qualify_full_encode_input.py
+!tools/benchmark_sdr_validation.py
+!tools/qualify_full_vmaf_threads.py
+!tools/qualify_resource_release.py

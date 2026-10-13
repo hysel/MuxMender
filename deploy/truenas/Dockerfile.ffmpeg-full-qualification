@@ -22,7 +22,7 @@ COPY tools/ /opt/qualification/tools/
 COPY docs/ /opt/qualification/docs/
 COPY deploy/ /opt/qualification/deploy/
 COPY AGENTS.md README.md pyproject.toml /opt/qualification/
-RUN mkdir -p /opt/qualification/runtime && python3 -m pip install --no-deps --target /opt/qualification/runtime /build/source/av-18.1.0-cp311-abi3-manylinux_2_28_x86_64.whl && dpkg-query -W > /opt/qualification/build-packages.txt
+RUN mkdir -p /opt/qualification/runtime && python3 -m pip install --no-deps --target /opt/qualification/runtime /build/source/av-19.0.0-cp312-abi3-manylinux_2_28_x86_64.whl && dpkg-query -W > /opt/qualification/build-packages.txt
 ENV PYTHONPATH=/opt/qualification/python:/opt/qualification/runtime PYTHONDONTWRITEBYTECODE=1
 USER 3005:3005
 ENTRYPOINT ["python3", "-B", "/opt/qualification/tools/qualify_ffmpeg_full.py"]

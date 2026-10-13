@@ -135,7 +135,7 @@ def assemble(remote,key,supplement,output,reports,collected_root=None,omit_media
                     if excluded:transformations.append(dict(path=relative,original_sha256=digest(path),
                         public_sha256=digest(public),excluded_media_count=excluded,source_code_changed=False))
             for name in ('fel-dovi-submodule.tar.gz','felbaker-1.0.0.tar.gz','dovi-tool-2.3.3.tar.gz',
-                         'hdr10plus-tool-1.7.2.tar.gz','pyav-18.1.0.tar.gz','pyav-ffmpeg-8.1.2-1.tar.gz',
+                         'hdr10plus-tool-1.7.2.tar.gz','pyav-19.0.0.tar.gz','pyav-ffmpeg-9.0.2-1.tar.gz',
                          'almalinux-8.9-repomd.xml','almalinux-8.9-source-primary.xml.gz'):
                 path=supplement/name;relative='upstream/'+name
                 public,excluded=code_only_archive(path,output/'code-only'/relative) if omit_media_fixtures else (path,0)

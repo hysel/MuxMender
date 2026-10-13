@@ -99,6 +99,21 @@ class SDRWorkerIntegrationTests(unittest.TestCase):
         self.assertEqual(self.workflow.performance_threads(),2)
         self.workflow.worker_budget.threads.assert_not_called()
 
+    def test_av1_scoring_uses_separate_budget_and_keeps_decoder_scope(self):
+        self.profile=dict(self.profile,codec_name='av1')
+        self.workflow.performance_video=self.profile
+        self.workflow.probe=Mock(return_value={'streams':[self.profile]})
+        self.workflow.quality_worker_budget=Mock()
+        self.workflow.quality_worker_budget.threads.return_value=4
+        self.assertEqual(self.workflow.performance_threads(),2)
+        def execute(command,*args,**kwargs):
+            (self.root/'check-vmaf.json').write_text(json.dumps({'frames':[{'metrics':{'vmaf':95}}]}))
+        self.workflow.execute=Mock(side_effect=execute)
+        result=self.workflow.quality(self.root/'reference.mkv',self.root/'output.mkv','check',1,10)
+        command=self.workflow.execute.call_args.args[0]
+        self.assertIn('libvmaf=n_threads=4:',command[command.index('-filter_complex')+1])
+        self.assertTrue(result['passed'])
+
 
 if __name__ == '__main__':
     unittest.main()

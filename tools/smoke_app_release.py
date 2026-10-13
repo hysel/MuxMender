@@ -16,13 +16,19 @@ def runtime(version, public_runtime=False):
     assert app_api.describe()['app_version'] == version
     assert subprocess.check_output(['ffmpeg','-version'],text=True,stderr=subprocess.STDOUT).startswith('ffmpeg version 9.0.2 ')
     assert subprocess.check_output(['ffprobe','-version'],text=True,stderr=subprocess.STDOUT).startswith('ffprobe version 9.0.2 ')
+    import av
+    assert av.__version__ == '19.0.0'
+    assert av.library_versions['libavcodec'][0] == 63, 'PyAV still loads a pre-FFmpeg-9 codec library'
+    reader=Path('/opt/muxmender-readers/ffprobe-cuda')
+    if reader.exists():
+        assert subprocess.check_output([str(reader),'-version'],text=True,stderr=subprocess.STDOUT).startswith('ffprobe version 9.0.2 '), 'Custom reader still uses an older FFmpeg runtime'
     if public_runtime:
         assert not Path('/usr/local/bin/ffmpeg').exists(), 'Public image must not inherit the nonfree fallback'
         assert not Path('/usr/local/bin/ffprobe').exists(), 'Public image must not inherit the nonfree fallback'
         assert not Path('/opt/muxmender-readers/qualification.json').exists(), 'Public image must not ship a private GPU receipt'
         assert not Path('/opt/muxmender-readers/evidence.json').exists(), 'Public image must not ship private reader evidence'
-    else:
-        assert subprocess.check_output(['/usr/local/bin/ffmpeg','-version'],text=True,stderr=subprocess.STDOUT).startswith('ffmpeg version 8.0.1 ')
+    for legacy_path in ('/usr/local/bin/ffmpeg', '/usr/local/bin/ffprobe'):
+        assert not Path(legacy_path).exists(), 'Image must not retain a legacy media executable'
     assert 'MuxMender' in HTML and 'id="terminal-style"' in HTML
     assert 'id="quality-gate-profile"' in HTML
     assert quality_profiles.profile('balanced')['mean'] == 94
@@ -38,7 +44,9 @@ def runtime(version, public_runtime=False):
               'finished_cleanup','queue_action_status','queue_cancellation','queue_sizes_ui','remove_queued_ui','workbench',
               'control_service','copy_approval','copy_approval_ui','release_monitor','job_scheduling_benchmark','iso_container_recovery','aac_priming','staged_preflight',
               'av1_intermediate_qualification','approved_copy_publication','batch_performance_report',
-              'source_audio_preflight','dts_terminal_duration','activity_reports','ffmpeg9_release_package')
+              'source_audio_preflight','dts_terminal_duration','activity_reports','ffmpeg9_release_package',
+              'cpu_allocation','resource_yield','sdr_worker_integration','quality_thread_budget',
+              'gpu_encode_input','restart_recovery','restart_service','ffmpeg9_runtime_audit')
     suite=unittest.TestSuite(unittest.defaultTestLoader.discover('/qualification/tests',
         pattern='test_'+name+'.py') for name in patterns)
     result=unittest.TextTestRunner(verbosity=1).run(suite)

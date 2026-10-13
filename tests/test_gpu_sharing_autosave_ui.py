@@ -11,7 +11,7 @@ class GpuSharingAutosaveTests(unittest.TestCase):
         self.assertNotIn('id="save-gpu-yield"', HTML)
         self.assertIn('id="gpu-yield-feedback" role="status" aria-live="polite"', HTML)
         self.assertIn('aria-describedby="gpu-yield-help gpu-yield-feedback" disabled', HTML)
-        self.assertIn("['resource-profile','gpu-yield'].includes(action)", SCRIPT)
+        self.assertIn("['resource-profile','gpu-yield','cpu-allocation'].includes(action)", SCRIPT)
 
     @unittest.skipUnless(shutil.which('node'), 'Node required')
     def test_save_failure_poll_races_and_external_changes(self):

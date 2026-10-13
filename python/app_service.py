@@ -153,7 +153,7 @@ def main():
             else:
                 worker=subprocess.Popen(command)
         def stop(*unused):
-            if controls is not None:controls.stop_event.set()
+            if controls is not None:controls.begin_shutdown()
             if queue is not None:queue.stop_event.set()
             if worker is not None and worker.poll() is None:
                 worker.send_signal(signal.SIGINT)

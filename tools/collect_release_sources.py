@@ -36,7 +36,7 @@ def collect(destination):
         'felbaker-1.0.0.tar.gz': 'https://codeload.github.com/bbeny123/FelBaker/tar.gz/refs/tags/1.0.0',
         'dovi-tool-2.3.3.tar.gz': 'https://codeload.github.com/quietvoid/dovi_tool/tar.gz/refs/tags/2.3.3',
         'hdr10plus-tool-1.7.2.tar.gz': 'https://codeload.github.com/quietvoid/hdr10plus_tool/tar.gz/refs/tags/1.7.2',
-        'pyav-18.1.0.tar.gz': 'https://codeload.github.com/PyAV-Org/PyAV/tar.gz/refs/tags/v18.1.0',
+        'pyav-19.0.0.tar.gz': 'https://codeload.github.com/PyAV-Org/PyAV/tar.gz/refs/tags/v19.0.0',
     }
     custom_downloads = []
     for name, url in upstream.items():

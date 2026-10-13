@@ -470,6 +470,9 @@ class Workflow:
                 existing=command.index('-filter:v:0')+1 if '-filter:v:0' in command else None
                 if existing is not None:command[existing]+=',setparams='+':'.join(values)
                 else:command[-1:-1]=['-filter:v:0','setparams='+':'.join(values)]
+        if getattr(self.args,'research_gpu_encode_input',False):
+            from gpu_encode_input import apply
+            command=apply(command,video,settings['encoder'])
         self.execute(command if video_only else self.preserve_covers(command,source,before,label),label,duration)
         if not missing:return
         encoded_data=self.probe(encoded)
@@ -1085,11 +1088,18 @@ class Workflow:
         # Safe generated basename and cwd avoid platform/path escaping in filter syntax.
         name = label+'-vmaf.json'
         video = next(s for s in self.probe(reference)['streams'] if s['codec_type'] == 'video')
-        from resource_governor import parallel_sdr_profile
-        threads=self.performance_threads() if parallel_sdr_profile(video) else 2
+        from resource_governor import parallel_sdr_profile,parallel_sdr_quality_profile,SDRWorkerBudget
+        threads=2
+        if parallel_sdr_profile(video):
+            threads=self.performance_threads()
+        elif parallel_sdr_quality_profile(video):
+            if not hasattr(self,'quality_worker_budget'):self.quality_worker_budget=SDRWorkerBudget()
+            threads=self.quality_worker_budget.threads(self.guard)
         from output_presets import scale_filter,preset
         identifier=getattr(self.args,'output_preset','original')
         reference_filter=scale_filter(video,identifier) if Path(reference)!=Path(output) else ''
+        from cpu_allocation import scoring_ceiling
+        threads=scoring_ceiling(threads)
         graph = quality_graph(name, video['avg_frame_rate'],threads=threads,reference_filter=reference_filter)
         if self.hdr_mode:
             from hdr_auto import quality_graph as hdr_quality_graph
@@ -1104,6 +1114,7 @@ class Workflow:
                 from resource_governor import HDRQualityWorkerBudget
                 if not hasattr(self,'hdr_quality_budget'):self.hdr_quality_budget=HDRQualityWorkerBudget()
                 threads=self.hdr_quality_budget.threads(self.guard)
+            threads=scoring_ceiling(threads)
             graph=hdr_quality_graph(name,video['avg_frame_rate'],threads=threads)
         self.execute(quality_command(self.args.ffmpeg,output,reference,graph),
                      label+'-quality', duration)
@@ -1116,7 +1127,7 @@ class Workflow:
         result['quality_profile']=getattr(self.args,'quality_profile',None) or 'legacy'
         if not self.hdr_mode and video.get('field_order') in ('tt','bb','tb','bt'):
             field_name=label+'-fields-vmaf.json'
-            field_graph=quality_graph(field_name,video['avg_frame_rate'],separate_fields=True,reference_filter=reference_filter)
+            field_graph=quality_graph(field_name,video['avg_frame_rate'],separate_fields=True,reference_filter=reference_filter,threads=scoring_ceiling(2))
             self.execute(quality_command(self.args.ffmpeg,output,reference,field_graph),
                          label+'-field-quality',duration)
             fields=quality_summary(json.loads((self.directory/field_name).read_text()),2*count,
@@ -1875,6 +1886,8 @@ def main(argv=None):
     parser.add_argument('--nvenc-analysis',choices=('lookahead32-fullres',),
                         help='Optional HEVC/AV1 qualification with 32-frame lookahead and full-resolution multipass; defaults unchanged')
     parser.add_argument('--adaptive', action='store_true', help='If baseline fails, refine runtime-tested NVENC settings using hardest-scene screening')
+    parser.add_argument('--research-gpu-encode-input',action='store_true',
+                        help='Isolated AV1 SDR NVDEC-to-NVENC input qualification; all quality/preservation checks remain required')
     parser.add_argument('--max-extra-trials', type=int, choices=range(1,13), default=8)
     parser.add_argument('--seconds', type=float, default=10)
     parser.add_argument('--vmaf-mean', type=float, default=90,

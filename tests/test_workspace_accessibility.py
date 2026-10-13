@@ -9,6 +9,10 @@ from ui.workspace import STYLE
 
 
 class WorkspaceAccessibilityTests(unittest.TestCase):
+    def test_no_upgrade_preparation_controls(self):
+        for identifier in ('prepare-upgrade','cancel-upgrade','upgrade-status'):
+            self.assertNotIn('id="'+identifier+'"',HTML)
+
     def test_resource_labels_distinguish_host_and_container_cpu(self):
         from ui.controls import SCRIPT
         self.assertIn("'Host CPU '",SCRIPT)
@@ -39,13 +43,13 @@ class WorkspaceAccessibilityTests(unittest.TestCase):
             def handle_starttag(self,tag,attrs):
                 if tag=='details':self.depth+=1
                 identity=dict(attrs).get('id')
-                if identity in ('lifetime-saved','resource-status','resource-profile','resource-cpu','resource-gpu','resource-ram'):
+                if identity in ('lifetime-saved','resource-status','resource-profile','resource-cpu','resource-gpu','resource-gpu-decode','resource-gpu-compute','resource-ram'):
                     self.locations[identity]=self.depth
             def handle_endtag(self,tag):
                 if tag=='details':self.depth-=1
         parser=Parser();parser.feed(HTML)
         self.assertEqual(parser.locations['lifetime-saved'],0)
-        for identity in ('resource-cpu','resource-gpu','resource-ram'):
+        for identity in ('resource-cpu','resource-gpu','resource-gpu-decode','resource-gpu-compute','resource-ram'):
             self.assertEqual(parser.locations[identity],0)
         self.assertGreater(parser.locations['resource-status'],0)
         self.assertGreater(parser.locations['resource-profile'],0)

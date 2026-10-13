@@ -17,6 +17,10 @@ tag also means an Always pull policy may fetch a new release on recreation, not
 only when you intentionally check for updates. Use a numbered tag if you need
 strictly pinned behavior. Update discovery is periodic, not instant.
 
+[Automatic upgrade recovery](upgrade-recovery.md) has a graceful-shutdown retry
+implementation in development. Stage checkpoints and container-upgrade qualification
+remain pending; let active jobs finish before updating the installed release.
+
 ## Publishing a stable update
 
 First publish and anonymously verify the numbered image using the existing

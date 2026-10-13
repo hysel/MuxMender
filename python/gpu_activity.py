@@ -153,7 +153,7 @@ class YieldController:
         self.gpus = []
         self.last_gpu_query = 0
 
-    def tick(self, enabled):
+    def tick(self, enabled, resource=None):
         if not enabled:
             self.policy = YieldPolicy()
             self.status = dict(state='off', pause=False, block_admission=False, reason='Automatic GPU yielding is off')
@@ -175,6 +175,13 @@ class YieldController:
                                    reason='GPU ownership telemetry unavailable; active work continues, new starts wait')
         # A lost controller releases pauses after 15 seconds. It cannot strand
         # a worker merely because a telemetry refresh failed.
+        gpu_status=dict(self.status)
+        if resource and resource.get('block_admission'):
+            self.status=dict(self.status,block_admission=True,
+                pause=self.status['pause'] or resource.get('pause',False))
+            if not gpu_status['pause']:self.status['reason']=resource['reason']
+        self.status['gpu_state']=gpu_status
+        if resource:self.status['cpu_state']=resource
         data = dict(pause=self.status['pause'], expires_at=time.time()+15, reason=self.status['reason'])
         temporary = self.lease.with_suffix('.tmp')
         temporary.write_text(json.dumps(data), encoding='utf-8')

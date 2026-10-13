@@ -3,6 +3,11 @@ from tools.monitor_release_stage import interpret,read_command
 
 
 class ReleaseMonitorTests(unittest.TestCase):
+    def test_missing_service_state_is_not_a_processing_failure(self):
+        status,terminal=interpret('status=running\nphase=Collecting exact-image sources and notices')
+        self.assertEqual(status['state'],'stale');self.assertFalse(terminal)
+        status,terminal=interpret('status=running\nunit=active\nphase=Collecting exact-image sources and notices\nsource_progress={"completed": 5, "total": 10, "updated": 100}')
+        self.assertEqual(status['stage_percent'],50);self.assertFalse(terminal)
     def test_revised_materials_observer_tracks_separate_batch(self):
         command=read_command('20261010-v60',public_materials=True,candidate_revision='r3')
         self.assertIn('public-final-checks-20261012-r1',command)

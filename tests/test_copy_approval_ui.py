@@ -51,6 +51,20 @@ function all(n){return [n,...n.children.flatMap(all)]}
 })().catch(e=>{console.error(e);process.exitCode=1});
 ''')
 
+    def test_replaceable_filter_uses_same_eligibility_as_button(self):
+        self.assertIn('value="replaceable">Ready to replace</option>',HTML)
+        self.assertIn('data-result-shortcut="replaceable"',HTML)
+        self.assertIn("filter==='replaceable'?eligibleCopy(g.latest)",SCRIPT)
+        source=SCRIPT[SCRIPT.index('function eligibleCopy('):SCRIPT.index('async function approveExistingCopy(')]
+        self.run_js(source,r'''
+const assert=require('node:assert/strict'),vm=require('vm'),ctx=vm.createContext({});
+vm.runInContext(JSON.parse(require('fs').readFileSync(0,'utf8')),ctx);
+const good={id:'copy',state:'awaiting-playback',settings:{mode:'encode'}};
+const rows=[good,...['running','pending','replaced','failed','skipped','cancelled'].map(state=>({...good,state})),
+ {...good,publication_authorized:false},{...good,settings:{mode:'test'}},{...good,settings:{mode:'replace'}}];
+assert.deepEqual(rows.filter(j=>ctx.eligibleCopy(j)).map(j=>j.id),['copy']);
+''')
+
     def test_resource_apply_feedback_busy_and_failure_recovery(self):
         source=CONTROLS[CONTROLS.index('let resourceProfileBusy='):CONTROLS.index('let gpuSharingBusy=')]
         self.run_js(source,r'''

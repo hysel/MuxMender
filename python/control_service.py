@@ -99,6 +99,8 @@ class Controls(CopyApproval, WorkspaceHistory):
         self.workers = []
         from resource_governor import Governor
         self.governor=Governor()
+        from resource_yield import CPUYieldPolicy
+        self.cpu_yield=CPUYieldPolicy()
         from gpu_activity import YieldController
         self.gpu_yield=YieldController(self.root/'gpu-yield-lease.json')
         self.assignments={}
@@ -310,6 +312,7 @@ class Controls(CopyApproval, WorkspaceHistory):
             from savings_policy import requirement
             with self.mutex: previous=self.history_match(str(path),stamp,settings,candidates=index.get(str(path),[]))
             files.append(dict(path=str(path),signature=stamp,
+                              history_state=previous['state'] if previous else None,
                               savings_policy=requirement(stamp[0],settings['savings_mode'],settings['minimum_savings']) if stamp[0]>0 else None,
                               history_reason=('Already recorded: '+previous['state']+'. '+previous.get('reason','')) if previous else None))
         if not files:
@@ -423,6 +426,9 @@ class Controls(CopyApproval, WorkspaceHistory):
         return self._snapshot_details(jobs,counts,paused,pause_origin,resource_profile,view,gpu_yield_enabled)
 
     def _snapshot_details(self,jobs,counts,paused,pause_origin,resource_profile,view,gpu_yield_enabled):
+        from cpu_allocation import capacity,recommendation
+        with self.mutex:cpu_setting=dict(self.state.get('cpu_allocation',{}))
+        cpu_advice=recommendation(capacity(),self.governor.status.get('telemetry',{}),cpu_setting)
         from dashboard import tail
         for job in jobs:
             if job.get('reason')=='Worker failed; see worker.log':
@@ -451,7 +457,7 @@ class Controls(CopyApproval, WorkspaceHistory):
                     total_replaced_saved_bytes=sum(j.get('saved_bytes',0) for j in jobs if j['state']=='replaced'),
                     lifetime_savings=self.lifetime_savings(jobs),resources=dict(self.governor.status),
                     gpu_admission=gpu_admission_snapshot(self.output/'.validation-resources'),
-                    resource_profile=resource_profile,jobs=jobs,
+                    resource_profile=resource_profile,jobs=jobs,cpu_allocation=cpu_advice,
                     gpu_yield=dict(self.gpu_yield.status,enabled=gpu_yield_enabled,configured=bool(self.gpu_yield.telemetry)),
                     app_version=VERSION,view=view,server_time=time.time())
 
@@ -495,6 +501,13 @@ class Controls(CopyApproval, WorkspaceHistory):
                 if not self.ready:raise ValueError('Control worker is not ready')
                 self.state['gpu_yield']=enabled;self.save()
             return dict(message='Automatic GPU yielding '+('enabled' if enabled else 'disabled')+'. Changes apply at the next resource check.')
+        if action=='cpu-allocation':
+            from cpu_allocation import preference
+            setting=preference(data.get('mode'),data.get('ceiling'))
+            with self.mutex:
+                if not self.ready:raise ValueError('Control worker is not ready')
+                self.state['cpu_allocation']=setting;self.save()
+            return dict(setting=setting,message='CPU preference saved for new jobs. Running jobs and quality checks are unchanged.')
         if action=='resource-profile':
             from resource_governor import PROFILES
             profile=data.get('profile')
@@ -670,6 +683,9 @@ class Controls(CopyApproval, WorkspaceHistory):
                 command=self.build_command(job,folder)
                 if os.name=='posix' and shutil.which('nice'):command=['nice','-n','10',*command]
                 environment=dict(os.environ,MUXMENDER_VALIDATION_LOCK_ROOT=str(self.output/'.validation-resources'))
+                cpu_setting=self.state.get('cpu_allocation',{})
+                environment['MUXMENDER_CPU_MODE']=cpu_setting.get('mode','automatic')
+                environment['MUXMENDER_SCORING_CEILING']=str(cpu_setting.get('ceiling') or 2)
                 environment['MUXMENDER_SOURCE_EVIDENCE_ROOT']=str(self.output/'.source-evidence')
                 environment['MUXMENDER_GPU_STAGE_MAX']='1' if self.state.get('resource_profile','shared')=='quiet' else '2'
                 if sys.platform.startswith('linux'):environment['MUXMENDER_PAUSE_LEASE']=str(self.gpu_yield.lease)
@@ -803,6 +819,15 @@ class Controls(CopyApproval, WorkspaceHistory):
             self.lease=(self.root/'worker.lock').open('a')
             fcntl.flock(self.lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
             with self.mutex:
+                from restart_recovery import recover
+                def check_restart(job):
+                    source=self.resolve(job['source'])
+                    if source_identity(source)!=job.get('source_identity'):
+                        raise ValueError('Source changed or its saved identity is missing')
+                    if self.recovery_info(job)['publication_record_found']:
+                        raise ValueError('Replacement records require recovery')
+                    self.check_media_access(job['settings']['mode'])
+                recover(self.state,check_restart,VERSION)
                 for job in self.state['jobs']:
                     if job['state']=='running':
                         job.update(state='interrupted',reason='Interrupted during restart; review before resubmitting',finished=time.time())
@@ -827,9 +852,12 @@ class Controls(CopyApproval, WorkspaceHistory):
                 self.save();self.ready=True
             while not self.stop_event.is_set():
                 self.workers=[w for w in self.workers if w.is_alive()]
-                with self.mutex:
-                    yielding=self.gpu_yield.tick(self.state.get('gpu_yield',False))
                 allowed=self.governor.admit(self.state.get('resource_profile','shared'),len(self.workers))
+                cpu_yield=self.cpu_yield.decide(self.governor.status.get('telemetry',{}))
+                self.governor.status['cpu_yield']=cpu_yield
+                with self.mutex:
+                    yielding=self.gpu_yield.tick(self.state.get('gpu_yield',False),
+                        resource=cpu_yield if sys.platform.startswith('linux') else None)
                 if yielding['block_admission']:allowed=False
                 with self.mutex:
                     if allowed and not self.state['paused'] and any(j['state']=='pending' for j in self.state['jobs']) and not self.busy():
@@ -849,8 +877,16 @@ class Controls(CopyApproval, WorkspaceHistory):
     def start(self):
         self.thread=threading.Thread(target=self.loop,daemon=True,name='ui-safe-copy-worker');self.thread.start()
 
+    def begin_shutdown(self):
+        with self.mutex:
+            from restart_recovery import mark_shutdown
+            mark_shutdown(self.state)
+            try:self.save()
+            except OSError as exc:self.error='Shutdown recovery record could not be saved: '+str(exc)
+            finally:self.stop_event.set()
+
     def stop(self):
-        self.stop_event.set()
+        self.begin_shutdown()
         with self.mutex:
             try:self.gpu_yield.tick(False)
             except OSError:pass
