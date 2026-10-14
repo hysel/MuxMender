@@ -4,6 +4,10 @@ MuxMender runs as a container with its own browser interface. The first release
 path focuses on Linux and NVIDIA GPUs. You choose which GPU and folders the app
 can access; it doesn't install a driver on your server.
 
+For complete, copyable setup instructions, see the README's
+[TrueNAS installation](../../README.md#install-on-truenas) or
+[standalone Docker installation](../../README.md#install-with-standalone-docker).
+
 ## What you need
 
 - A working NVIDIA driver and GPU access for containers.
@@ -20,7 +24,7 @@ outside the container so an image update doesn't remove your files or history.
 1. Create the output folder on your storage pool. Give the app's configured
    user permission to write to it.
 2. Create a custom app using the release's installation instructions. Use the
-   exact image tag supplied with that release.
+   `ghcr.io/hysel/muxmender` repository with tag `stable`.
 3. Mount your library at **`/media`** and the output folder at **`/output`**.
 4. Assign an NVIDIA GPU using TrueNAS app settings. Don't paste another user's
    GPU identifier into your configuration.
@@ -48,8 +52,10 @@ secured VPN or an authenticated gateway.
 ## Update later
 
 Pause new starts and let active work finish before updating. Keep your media and
-output mounts, app user, GPU assignment and port settings. Change the image tag
-to the new release, start the app, and check that your history and queue appear.
+output mounts, app user, GPU assignment and port settings. Keep the tag set to
+`stable`, check for image updates in TrueNAS, and apply the offered update. Then
+check that your history and queue appear. Enable image update checks and avoid
+the Never pull policy; see [stable-channel setup](../stable-updates.md).
 
 An interrupted job may need recovery or a retry; it doesn't necessarily resume
 at the exact frame where it stopped. Don't delete its work folder while the app
@@ -57,13 +63,14 @@ is recovering it.
 
 ## Which image should I install?
 
-Use **`ghcr.io/hysel/muxmender:20261010-v60`** for the first public preview.
+Use **`ghcr.io/hysel/muxmender:stable`** for the stable release channel.
 No registry login is required. Read the
-[release notes](https://github.com/hysel/MuxMender/releases/tag/20261010-v60)
-before installing; this preview targets Linux amd64 with NVIDIA GPU access.
+[release notes](https://github.com/hysel/MuxMender/releases)
+before installing; the app targets Linux amd64 with NVIDIA GPU access.
+Numbered release tags remain available for pinning or rollback.
 
 The release includes `compose.release.yaml`. Replace every `REPLACE_*` value
-with your own settings and use `20261010-v60` for `REPLACE_RELEASE_VERSION`.
+with your own settings and use `stable` for `REPLACE_RELEASE_VERSION`.
 Create the host folders first and grant the selected user access. The template
 keeps your media read-only for the first safe-copy run.
 

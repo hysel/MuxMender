@@ -17,14 +17,154 @@ needs a working driver and container GPU access; MuxMender does not install or
 change host drivers. AMD and Intel app qualification are deferred for now.
 
 The [public wiki](https://github.com/hysel/MuxMender/wiki) explains the everyday
-workflow. The first public preview is **`ghcr.io/hysel/muxmender:20261010-v60`**.
-See the [release and its known limits](https://github.com/hysel/MuxMender/releases/tag/20261010-v60)
+workflow. Install **`ghcr.io/hysel/muxmender:stable`** to follow the stable release channel.
+See the [release notes and known limits](https://github.com/hysel/MuxMender/releases)
 and [installation guide](docs/wiki/Installation.md). Start with a small folder
 and safe-copy mode; publishing a new image does not update your installed app.
 
 The preview includes third-party notices and matching source/build
 materials alongside the image. Those archives are for transparency and rebuilding;
 they do not need to live in your media library or conversion output folder.
+
+### Install on TrueNAS
+
+Use a TrueNAS release with Docker-based Apps. You do not need to clone this
+repository or build an image yourself.
+
+1. Create a separate output dataset or folder, alongside—not inside—your media
+   folder. It holds converted copies, temporary work and your job history.
+2. In **Apps**, choose **Discover Apps → Custom App**. Labels can differ between
+   TrueNAS versions. Name the app `muxmender`.
+3. Enter repository **`ghcr.io/hysel/muxmender`** and tag **`stable`**.
+   Enable image update checks in TrueNAS and do not use the **Never** pull policy.
+   This lets TrueNAS check for stable image updates; it does not deploy them
+   automatically. Numbered release tags are available for pinning or rollback.
+4. Map host TCP port **8767** to container port **8765**. If you add a portal
+   link, use HTTP and the **host port, 8767**, not 8765.
+5. Add these host-path storage mounts. Create both host paths before saving:
+
+   | Your server folder | Container path | Access for your first run |
+   | --- | --- | --- |
+   | Existing media folder | `/media` | Read-only |
+   | Separate output folder | `/output` | Read and write |
+
+6. Set the container user and group to an account with read access to your media
+   and write access to the output folder. The image defaults to **UID 568, GID
+   568**; you can use different numeric IDs that match your dataset permissions.
+   Grant access through TrueNAS dataset permissions rather than recursively
+   changing ownership of your whole library.
+7. Add these environment variables:
+
+   | Variable | Value |
+   | --- | --- |
+   | `MUXMENDER_CONTROLS_ENABLED` | `true` |
+   | `MUXMENDER_ALLOWED_HOSTS` | `YOUR-SERVER:8767` |
+   | `MUXMENDER_PLAYBACK_CODECS` | `hevc,av1` |
+
+   Replace `YOUR-SERVER` with the hostname or IP you will open in your browser.
+   To allow both, use comma-separated entries, for example
+   `media-server:8767,192.168.1.50:8767`. Do not include `http://` or a trailing
+   slash. List only playback codecs your players support; use `hevc` alone if
+   you have not tested AV1 playback.
+8. Assign your NVIDIA GPU using the app's GPU selector. The host needs a working
+   NVIDIA driver. Do not enable privileged mode or mount the Docker socket.
+9. Save, wait for the app to start, then open **`http://YOUR-SERVER:8767/`**.
+   Choose a small folder and **Create smaller copies** for your first test.
+
+If you prefer **Install via YAML**, use
+[the release Compose template](deploy/truenas/compose.release.yaml), replacing
+every `REPLACE_*` value, including the GPU UUID. See the official
+[TrueNAS custom-app guide](https://apps.truenas.com/managing-apps/installing-custom-apps/)
+for the platform's installation screens.
+
+### Install with standalone Docker
+
+Use a Linux amd64 host with Docker Engine, the Docker Compose plugin, a working
+NVIDIA driver and the NVIDIA Container Toolkit configured for Docker. Confirm
+GPU access using [Docker's GPU setup guide](https://docs.docker.com/engine/containers/gpu/)
+before starting MuxMender. Installing FFmpeg or Python on the host is not required.
+
+Create a `compose.yaml` file with the following contents. Replace the two host
+paths, dashboard hostname and user/group IDs with your own values. Both folders
+must already exist, must be separate, and must have the permissions described
+above. The image below follows the stable release channel; numbered release tags
+are available if you need to pin a version or roll back.
+
+```yaml
+services:
+  muxmender:
+    image: ghcr.io/hysel/muxmender:stable
+    user: "568:568"
+    restart: unless-stopped
+    ports:
+      - "8767:8765"
+    environment:
+      MUXMENDER_CONTROLS_ENABLED: "true"
+      MUXMENDER_ALLOWED_HOSTS: "YOUR-SERVER:8767"
+      MUXMENDER_PLAYBACK_CODECS: "hevc,av1"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,video,utility,graphics"
+    volumes:
+      - type: bind
+        source: /srv/media
+        target: /media
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/muxmender-output
+        target: /output
+        bind:
+          create_host_path: false
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+```
+
+On a multi-GPU server, replace `count: 1` with `device_ids: ["YOUR-GPU-UUID"]`
+to select a particular card. Find its UUID with `nvidia-smi -L`. Do not set both
+`count` and `device_ids`; see [Docker's GPU Compose instructions](https://docs.docker.com/compose/how-tos/gpu-support/).
+
+From the directory containing `compose.yaml`, run:
+
+```sh
+docker compose config --quiet
+docker compose pull
+docker compose up -d
+docker compose logs --tail=100 muxmender
+```
+
+Use `sudo` if your Docker installation requires it. Open
+**`http://YOUR-SERVER:8767/`**, select media under `/media`, and start with
+**Create smaller copies**. Converted copies and history stay in your host output
+folder when the container is recreated.
+
+### First-run checks and updates
+
+- **Keep the dashboard private.** It has no built-in login. Use a trusted LAN,
+  VPN or authenticated reverse proxy; do not expose its port directly to the internet.
+- **Replacement is optional.** After testing playback, make the `/media` mount
+  writable and grant the app user write access if you want to use **Convert and
+  replace originals**. No second replacement folder is needed. A writable mount
+  alone does not enable replacement; you must choose it in the app.
+- **Keep `/output` persistent.** It is needed even when replacing originals.
+  Do not delete it to reset a queue: it contains history and recovery records.
+- **Path does not exist?** Check each host-side storage path. Old optional GPU
+  monitor mounts are not required for basic conversion; do not copy a stale
+  monitor path from an earlier installation. GPU sharing has its own
+  [monitor setup instructions](docs/gpu-monitor-setup.md).
+- **Permission denied?** Check the numeric app user/group and folder access.
+  **Blocked dashboard address?** Check that allowed hosts includes the exact
+  browser hostname or IP and host port.
+- **Updating:** pause new starts and let active jobs finish. Keep the same mounts,
+  user, port and GPU assignment. Keep the tag set to `stable`. On TrueNAS, check
+  for image updates and apply the offered update; with Compose, run
+  `docker compose pull` and `docker compose up -d`. For TrueNAS update
+  notifications, follow [stable-channel setup](docs/stable-updates.md).
+  An interrupted job is not guaranteed to resume at the exact frame.
 
 ## How it works
 
