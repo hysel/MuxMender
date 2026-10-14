@@ -12,9 +12,16 @@ It works with files you already have. It does not find, download or share videos
 
 ## Installation and availability
 
-The first app release focuses on Linux/TrueNAS with NVIDIA GPUs. Your server
-needs a working driver and container GPU access; MuxMender does not install or
-change host drivers. AMD and Intel app qualification are deferred for now.
+MuxMender ships as a Linux amd64 Docker image, not a TrueNAS-only app. It can
+be hosted on Linux, TrueNAS, or Windows through Docker Desktop's WSL 2 Linux-container
+backend. The current release targets NVIDIA GPUs and needs working GPU access
+inside the container. MuxMender does not install or change host drivers; AMD and
+Intel app qualification are deferred for now.
+
+Our end-to-end release tests run on Linux/TrueNAS. Windows Docker Desktop is a
+deployment option, but its encoding, replacement and host GPU-sharing behavior
+have not yet been qualified by this project. Docker compatibility alone does not
+guarantee that every GPU feature works on every host.
 
 The [public wiki](https://github.com/hysel/MuxMender/wiki) explains the everyday
 workflow. Install **`ghcr.io/hysel/muxmender:stable`** to follow the stable release channel.
@@ -79,16 +86,30 @@ for the platform's installation screens.
 
 ### Install with standalone Docker
 
-Use a Linux amd64 host with Docker Engine, the Docker Compose plugin, a working
-NVIDIA driver and the NVIDIA Container Toolkit configured for Docker. Confirm
-GPU access using [Docker's GPU setup guide](https://docs.docker.com/engine/containers/gpu/)
-before starting MuxMender. Installing FFmpeg or Python on the host is not required.
+On Linux, use Docker Engine, the Docker Compose plugin, a working NVIDIA driver
+and the NVIDIA Container Toolkit configured for Docker. Confirm GPU access using
+[Docker's GPU setup guide](https://docs.docker.com/engine/containers/gpu/).
+
+On Windows, use Docker Desktop with the **WSL 2 backend and Linux containers**,
+plus a compatible NVIDIA Windows driver. Follow
+[Docker's Windows GPU setup guide](https://docs.docker.com/desktop/features/gpu/).
+Windows-container mode cannot run this Linux image. Start with safe copies and
+verify GPU encoding and playback before relying on replacement.
+
+Installing FFmpeg or Python on the host is not required on either platform.
 
 Create a `compose.yaml` file with the following contents. Replace the two host
 paths, dashboard hostname and user/group IDs with your own values. Both folders
 must already exist, must be separate, and must have the permissions described
 above. The image below follows the stable release channel; numbered release tags
 are available if you need to pin a version or roll back.
+
+The example uses Linux host paths. When running Compose from Windows PowerShell,
+replace them with existing Windows paths such as `"D:/Media"` and
+`"E:/MuxMender-Output"`. The container paths stay `/media` and `/output`.
+For access from the same PC, set `MUXMENDER_ALLOWED_HOSTS` to `localhost:8767`
+and open `http://localhost:8767/`. Windows folder access is managed through
+Windows/Docker Desktop permissions, not by changing a Windows folder's UID.
 
 ```yaml
 services:
