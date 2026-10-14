@@ -59,8 +59,10 @@ video frame-hash equality after a CPU-triggered pause, cancellation while paused
 lease expiry, and supervisor-death cleanup. Additional regression checks ensure
 clearing CPU pressure cannot clear an active GPU pause. A subsequent real competing
 CPU-container test passed in about 97 seconds, including automatic resume and
-identical generated frame hashes. External GPU contention remains unqualified
-by that test. The subsequent isolated committed-code
+identical generated frame hashes. A separate real external NVENC contention test
+also passed on the RTX 5050: ownership-aware pause/resume preserved decoded frame
+hashes. This is host-specific evidence, not qualification of every GPU workload.
+The subsequent isolated committed-code
 image passed its resource and recovery integration checks; it was not deployed.
 
 The combined Linux integration run completed 114 tests: 109 passed and five

@@ -116,7 +116,7 @@ source/notice assembly and final privacy/license review remain open. The private
 test image must not be published as-is.
 
 At image closeout, real external CPU/GPU workload qualification was still open.
-The CPU follow-up below closes that portion; external GPU contention remains open.
+The CPU and GPU follow-ups below close those host-specific checks.
 Container recreation checks above also do not establish frame-level encode
 continuation during upgrades. No production deployment or media replacement was
 performed during this qualification.
@@ -129,4 +129,20 @@ counters drove the unchanged yielding policy. The generated media task paused,
 resumed after the cooldown, and produced identical frame hashes. The run took
 about 97 seconds; its two test containers were removed automatically. No library
 mount, GPU workload or production change was involved. This closes the real CPU
-contention gap for this host, not the separate external-GPU contention test.
+contention gap for this host.
+
+### Real GPU contention follow-up
+
+The separate RTX 5050 GPU test also passed on October 13. A temporary host
+collector identified an external NVENC process by its real process namespace
+and utilization. The owned generated encode paused at about 8.8 seconds,
+remained paused through about 79.9 seconds, resumed automatically, and produced
+identical decoded frame hashes to the uninterrupted baseline. The temporary
+collector and both test containers were cleaned up. Production and library files
+were unchanged. A CPU-worded progress label in the reused harness was corrected
+for future runs; recorded GPU decisions and comparison results are unchanged.
+
+This establishes real external NVENC contention handling on the tested host,
+not every GPU generation, driver or compute workload. It does not mean pausing
+releases VRAM. Combined source/notice assembly and final release-material review
+remain open before public release; no new image was built for these tests.
