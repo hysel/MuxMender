@@ -9,7 +9,9 @@ download videos, bypass copy protection, or help distribute unauthorized copies.
 
 ## Start here
 
-The public preview is available as `ghcr.io/hysel/muxmender:20261010-v60`.
+Install the ready-built image **`ghcr.io/hysel/muxmender:stable`** from GitHub
+Container Registry. There is no local image build or conversion script to run.
+After installation, use the browser interface for all video processing.
 Follow the installation guide and start with a small safe-copy run.
 
 - [Set up the app](Installation.md)

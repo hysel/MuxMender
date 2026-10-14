@@ -8,7 +8,7 @@ original when the tested options do not meet your quality and space-saving targe
 
 It works with files you already have. It does not find, download or share videos.
 
-[User guide](docs/wiki/Home.md) · [Get started](docs/GETTING-STARTED.md) · [Project status](docs/STATUS.md) · [Roadmap](docs/TODO.md)
+[User guide](https://github.com/hysel/MuxMender/wiki) · [Get started](docs/GETTING-STARTED.md) · [Releases](https://github.com/hysel/MuxMender/releases) · [Report a problem](https://github.com/hysel/MuxMender/issues)
 
 ## Installation and availability
 
@@ -25,11 +25,14 @@ guarantee that every GPU feature works on every host.
 
 The [public wiki](https://github.com/hysel/MuxMender/wiki) explains the everyday
 workflow. Install **`ghcr.io/hysel/muxmender:stable`** to follow the stable release channel.
+GitHub Container Registry supplies the ready-built app. You do not need to clone
+the repository, build an image on TrueNAS, or run conversion scripts. Once the
+container is installed, select videos, set options and manage jobs in the browser.
 See the [release notes and known limits](https://github.com/hysel/MuxMender/releases)
 and [installation guide](docs/wiki/Installation.md). Start with a small folder
 and safe-copy mode; publishing a new image does not update your installed app.
 
-The preview includes third-party notices and matching source/build
+Releases include third-party notices and matching source/build
 materials alongside the image. Those archives are for transparency and rebuilding;
 they do not need to live in your media library or conversion output folder.
 
@@ -229,24 +232,9 @@ outputs are not swept away.
 ## Start with a small test
 
 The [getting-started guide](docs/GETTING-STARTED.md) walks through the app.
-The [built-in API](docs/app-api.md) uses the same address as the dashboard if
-you want to automate jobs or read progress from a script.
-You can also inspect one file from a terminal without converting it:
-
-```powershell
-python python/media_workflow.py "D:\Media\Example.mkv" --output-dir "E:\Optimized"
-```
-
-Run from the repository folder with Python 3.10 or newer, FFmpeg and FFprobe.
-Available encoders depend on your FFmpeg build and hardware. To see the options:
-
-```powershell
-python python/media_workflow.py --help
-```
-
-The app and standalone automatic workflow share processing services. Older
-[standalone commands](docs/STANDALONE.md) and the [local planner](docs/WEBUI.md)
-have their own documented controls and defaults.
+Open the dashboard, choose a few videos, select **Create smaller copies**, and
+add them to the queue. Read the results and check playback before choosing
+replacement. No processing commands or scripts are needed.
 
 ## What has been tested?
 
@@ -260,16 +248,12 @@ preservation, quality and savings evidence. These are not universally certified
 formats. See the [current use-case inventory](docs/SUPPORTED-USE-CASES.md),
 including known failures and the distinction between automatic and research use.
 
-The [status report](docs/STATUS.md) separates merged code, recorded tests and
-deployment. Merging code does not update a running TrueNAS app.
+The [release notes](https://github.com/hysel/MuxMender/releases) describe what is
+available in each published image. Merging code does not update a running app.
 
-For storage maintenance, see [what remains after a task](docs/post-task-cleanup.md)
-and the [post-release cleanup plan](docs/release-cleanup.md). Keep history and
+For storage maintenance, see [what remains after a task](docs/post-task-cleanup.md).
+Keep history and
 recovery records; don't delete the whole output folder to clear old test files.
-
-For FFmpeg upgrades, the [fix ledger and compatibility tests](docs/ffmpeg-compatibility.md)
-track which workarounds are still needed. We compare raw upstream behavior with
-our shared workflow before considering removal; quality and preservation checks stay.
 
 ## Responsible use
 
@@ -277,20 +261,9 @@ our shared workflow before considering removal; quality and preservation checks 
 to use. Do not use MuxMender to obtain or share unauthorized copies. This project
 is for optimizing an existing library, not downloading content or bypassing DRM.
 
-## For contributors
+## Source and support
 
-- `python/`: shared processing code and commands.
-- `python/ui/`: dashboard and queue interface.
-- `tests/`: automated regression tests.
-- `docs/`: guides, roadmap and technical evidence.
-- `deploy/`: packaging and deployment files.
-
-From the repository root, run the suite with:
-
-```powershell
-python -m unittest discover -s tests
-```
-
-Use neutral example names in code, docs and commit messages. Never include real
-media titles or private library paths. Keep technical evidence in the research
-notes, while making everyday guides understandable without reading the code.
+This repository also contains the source, automated tests and build infrastructure
+needed to maintain the app. They are not installation or everyday-use steps.
+For help, open an issue with the app version and sanitized error details; leave
+out private paths and video names.

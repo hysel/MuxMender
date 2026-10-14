@@ -8,8 +8,12 @@ doesn't install a driver on your host. End-to-end qualification currently covers
 Linux/TrueNAS, not Windows Docker Desktop.
 
 For complete, copyable setup instructions, see the README's
-[TrueNAS installation](../../README.md#install-on-truenas) or
-[standalone Docker installation](../../README.md#install-with-standalone-docker).
+[TrueNAS installation](https://github.com/hysel/MuxMender#install-on-truenas) or
+[standalone Docker installation](https://github.com/hysel/MuxMender#install-with-standalone-docker).
+
+Install the ready-built image from GitHub Container Registry. You do not need to
+clone this repository, build on TrueNAS or run a release script. After installation,
+select files, choose settings, manage the queue and review results in the browser.
 
 ## What you need
 
@@ -58,7 +62,14 @@ Pause new starts and let active work finish before updating. Keep your media and
 output mounts, app user, GPU assignment and port settings. Keep the tag set to
 `stable`, check for image updates in TrueNAS, and apply the offered update. Then
 check that your history and queue appear. Enable image update checks and avoid
-the Never pull policy; see [stable-channel setup](../stable-updates.md).
+the Never pull policy; see
+[stable-channel setup](https://github.com/hysel/MuxMender/blob/main/docs/stable-updates.md).
+
+In TrueNAS, use the app's image-update action when a new stable image is available.
+Do not change the tag for each update. Docker-based installations pull the new
+`stable` image and recreate the container using the same configuration. This is
+an image download, not a source build. Updates appear only after a release is
+published and promoted; a repository commit alone does not produce an update.
 
 An interrupted job may need recovery or a retry; it doesn't necessarily resume
 at the exact frame where it stopped. Don't delete its work folder while the app
