@@ -19,7 +19,7 @@ import urllib.request
 import uuid
 
 BASE=Path('/var/lib/muxmender-qualification')
-CONFIG=Path('/etc/muxmender-qualification/config.json')
+CONFIG=BASE/'config.json'
 IMAGE_LIMIT=3*1024**3
 
 
