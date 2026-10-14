@@ -1,5 +1,5 @@
 # Isolated build tool only: does not replace the app or install host packages.
-FROM ubuntu:24.04 AS builder
+FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55 AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config nasm python3 xz-utils zlib1g-dev ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY ffmpeg-9.0.2.tar.xz nv-codec-headers-n13.0.19.0.tar.gz ./
