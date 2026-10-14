@@ -1,38 +1,30 @@
-# Update through TrueNAS
+# Update the app
 
-MuxMender's `stable` channel is a moving alias for a reviewed, qualified release.
-Numbered tags remain unchanged so you can pin or roll back a version. Stable
-promotion never rebuilds the image and does not update a running app.
+Use repository **ghcr.io/hysel/muxmender** and tag **stable**. This downloads the
+published image; you do not need to build it on your server.
 
-Once the first promotion is published and verified, configure the custom app:
+## TrueNAS
 
-- Repository: `ghcr.io/hysel/muxmender`
-- Tag: `stable`
-- Enable TrueNAS Docker image update checks.
-- Use a pull policy that permits downloads, not Never pull.
+1. Enable Docker image update checks and allow image downloads (not Never pull).
+2. Pause new starts and let active work finish.
+3. Apply the image update when TrueNAS offers it.
+4. Keep the existing folders, user, GPU assignment and port settings.
+5. Open the dashboard and check your history and queue before resuming.
 
-Keep your existing storage mounts and GPU assignment. Let active jobs finish
-before using TrueNAS's Update action: updating restarts the container. A moving
-tag also means an Always pull policy may fetch a new release on recreation, not
-only when you intentionally check for updates. Use a numbered tag if you need
-strictly pinned behavior. Update discovery is periodic, not instant.
+Update discovery is periodic, not instant. A source-code commit is not an image
+release. The stable tag changes only after publication and promotion.
 
-[Automatic upgrade recovery](upgrade-recovery.md) has a graceful-shutdown retry
-implementation in development. Stage checkpoints and container-upgrade qualification
-remain pending; let active jobs finish before updating the installed release.
+## Standalone Docker
 
-## Publishing a stable update
+Pull the new stable image and recreate the container with the same configuration.
+Keep media and output in persistent host folders. See the
+[installation instructions](../README.md#install-with-standalone-docker).
 
-First publish and anonymously verify the numbered image using the existing
-qualified-image workflow. Then run **Promote tested image to stable** on main,
-supplying the version, verified registry manifest digest and review-asset hash.
-Approve the `container-release` environment in GitHub. The workflow checks the
-release record, copies the identical registry manifest to `stable`, and verifies
-the result. No TrueNAS credentials, media mounts or Docker host access are used.
+## If you need to go back
 
-Recheck the stable digest anonymously before telling users an update is ready.
-The channel is approval-driven; merging code alone does not move it. The name
-describes the tested update channel, not a guarantee for every GPU or video.
+Select a previous published numbered image tag, retain your persistent folders,
+and check the release's rollback notes. Stop active work first. An interrupted
+job may need recovery or a retry; exact-frame continuation is not guaranteed.
 
-See [TrueNAS image update settings](https://apps.truenas.com/getting-started/initial-setup/)
-and [custom app image settings](https://www.truenas.com/docs/scale/apps/installcustomappscreens/).
+An Always pull policy may fetch a new stable image when the container is recreated.
+Use a numbered tag instead if you want a strictly pinned version.

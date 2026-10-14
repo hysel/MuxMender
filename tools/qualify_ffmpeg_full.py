@@ -32,6 +32,7 @@ def main():
         raise RuntimeError('Linux-only qualification; never execute on Windows')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--ledger', type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(exist_ok=False)
     from job_tracking import tracked_call, progress
@@ -65,6 +66,7 @@ def main():
         env['PYTHONPATH'] = str(ROOT/'python')+':'+str(ROOT/'runtime')
         with (args.output/'comparison.log').open('x') as log:
             result = subprocess.run([sys.executable,'-B',str(ROOT/'tools/ffmpeg_compatibility_suite.py'),
+                '--ledger',str(args.ledger.resolve()),
                 '--baseline-ffmpeg',baseline,'--baseline-ffprobe','/usr/local/bin/ffprobe',
                 '--candidate-ffmpeg',candidate,'--candidate-ffprobe',probe,
                 '--output',str(args.output/'comparison')], stdout=log,stderr=subprocess.STDOUT,

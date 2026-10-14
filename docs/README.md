@@ -12,5 +12,4 @@ You do not need the development scripts to use MuxMender.
 - [Updating the app](stable-updates.md)
 
 The [published wiki](https://github.com/hysel/MuxMender/wiki) contains the same
-everyday guides. Release and compatibility records retained in this source
-checkout support maintenance and testing; they are not extra setup steps.
+everyday guides. This folder contains only installation, configuration and UI help.
