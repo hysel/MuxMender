@@ -1,18 +1,20 @@
-name: Publish already-tested image
+name: Publish qualified release
 on:
   workflow_dispatch:
     inputs:
       version:
         description: Draft release tag and exact app version
         required: true
-        default: '20261010-v60'
       image_archive_sha256:
-        description: SHA256 from the administrator image export receipt
+        description: SHA256 of the qualified image archive
         required: true
       review_sha256:
         description: SHA256 of the approved public-release.json asset
         required: true
-        default: afae01587c348215e14af4dc103f8397f6470e2116da5e0987f99ede459449e1
+      promote_stable:
+        description: After publication, verify public access and update stable without another approval
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -102,8 +104,18 @@ jobs:
           docker tag "$QUALIFIED_IMAGE" "$target"
           docker push "$target" | tee "$RUNNER_TEMP/push-result.txt"
           echo "Uploaded $target from $QUALIFIED_IMAGE without rebuilding. Visibility and anonymous pull remain to be verified." >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify public image and promote stable
+        if: inputs.promote_stable
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_PATH: ${{ runner.temp }}/release/public-release.json
+          RESOLVE_PUBLISHED_DIGEST: '1'
+          REQUIRE_ANONYMOUS_PULL: '1'
+        run: python3 -B deploy/promote_stable_image.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: qualified-image-publication-receipt
-          path: ${{ runner.temp }}/push-result.txt
+          path: |
+            ${{ runner.temp }}/push-result.txt
+            stable-promotion.json
