@@ -8,7 +8,7 @@ import tarfile
 FILES = ('deploy/truenas/Dockerfile.public', 'deploy/truenas/launch-public-candidate.sh',
          'tools/smoke_app_release.py', 'tools/audit_image_runtime.py', 'LICENSE',
          'tools/prepare_public_candidate.py', 'tools/monitor_release_stage.py',
-         'tests/test_release_monitor.py', 'tests/test_release_smoke.py', 'docs/container-release-operations.md')
+         'tests/test_release_monitor.py', 'tests/test_release_smoke.py')
 
 
 def public_reader_member(name):

@@ -92,8 +92,8 @@ confirmed replacements, not every test copy. Percentages and GB describe file
 sizes; snapshots may mean your storage pool does not immediately show the same
 amount of free space.
 
-The app and CLI use the same job progress information. These features are in
-the code; check the [status report](STATUS.md) for deployment context.
+Check the [release notes](https://github.com/hysel/MuxMender/releases) for the
+features available in your installed version.
 
 ## GPU activity readings
 

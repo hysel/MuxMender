@@ -30,9 +30,12 @@ def regression_index(root,ledger):
     return entries
 
 
-def build(destination,root=ROOT):
+def build(destination,root=ROOT,ledger_path=None):
     from ffmpeg_compatibility_suite import load_ledger
-    ledger=load_ledger(root/'docs/fix-ledger.json')
+    if ledger_path is None:
+        raise ValueError('Supply the local development ledger explicitly')
+    ledger_path=Path(ledger_path)
+    ledger=load_ledger(ledger_path)
     destination.mkdir(parents=True,exist_ok=False)
     files={}
     for folder in ('python','tests','tools','deploy','docs'):
@@ -42,8 +45,7 @@ def build(destination,root=ROOT):
                 files[path.relative_to(root).as_posix()]=path.read_bytes()
     for name in ('README.md','pyproject.toml','AGENTS.md'):
         files[name]=(root/name).read_bytes()
-    for name in ('docs/fix-ledger.json','docs/ffmpeg-compatibility.md'):
-        files[name]=(root/name).read_bytes()
+    files['development-ledger.json']=ledger_path.read_bytes()
     index=regression_index(root,ledger)
     files['regression-index.json']=json.dumps(index,indent=2).encode()
     inventory={'schema':1,'fix_families':len(ledger['fixes']),'regression_modules':len(index),
@@ -66,7 +68,8 @@ def build(destination,root=ROOT):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--destination',type=Path,required=True)
-    args=parser.parse_args();print(json.dumps(build(args.destination),indent=2))
+    parser.add_argument('--ledger',type=Path,required=True)
+    args=parser.parse_args();print(json.dumps(build(args.destination,ledger_path=args.ledger),indent=2))
 
 
 if __name__=='__main__':main()

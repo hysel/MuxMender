@@ -66,7 +66,7 @@ def main():
     parser.add_argument('--candidate-ffmpeg',type=Path)
     parser.add_argument('--candidate-ffprobe',type=Path)
     parser.add_argument('--baseline-only',action='store_true',help='Collect baseline evidence while the candidate runtime is unavailable')
-    parser.add_argument('--ledger',type=Path,default=ROOT/'docs/fix-ledger.json')
+    parser.add_argument('--ledger',type=Path,required=True,help='Local development ledger outside the published repository')
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--command-timeout',type=int,default=120)
     parser.add_argument('--skip-regressions',action='store_true',help='Diagnostic only; never a retirement recommendation')

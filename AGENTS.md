@@ -18,8 +18,10 @@ Ask before git commit, merge or push. Preserve unrelated user changes.
 
 # Fix and upstream compatibility records
 
-Record each new fix family in `docs/fix-ledger.json`, with implementation,
-regression tests, evidence and qualification limits. Keep withdrawn experiments
+Keep developer fix ledgers and research evidence in the local development archive,
+outside the published repository, with implementation, regression tests, evidence
+and qualification limits. The docs directory is only for installation,
+configuration and UI use. Keep withdrawn experiments
 and unresolved cases distinct from verified fixes. Build the reusable FFmpeg
 test package for proposed runtime upgrades. Do not retire a workaround solely
 because a newer version exists or managed tests pass: require an old-runtime raw

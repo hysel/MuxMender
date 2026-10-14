@@ -111,22 +111,22 @@ def create_release(root, archive, release_note, hdr_tool_archive=None, dovi_tool
               'tools/publish_approved_copies.py','tools/analyze_batch_performance.py','tools/qualify_iso_container_recovery.py',
               'tools/qualify_quality_profiles.py','tools/qualify_real_quality_profiles.py',
               'tools/research_hdr_sdr.py','tools/research_hdr_sdr_long.py',
-              'docs/av1-hdr-metadata.md','docs/dv-aac-duration-validation.md',
-              'docs/cooperative-pause.md','docs/processing-timeouts.md','deploy/truenas/install_gpu_monitor.py',
-              'deploy/truenas/install_reader_qualification.py','docs/host-reader-qualification.md',
+
+              'docs/processing-timeouts.md','deploy/truenas/install_gpu_monitor.py',
+              'deploy/truenas/install_reader_qualification.py',
               'tools/benchmark_sdr_gpu_reader.py','tools/benchmark_shared_sdr_reader.py',
-              'docs/dashboard-polling.md','docs/validation-scheduling.md','docs/gpu-monitor-setup.md',
-              'docs/performance-results.md','docs/performance-qualification-plan.md',
-              'docs/per-video-codec-selection.md','docs/adaptive-gpu-admission.md','docs/processing-dashboard.md','docs/app-api.md','docs/output-presets.md','tools/build_app_release.py',
+              'docs/gpu-monitor-setup.md',
+
+              'docs/processing-dashboard.md','docs/output-presets.md','tools/build_app_release.py',
               'tools/compare_encoders.py','tools/run_truenas_sample_batch.py','tools/dv_fel_research.py','tools/install_fel_runtime.py',
               'tools/monitor_remote_research.py','tools/probe_dv_renderer.py','tools/inspect_hevc_layers.py',
-              'tools/publish_reviewed_research.py','docs/research-checkpoint-20260922.md',
+              'tools/publish_reviewed_research.py',
               'tools/research_coverage.py',
-              'tools/benchmark_hdr_reader.py','docs/artifact-retention.md',
-              'docs/source-audio-preflight.md','docs/aac-priming-preservation.md',
-              'docs/changing-hdr-brightness.md','docs/post-task-cleanup.md','docs/activity-reports.md',
-              'docs/conversion-reliability.md','docs/input-diagnostics.md',
-              'docs/validation-performance-20260922.md',
+              'tools/benchmark_hdr_reader.py',
+
+              'docs/post-task-cleanup.md',
+
+
               'tools/smoke_auto_optimize.py','tools/smoke_hdr_auto.py','tools/smoke_hdr_dynamic.py','tools/smoke_timestamp.py','tools/monitor_queue.py','tools/qualify_frame_reader.py',
               'tools/benchmark_frame_threads.py','tools/benchmark_packet_validation.py',
               'tools/benchmark_validation_pipeline.py','tools/benchmark_gpu_decode.py',
@@ -150,8 +150,6 @@ def create_release(root, archive, release_note, hdr_tool_archive=None, dovi_tool
         files['deploy/truenas/build_ffmpeg9.sh']=root/'deploy/truenas/build_ffmpeg9.sh'
         files['deploy/truenas/ffmpeg9-source.sha256']=root/'deploy/truenas/ffmpeg9-source.sha256'
         files['vendor/ffmpeg9-source/source.sha256']=root/'deploy/truenas/ffmpeg9-source.sha256'
-        for name in ('docs/ffmpeg-compatibility.md','docs/fix-ledger.json','docs/fix-ledger.md'):
-            files[name]=root/name
     if hdr_tool_archive is not None:
         vendor=Path(hdr_tool_archive).resolve(strict=True)
         if hashlib.sha256(vendor.read_bytes()).hexdigest()!='06385f37a639d61ba21d4be3150c863846933bc3b58110e094d8fc8f1c2249f2':
