@@ -58,7 +58,7 @@ jobs:
           python3 - <<'PY'
           import hashlib,json,os,re,shutil,sys
           from pathlib import Path
-          sys.path.insert(0,'tools')
+          sys.path.insert(0,'deploy')
           from audit_public_release import audit,extract_context
           root=Path(os.environ['RUNNER_TEMP'])/'release'
           for name,key in [('qualified-image.tar','IMAGE_SHA'),('public-release.json','REVIEW_SHA')]:

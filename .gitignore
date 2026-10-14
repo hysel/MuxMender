@@ -159,3 +159,8 @@ tools/*
 !tools/qualify_cpu_contention.py
 !tools/prepare_hosted_build.py
 !tools/install_fel_runtime.py
+
+# Local development archives are not part of the published app source.
+/tools/
+/tests/
+/native/muxmender-d3d11/
