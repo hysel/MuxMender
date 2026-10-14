@@ -27,6 +27,8 @@ jobs:
     permissions:
       # Draft release assets require push access to read. No registry permission.
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -88,6 +90,10 @@ jobs:
           set -euo pipefail
           python3 -B deploy/export_candidate.py muxmender-candidate:ci "$RUNNER_TEMP/candidate"
           cp "$RUNNER_TEMP/receipts/runtime.json" "$RUNNER_TEMP/candidate/runtime.json"
+      - name: Sign candidate build provenance
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661
+        with:
+          subject-path: ${{ runner.temp }}/candidate/candidate-image.tar
       - name: Retain candidate for qualification
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
