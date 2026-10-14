@@ -36,6 +36,22 @@ jobs:
           docker run --rm --network none --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/qualification,readonly" --entrypoint python3 muxmender-candidate:ci -B /qualification/deploy/audit_image_runtime.py --require-redistributable --require-ffmpeg9 > "$RUNNER_TEMP/receipts/runtime.json"
           docker run --rm --network none --entrypoint python3 muxmender-candidate:ci -B -c 'import app_service, auto_optimize, av; assert av.__version__ == "19.0.0"'
           echo 'GitHub build, runtime audit and import checks complete. Full regression suite is retained outside this repository and must be run before release approval. No GPU qualification or public-image approval claimed. No registry push or stable promotion performed.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Export the exact candidate image
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B deploy/export_candidate.py muxmender-candidate:ci "$RUNNER_TEMP/candidate"
+          cp "$RUNNER_TEMP/receipts/runtime.json" "$RUNNER_TEMP/candidate/runtime.json"
+      - name: Retain candidate for qualification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-image-${{ github.sha }}
+          path: ${{ runner.temp }}/candidate/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Report retained package
+        run: echo 'Candidate image retained for 14 days with image ID, source revision, SHA256 and runtime audit. This is not a qualified release; stable is unchanged.' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
