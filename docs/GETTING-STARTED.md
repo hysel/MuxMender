@@ -77,24 +77,6 @@ After verified replacement, [cleanup](replacement-cleanup.md) removes eligible
 generated work files. It keeps job history and does not sweep active jobs or
 safe-copy outputs.
 
-## Prefer a script?
-
-Inspect a single file without converting it:
-
-```powershell
-python python/media_workflow.py "D:\Media\Example.mkv" --output-dir "E:\Optimized"
-```
-
-See the available options:
-
-```powershell
-python python/media_workflow.py --help
-```
-
-Run these from the repository folder with Python 3.10 or newer and FFmpeg /
-FFprobe installed. The [standalone guide](STANDALONE.md) and older
-[local web planner](WEBUI.md) describe separate entry points with different controls.
-
 ## Before a large run
 
 Start with a small selection and confirm your players handle the results. Keep
@@ -103,4 +85,5 @@ replacement. The current app has no dashboard login: keep it on a trusted
 network, not exposed directly to the internet.
 
 Merged code is not automatically installed on your server. Check the
-[status report](STATUS.md) and [roadmap](TODO.md) before deploying an update.
+[published release notes](https://github.com/hysel/MuxMender/releases) before
+updating the app.
