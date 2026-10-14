@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'python'))
 from job_tracking import Job
 
-NOTICE_GROUPS = {'ubuntu-notices', 'python-notices', 'rust-notices-r2',
+NOTICE_GROUPS = {'ubuntu-notices', 'python-notices', 'wheel-notices', 'rust-notices-r2',
                  'recovered-notices-r2', 'conda-materials'}
 CUSTOM_GROUPS = {'custom-sources', 'upstream', 'wheel-sources'}
 

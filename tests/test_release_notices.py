@@ -61,6 +61,15 @@ class NoticePreparation(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'checksum'):
                 module.prepare(root, root/'output', root)
 
+    def test_separately_collected_wheel_notices_are_retained(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            name='wheel-notices/public-materials/notices/pyav-wheel/LICENSE'
+            self.fixture(root,name)
+            result=module.prepare(root,root/'output',root)
+            self.assertEqual(result['notices'],1)
+            self.assertEqual((root/'output/public-materials/notices'/name).read_bytes(),b'Original notice text\n')
+
     def test_rejects_traversal(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
