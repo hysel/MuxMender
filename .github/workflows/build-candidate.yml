@@ -8,6 +8,10 @@ on:
       materials_sha256:
         description: SHA256 of build-notices.tar
         required: true
+      runtime_generation:
+        description: Increment to rebuild unchanged dependencies for security updates
+        default: '1'
+        required: true
 permissions:
   contents: read
 concurrency:
@@ -16,7 +20,8 @@ concurrency:
 jobs:
   build:
     if: github.ref == 'refs/heads/main'
-    environment: container-release
+    # Build-only work needs no publication approval. The publish job retains
+    # the protected container-release environment and registry permission.
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -39,16 +44,34 @@ jobs:
           gh release download "$MATERIALS_RELEASE" --repo "$GITHUB_REPOSITORY" --pattern build-notices.tar --dir "$RUNNER_TEMP/notices-download"
           python3 -B deploy/prepare_build_notices.py --archive "$RUNNER_TEMP/notices-download/build-notices.tar" --sha256 "$MATERIALS_SHA256" --destination "$RUNNER_TEMP/notices-verified"
           cp -a "$RUNNER_TEMP/notices-verified/public-materials" public-materials
+      - name: Restore exact dependency runtime
+        id: runtime-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/runtime-cache
+          key: runtime-linux-amd64-${{ inputs.runtime_generation }}-${{ hashFiles('deploy/truenas/Dockerfile.public', 'deploy/truenas/Dockerfile.hdr-gpu-reader', 'deploy/truenas/build_ffmpeg9.sh', 'deploy/truenas/requirements-av1-runtime.txt', 'deploy/truenas/ffmpeg9-source.sha256', 'deploy/install_fel_runtime.py', 'deploy/patch_cuda_ffprobe.py', 'deploy/prepare_hosted_build.py', 'python/dv_fel_runtime.py') }}
       - name: Fetch checksum-pinned upstream inputs
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
         run: python3 -B deploy/prepare_hosted_build.py
       - name: Build FFmpeg 9 GPU reader from source
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
         run: |
           docker build --output type=local,dest=reader-output reader-build
           mkdir -p vendor/gpu-reader
           cp reader-output/bin/ffprobe-cuda vendor/gpu-reader/ffprobe-cuda
+      - name: Build and retain dependency runtime
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --target runtime -f deploy/truenas/Dockerfile.public -t muxmender-runtime:ci .
+          python3 -B deploy/runtime_cache.py save muxmender-runtime:ci "$RUNNER_TEMP/runtime-cache"
+      - name: Load and verify cached runtime
+        shell: bash
+        run: python3 -B deploy/runtime_cache.py load muxmender-runtime:ci "$RUNNER_TEMP/runtime-cache"
       - name: Build candidate image on GitHub
         run: |
-          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -f deploy/truenas/Dockerfile.public -t muxmender-candidate:ci .
+          docker build --build-arg RUNTIME_IMAGE=muxmender-runtime:ci --label "org.opencontainers.image.revision=$GITHUB_SHA" -f deploy/truenas/Dockerfile.public -t muxmender-candidate:ci .
       - name: Audit runtime and run CPU-compatible image checks
         shell: bash
         run: |
