@@ -1,8 +1,11 @@
 # Set up the app
 
-MuxMender runs as a container with its own browser interface. The first release
-path focuses on Linux and NVIDIA GPUs. You choose which GPU and folders the app
-can access; it doesn't install a driver on your server.
+MuxMender runs as a Linux amd64 Docker container with its own browser interface.
+It is not limited to TrueNAS: Linux Docker hosts and Windows Docker Desktop
+with the WSL 2 Linux-container backend are deployment options. The current release
+targets NVIDIA GPUs. You choose which GPU and folders the app can access; it
+doesn't install a driver on your host. End-to-end qualification currently covers
+Linux/TrueNAS, not Windows Docker Desktop.
 
 For complete, copyable setup instructions, see the README's
 [TrueNAS installation](../../README.md#install-on-truenas) or
@@ -66,7 +69,8 @@ is recovering it.
 Use **`ghcr.io/hysel/muxmender:stable`** for the stable release channel.
 No registry login is required. Read the
 [release notes](https://github.com/hysel/MuxMender/releases)
-before installing; the app targets Linux amd64 with NVIDIA GPU access.
+before installing; the image uses Linux amd64 with NVIDIA GPU access, even when
+the host runs Windows. See the README for Windows setup and qualification limits.
 Numbered release tags remain available for pinning or rollback.
 
 The release includes `compose.release.yaml`. Replace every `REPLACE_*` value
