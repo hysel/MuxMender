@@ -1,0 +1,47 @@
+name: Build candidate on GitHub
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: hosted-candidate
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    environment: container-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Fetch checksum-pinned upstream inputs
+        run: python3 -B tools/prepare_hosted_build.py
+      - name: Build FFmpeg 9 GPU reader from source
+        run: |
+          docker build --output type=local,dest=reader-output reader-build
+          mkdir -p vendor/gpu-reader
+          cp reader-output/bin/ffprobe-cuda vendor/gpu-reader/ffprobe-cuda
+      - name: Build candidate image on GitHub
+        run: |
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -f deploy/truenas/Dockerfile.public -t muxmender-candidate:ci .
+      - name: Audit runtime and run CPU-compatible image checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/receipts" "$RUNNER_TEMP/work"
+          sudo chown 568:568 "$RUNNER_TEMP/work"
+          docker image inspect muxmender-candidate:ci --format '{{.Id}}' > "$RUNNER_TEMP/receipts/image-id.txt"
+          docker run --rm --network none --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/qualification,readonly" --entrypoint python3 muxmender-candidate:ci -B /qualification/tools/audit_image_runtime.py --require-redistributable --require-ffmpeg9 > "$RUNNER_TEMP/receipts/runtime.json"
+          version=$(python3 -c 'import sys;sys.path.insert(0,"python");from app_version import VERSION;print(VERSION)')
+          for mode in runtime reaper; do
+            docker run --rm --network none --env TMPDIR=/work --mount "type=bind,src=$RUNNER_TEMP/work,dst=/work" --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/qualification,readonly" --entrypoint /usr/bin/tini muxmender-candidate:ci -- python3 -B /qualification/tools/smoke_app_release.py "$mode" --version "$version" --public-runtime 2>&1 | tee "$RUNNER_TEMP/receipts/$mode.log"
+          done
+          echo 'GitHub build and CPU checks complete. No GPU qualification or public-image approval claimed. No registry push or stable promotion performed.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: hosted-build-receipts
+          path: ${{ runner.temp }}/receipts/
+          retention-days: 14

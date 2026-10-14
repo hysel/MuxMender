@@ -157,3 +157,4 @@ tools/*
 !tools/qualify_full_vmaf_threads.py
 !tools/qualify_resource_release.py
 !tools/qualify_cpu_contention.py
+!tools/prepare_hosted_build.py
