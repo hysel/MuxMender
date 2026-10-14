@@ -263,7 +263,8 @@ is for optimizing an existing library, not downloading content or bypassing DRM.
 
 ## Source and support
 
-This repository also contains the source, automated tests and build infrastructure
-needed to maintain the app. They are not installation or everyday-use steps.
+This repository also contains the app source and essential deployment infrastructure.
+Development test suites and experimental tools are maintained separately; they
+are not installation or everyday-use steps.
 For help, open an issue with the app version and sanitized error details; leave
 out private paths and video names.

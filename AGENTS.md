@@ -1,6 +1,10 @@
 # Shared implementation requirement
 
 The standalone CLI and TrueNAS app are frontends to shared media services.
+Development tests, research tools and the experimental D3D11 helper are maintained
+in the local development archive, not the published tree. Only essential build,
+audit and publication helpers belong under deploy/. Run the external qualification
+suite before release approval; a hosted build alone is not full qualification.
 Do not implement a separate app-specific codec, naming, quality, metadata,
 cleanup, capability or publication policy. Reuse/extract the shared implementation
 and add parity tests when exposing a feature through another frontend.

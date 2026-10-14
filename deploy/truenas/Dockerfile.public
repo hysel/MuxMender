@@ -29,8 +29,8 @@ RUN if [ -f /opt/muxmender-readers/ffprobe-cuda ]; then chmod 0555 /opt/muxmende
 ENV PYTHONPATH=/opt/muxmender:/opt/muxmender-runtime PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 ENV PATH=/opt/ffmpeg9/bin:/opt/dovi:/opt/hdr10plus:$PATH
 COPY vendor/fel-runtime-archives/ /tmp/fel-runtime-archives/
-COPY tools/install_fel_runtime.py /opt/muxmender-tools/install_fel_runtime.py
-RUN python3 -B /opt/muxmender-tools/install_fel_runtime.py --archives /tmp/fel-runtime-archives --destination /opt/muxmender/runtime/felbaker --execute
+COPY deploy/install_fel_runtime.py /opt/muxmender-deploy/install_fel_runtime.py
+RUN python3 -B /opt/muxmender-deploy/install_fel_runtime.py --archives /tmp/fel-runtime-archives --destination /opt/muxmender/runtime/felbaker --execute
 COPY LICENSE /opt/muxmender-notices/MuxMender-LICENSE
 # Review materials must accompany the public context; audit checks their hashes.
 COPY public-materials/ /opt/muxmender-notices/public-materials/
