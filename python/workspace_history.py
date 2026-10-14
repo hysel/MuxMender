@@ -31,7 +31,7 @@ class WorkspaceHistory:
             else:
                 values = data.get('preferences', {})
                 choices = {'sort': ('newest', 'oldest', 'name', 'saved'),
-                           'filter': ('all', 'active', 'ready', 'kept', 'attention', 'replaced', 'complete', 'history'),
+                           'filter': ('all', 'active', 'ready', 'replaceable', 'kept', 'attention', 'replaced', 'complete', 'history'),
                            'theme': ('system', 'light', 'dark'), 'show_archived': (True, False)}
                 if not isinstance(values, dict) or set(values) - (set(choices) | {'batch'}):
                     raise ValueError('Unknown view preference')

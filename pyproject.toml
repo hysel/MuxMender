@@ -17,7 +17,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-hdr-av1 = ["av==18.1.0"]
+hdr-av1 = ["av==19.0.0"]
 
 [project.scripts]
 muxmender = "muxmender:cli"

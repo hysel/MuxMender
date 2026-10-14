@@ -31,7 +31,7 @@ def assess(status,selection,expected,cleanup):
 def run(root):
     if not sys.platform.startswith('linux'):raise RuntimeError('Linux-only real-media qualification')
     import av
-    if av.__version__!='18.1.0':raise RuntimeError('This qualification requires the pinned PyAV 18.1.0 runtime')
+    if av.__version__!='19.0.0':raise RuntimeError('This qualification requires the pinned PyAV 19.0.0 runtime')
     from job_tracking import progress
     from media_workflow import automatic_arguments
     from quality_profiles import profile

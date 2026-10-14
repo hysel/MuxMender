@@ -49,6 +49,17 @@ let activeFolder=null,folderFiles=[],browseVersion=0,selectionVersion=0,previewV
 const controlElement=id=>document.querySelector('#'+id);
 function controlMessage(text){if(controlElement('control-feedback').textContent!==text)controlElement('control-feedback').textContent=text}
 let previewReplaces=false;
+function previewEligibility(body){
+ const files=body.files||[],blocked=files.filter(row=>row.history_reason),eligible=files.length-blocked.length;
+ if(!blocked.length)return {eligible,message:'Review the file list and settings. Preview expires in 10 minutes.'};
+ let message=eligible?eligible+' video(s) can be queued; '+blocked.length+' excluded by history or an active job.':'Nothing can be added with these settings.';
+ const active=blocked.filter(row=>['pending','running'].includes(row.history_state)).length;
+ if(active===blocked.length)message+=' These videos are already queued or running. Wait for their current jobs to finish.';
+ else if(body.settings?.history_mode==='retry')message+=' “Retry skipped/failed files only” excludes successful conversions, files marked Keep original, and files without an eligible earlier result. To test this selection again, choose “Recheck everything, including successful conversions”, then preview again.';
+ else if(body.settings?.history_mode!=='all')message+=' Saved history excludes these videos. To test this selection again, choose “Recheck everything, including successful conversions”, then preview again.';
+ else message+=' Review the reason beside each excluded video; active jobs cannot be added twice.';
+ return {eligible,message};
+}
 function invalidatePreview(){previewVersion++;previewId=null;previewReplaces=false;controlElement('submit-job').disabled=true;controlElement('request-preview').hidden=true;const box=controlElement('confirm-replacement');if(box)box.checked=false}
 function collapseSubmittedSetup(body){
  const section=controlElement('workflow');
@@ -64,7 +75,7 @@ document.querySelectorAll('a[href="#workflow"]').forEach(link=>link.addEventList
  const section=controlElement('workflow');if(section?.tagName==='DETAILS')section.open=true;
 }));
 async function controlCall(action,extra={}){
- const response=await fetch('/api/control',{method:'POST',...(['resource-profile','gpu-yield'].includes(action)?{signal:AbortSignal.timeout(15000)}:{}),headers:{'Content-Type':'application/json','X-MuxMender-CSRF':controlToken||''},body:JSON.stringify({action,...extra})});
+ const response=await fetch('/api/control',{method:'POST',...(['resource-profile','gpu-yield','cpu-allocation'].includes(action)?{signal:AbortSignal.timeout(15000)}:{}),headers:{'Content-Type':'application/json','X-MuxMender-CSRF':controlToken||''},body:JSON.stringify({action,...extra})});
  const body=await response.json();if(!response.ok)throw Error(body.error||'Request failed');return body;
 }
 async function browseMedia(path='',offset=0){try{
@@ -130,7 +141,8 @@ controlElement('preview-job').addEventListener('click',async()=>{invalidatePrevi
  controlElement('preview-description').textContent+=' Output: '+controlElement('output-preset').selectedOptions[0].textContent+' · Quality checks: '+controlElement('quality-gate-profile').selectedOptions[0].textContent+' · HDR: '+controlElement('hdr-policy').selectedOptions[0].textContent+'.';
  const age=body.age_filter||{};controlElement('preview-description').textContent+=' Creation age: '+(body.settings.age_unit==='all'?'All files':'Within the last '+body.settings.age_value+' '+body.settings.age_unit)+'. '+(age.outside_age_window||0)+' outside the age window; '+(age.creation_date_unavailable||0)+' excluded because creation date is unavailable. Selection is fixed at preview time.';
  const list=controlElement('preview-files');list.replaceChildren();for(const row of body.files){const li=document.createElement('li');const goal=row.savings_policy;li.textContent=row.path+' ('+(row.signature[0]/1e9).toFixed(2)+' GB)'+(goal?' — Must save '+(goal.required_bytes/1e9).toFixed(3)+' GB ('+goal.effective_percent.toFixed(1)+'%)'+(!goal.possible?' — Too small for this target':''):'')+(row.history_reason?' — Will skip. '+row.history_reason:'');list.append(li)}
- controlElement('request-preview').hidden=false;controlElement('submit-job').disabled=previewReplaces;controlMessage('Review the file list and settings. Preview expires in 10 minutes.');controlElement('preview-description').focus?.();
+ const eligibility=previewEligibility(body);if(!eligibility.eligible){previewId=null;previewReplaces=false;controlElement('replacement-confirmation').hidden=true;controlElement('preview-description').textContent=eligibility.message+' '+controlElement('preview-description').textContent;}
+ controlElement('request-preview').hidden=false;controlElement('submit-job').disabled=!eligibility.eligible||previewReplaces;controlMessage(eligibility.message);controlElement('preview-description').focus?.();
  }catch(error){controlMessage(error.message)}});
 controlElement('confirm-replacement').addEventListener('change',()=>{controlElement('submit-job').disabled=!previewId||(previewReplaces&&!controlElement('confirm-replacement').checked)});
 controlElement('submit-job').addEventListener('click',async()=>{if(!previewId||(previewReplaces&&!controlElement('confirm-replacement').checked))return;controlElement('submit-job').disabled=true;try{const body=await controlCall('submit',{preview_id:previewId,confirm_replace:previewReplaces&&controlElement('confirm-replacement').checked});invalidatePreview();controlMessage(body.queued+' new job(s) recorded. '+(body.history_skipped||[]).length+' skipped using saved history or active jobs.');collapseSubmittedSetup(body);refreshControls()}catch(error){controlMessage(error.message);controlElement('submit-job').disabled=!previewId}});
@@ -141,6 +153,18 @@ for(const [id,action] of [['pause-selected','pause'],['resume-selected','resume'
  catch(error){queueActionError='Queue action failed: '+error.message;controlMessage(error.message)}
  finally{queueActionBusy=false;renderQueueActions(lastQueueControl,queueStatusUnavailable);refreshControls()}
 });
+let cpuPreferenceDirty=false,cpuPreferenceBusy=false;
+const cpuMode=controlElement('cpu-mode'),cpuCeiling=controlElement('cpu-ceiling');
+if(cpuMode){cpuMode.addEventListener('change',()=>{cpuPreferenceDirty=true;cpuCeiling.disabled=cpuMode.value!=='custom'});cpuCeiling.addEventListener('input',()=>{cpuPreferenceDirty=true});
+ controlElement('save-cpu-allocation').addEventListener('click',async()=>{
+  if(cpuPreferenceBusy)return;
+  const button=controlElement('save-cpu-allocation'),feedback=controlElement('cpu-allocation-feedback');
+  if(cpuMode.value==='custom'&&!cpuCeiling.reportValidity())return;
+  cpuPreferenceBusy=true;button.disabled=true;cpuMode.disabled=true;cpuCeiling.disabled=true;
+  try{const result=await controlCall('cpu-allocation',{mode:cpuMode.value,ceiling:Number(cpuCeiling.value)});cpuPreferenceDirty=false;feedback.textContent=result.message}
+  catch(error){feedback.textContent='Could not save CPU preference: '+error.message}
+  finally{cpuPreferenceBusy=false;button.disabled=false;cpuMode.disabled=false;cpuCeiling.disabled=cpuMode.value!=='custom';refreshControls()}
+ });}
 let resourceProfileBusy=false,resourceProfileDirty=false;
 controlElement('resource-profile').addEventListener('change',()=>{resourceProfileDirty=true});
 async function applyResourceProfile(){
@@ -233,9 +257,18 @@ async function refreshControls(){if(controlPollBusy)return;controlPollBusy=true;
  const savedProfile=controlElement('resource-profile-current');if(savedProfile){const names={quiet:'Quiet — up to one file',shared:'Shared host — up to two files',faster:'Faster — up to four files'};savedProfile.textContent='Saved setting: '+(names[body.resource_profile]||'Unavailable')}
  renderGpuSharing(body);
  const resource=body.resources||{},metrics=resource.telemetry||{};
+ const advice=body.cpu_allocation,adviceElement=controlElement('cpu-advice');
+ if(advice&&adviceElement){
+  const count=value=>Number.isFinite(value)?String(value):'unknown';
+  adviceElement.textContent=count(advice.logical_cpus)+' logical CPUs · '+count(advice.physical_cores)+' physical cores · '+count(advice.effective_cpus)+' CPUs available to this app'+(Number.isFinite(advice.quota_cpus)?' (quota '+advice.quota_cpus+')':'')+'. Recommended: '+advice.recommended_scoring_threads+' scoring threads per stage. '+advice.reason+' '+advice.note;
+  if(Number.isFinite(advice.suggested_single_job_allocation_cpus))adviceElement.textContent+=' For one active conversion, consider an allowance of up to '+advice.suggested_single_job_allocation_cpus+' CPUs if the host can spare them. This is a starting point, not a measured optimum for your machine.';
+  if(!cpuPreferenceBusy&&!cpuPreferenceDirty){cpuMode.value=advice.setting.mode;cpuCeiling.value=advice.setting.ceiling||2;cpuCeiling.disabled=cpuMode.value!=='custom'}
+ }
  const metric=(key,suffix,digits=0)=>Number.isFinite(metrics[key])?metrics[key].toFixed(digits)+suffix:'Unavailable';
  controlElement('resource-status').textContent=(body.snapshot_stale||body.snapshot_error)?'Resource readings are delayed; queue status is current.':'Host CPU '+metric('cpu_percent','%')+(Number.isFinite(metrics.container_cpu_percent)?' · App CPU allocation '+metric('container_cpu_percent','%'):'')+' · Available RAM '+metric('available_gib',' GiB',1)+' · GPU compute '+metric('gpu_compute_percent','%')+' · GPU encode '+metric('gpu_encode_percent','%')+' · GPU decode '+metric('gpu_decode_percent','%')+' · Free VRAM '+metric('vram_free_gib',' GiB',1)+' · '+(resource.active||0)+' workers · '+(resource.reason||'Collecting measurements');
  const admission=body.gpu_admission||{};
+ const cpuYield=resource.cpu_yield||{};
+ if(cpuYield.block_admission&&!body.snapshot_stale&&!body.snapshot_error)controlElement('resource-status').textContent+=' · '+cpuYield.reason;
  if(admission.reason&&!body.snapshot_stale&&!body.snapshot_error)controlElement('resource-status').textContent+=' · GPU stages: '+admission.limit+' · '+admission.reason;
  controlElement('control-availability').textContent=body.ready?'Ready · choose your action below':'Worker unavailable: '+(body.error||'starting');
  controlReady=body.ready;controlElement('preview-job').disabled=!body.ready||!workspaceReady;

@@ -10,7 +10,7 @@ from pathlib import Path
 import tarfile
 
 GPU_READER_SOURCE_CHECKSUMS={
-    'ffmpeg-8.0.1.tar.xz':'05ee0b03119b45c0bdb4df654b96802e909e0a752f72e4fe3794f487229e5a41',
+    'ffmpeg-9.0.2.tar.xz':'8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e',
     'nv-codec-headers-n13.0.19.0.tar.gz':'86d15d1a7c0ac73a0eafdfc57bebfeba7da8264595bf531cf4d8db1c22940116'}
 
 FFMPEG9_SOURCE_CHECKSUMS={
@@ -55,7 +55,7 @@ def inspect_gpu_reader_bundle(directory):
     """Bundle a proven executable plus matching evidence and complete sources."""
     import importlib.util
     directory=Path(directory).resolve(strict=True)
-    names=('ffprobe-cuda','qualification.json','evidence.json','source/ffmpeg-8.0.1.tar.xz',
+    names=('ffprobe-cuda','qualification.json','evidence.json','source/ffmpeg-9.0.2.tar.xz',
            'source/nv-codec-headers-n13.0.19.0.tar.gz','source/patch_cuda_ffprobe.py',
            'source/COPYING.LGPLv2.1','source/LICENSE.md')
     files={}

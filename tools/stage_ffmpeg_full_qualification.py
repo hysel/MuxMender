@@ -14,7 +14,7 @@ PINS={
     'ffmpeg-9.0.2.tar.xz':'8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e',
     'nv-codec-headers-n13.0.19.0.tar.gz':'86d15d1a7c0ac73a0eafdfc57bebfeba7da8264595bf531cf4d8db1c22940116',
     'vmaf-3.0.0.tar.gz':'7178c4833639e6b989ecae73131d02f70735fdb3fc2c7d84bc36c9c3461d93b1',
-    'av-18.1.0-cp311-abi3-manylinux_2_28_x86_64.whl':'8a032e8d8ebc73dec079364b9b4a6837638a2d106e8472314e685ffbf163e700',
+    'av-19.0.0-cp312-abi3-manylinux_2_28_x86_64.whl':'9cd9f692c28990ee234ddde69f72725bbff93831ffa6d2492518d4b193dda0c8',
     'libplacebo-7.351.0.tar.gz':'716954501d9b76e6906fddda66febc5886493d0673dd265ec1e6e52f4e5cd7c6',
     'vulkan-headers-libplacebo.tar.gz':'400dc4bc49438f24ab9e90e6e587d9b1621a236f05eba80f6c048d7a1a96d353',
 }

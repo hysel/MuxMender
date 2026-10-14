@@ -1,2 +1,2 @@
-# Qualified Linux x86-64 CPython 3.11+ ABI3 wheel; package includes its notices.
-av==18.1.0 --hash=sha256:8a032e8d8ebc73dec079364b9b4a6837638a2d106e8472314e685ffbf163e700
+# Linux x86-64 CPython 3.12+ ABI3 candidate; FFmpeg 9 ABI. Qualification required.
+av==19.0.0 --hash=sha256:9cd9f692c28990ee234ddde69f72725bbff93831ffa6d2492518d4b193dda0c8

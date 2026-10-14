@@ -1,11 +1,13 @@
 # Generic app image: GPU devices and folders are assigned by TrueNAS, not here.
-FROM ghcr.io/linuxserver/ffmpeg:8.0.1-cli-ls61@sha256:81e11f5953179536ca3b478f406d77ae3f114ad72a6243d78ff2476a2b76eb3a AS ffmpeg9-build
+FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55 AS ffmpeg9-build
+ENV DEBIAN_FRONTEND=noninteractive
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config nasm xz-utils xxd meson ninja-build python3-jinja2 zlib1g-dev libdav1d-dev libx264-dev libx265-dev libaom-dev libzimg-dev libass-dev libshaderc-dev libvulkan-dev && apt-get clean
 COPY vendor/ffmpeg9-source/ /build/source/
 COPY deploy/truenas/build_ffmpeg9.sh /build/build_ffmpeg9.sh
 RUN bash /build/build_ffmpeg9.sh
-FROM ghcr.io/linuxserver/ffmpeg:8.0.1-cli-ls61@sha256:81e11f5953179536ca3b478f406d77ae3f114ad72a6243d78ff2476a2b76eb3a
+FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+ENV DEBIAN_FRONTEND=noninteractive
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip mkvtoolnix libzstd1 tini libdav1d7 libx264-164 libx265-199 libaom3 libzimg2 libass9 libshaderc1 libvulkan1 && apt-get clean
 COPY --from=ffmpeg9-build /opt/ffmpeg9/ /opt/ffmpeg9/

@@ -55,6 +55,7 @@ def main():
     parser.add_argument('--controls-job',type=Path,required=True)
     parser.add_argument('--destination',type=Path,required=True)
     parser.add_argument('--dependencies',type=Path,required=True)
+    parser.add_argument('--remote-artifact-root',required=True,help='Fresh FFmpeg 9 reader build export on the research host; old qualification is not reusable')
     parser.add_argument('--additional-pair',nargs=2,type=Path,action='append',default=[],
                         metavar=('REAL_JOB','CONTROLS_JOB'),help='Include another fully qualified codec for the same artifact/runtime')
     args=parser.parse_args()
@@ -69,10 +70,10 @@ def main():
         destination.mkdir(parents=True,exist_ok=False)
         (destination/'source').mkdir()
         job.save(phase='Copying qualified reader and complete source/license artifacts',detail='No media copies; installed app unchanged')
-        hostroot='/mnt/FR4G/Apps/muxmender/output/hdr-gpu-reader-build-20261002-r3/binary-r3'
+        hostroot=args.remote_artifact_root
         for remote,local in [('bin/ffprobe-cuda',destination/'ffprobe-cuda'),
                 *[(f'source/{name}',destination/'source'/name) for name in
-                  ('ffmpeg-8.0.1.tar.xz','patch_cuda_ffprobe.py','COPYING.LGPLv2.1','LICENSE.md')]]:
+                  ('ffmpeg-9.0.2.tar.xz','patch_cuda_ffprobe.py','COPYING.LGPLv2.1','LICENSE.md')]]:
             copied=subprocess.run(['scp','-i','C:/Users/itama/.ssh/haven42-ubuntu24-alpha2-ed25519',
                 '-o','BatchMode=yes','-o','ConnectTimeout=5','muxmender@192.168.1.232:'+hostroot+'/'+remote,str(local)],
                 text=True,capture_output=True,timeout=60)

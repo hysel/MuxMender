@@ -97,6 +97,10 @@ def assemble(remote,key,supplement,output,reports,collected_root=None,omit_media
         for folder in ('pinned-inputs','wheel-sources','rust-sources','rpm-sources'):
             receipts=json.loads((supplement/folder/'download-receipts.json').read_text())
             for row in receipts:checked_file(supplement/folder,row['name'],row['sha256'])
+        wheel_notices=supplement/'wheel-notices'
+        if wheel_notices.exists():
+            for row in json.loads((wheel_notices/'notice-index.json').read_text()):
+                checked_file(wheel_notices,row['path'],row['sha256'])
         notices=json.loads((supplement/'rust-notices-r2/crate-license-inventory.json').read_text())
         recovered=json.loads((supplement/'recovered-notices-r2/notice-recovery.json').read_text())
         covered={r['archive'] for r in recovered if r['recovered']}
@@ -120,6 +124,7 @@ def assemble(remote,key,supplement,output,reports,collected_root=None,omit_media
         for name in ('audit-supplement','conda-materials','wheel-sources','rust-sources','rust-notices-r2',
                      'recovered-notices-r2','rpm-sources','wheel-match','pinned-inputs'):
             groups[name]=supplement/name
+        if wheel_notices.exists():groups['wheel-notices']=wheel_notices
         catalog=[]
         transformations=[]
         with tarfile.open(bundle,'x') as archive:
@@ -135,7 +140,7 @@ def assemble(remote,key,supplement,output,reports,collected_root=None,omit_media
                     if excluded:transformations.append(dict(path=relative,original_sha256=digest(path),
                         public_sha256=digest(public),excluded_media_count=excluded,source_code_changed=False))
             for name in ('fel-dovi-submodule.tar.gz','felbaker-1.0.0.tar.gz','dovi-tool-2.3.3.tar.gz',
-                         'hdr10plus-tool-1.7.2.tar.gz','pyav-18.1.0.tar.gz','pyav-ffmpeg-8.1.2-1.tar.gz',
+                         'hdr10plus-tool-1.7.2.tar.gz','pyav-19.0.0.tar.gz','pyav-ffmpeg-9.0.2-1.tar.gz',
                          'almalinux-8.9-repomd.xml','almalinux-8.9-source-primary.xml.gz'):
                 path=supplement/name;relative='upstream/'+name
                 public,excluded=code_only_archive(path,output/'code-only'/relative) if omit_media_fixtures else (path,0)

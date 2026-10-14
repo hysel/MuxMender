@@ -14,6 +14,20 @@ from autonomous_queue import write
 
 
 class ControlTests(unittest.TestCase):
+    def test_cpu_preference_persists_and_rejects_invalid_values(self):
+        self.controls.action(dict(action='cpu-allocation',mode='custom',ceiling=1))
+        self.assertEqual(self.controls.state['cpu_allocation'],dict(mode='custom',ceiling=1))
+        self.assertEqual(self.controls.snapshot()['cpu_allocation']['setting']['ceiling'],1)
+        with self.assertRaises(ValueError):
+            self.controls.action(dict(action='cpu-allocation',mode='custom',ceiling=0))
+        self.assertEqual(self.controls.state['cpu_allocation']['ceiling'],1)
+
+    def test_preview_exposes_history_exclusion_state(self):
+        with patch.object(self.controls,'history_match',return_value=dict(state='awaiting-playback',reason='Validated copy exists')):
+            result=self.controls.preview(dict(path=str(self.source),mode='encode',history_mode='retry'))
+        self.assertEqual(result['files'][0]['history_state'],'awaiting-playback')
+        self.assertIn('Validated copy exists',result['files'][0]['history_reason'])
+
     def test_output_and_hdr_choices_reach_shared_worker(self):
         settings=self.controls.settings(dict(mode='test',output_preset='mobile720',hdr_policy='sdr'))
         command=self.controls.build_command(dict(source=str(self.source),settings=settings),self.output)

@@ -40,17 +40,25 @@ class RuntimePackageTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'checksum mismatch'):
                     build_app_release.inspect_ffmpeg9_sources(root)
 
-    def test_runtime_is_default_and_original_base_remains_available(self):
+    def test_runtime_is_default_without_legacy_base(self):
         root=Path(__file__).resolve().parents[1]
         text=(root/'deploy/truenas/Dockerfile.app').read_text()
         self.assertIn('AS ffmpeg9-build',text)
         self.assertIn('ENV PATH=/opt/ffmpeg9/bin:',text)
         self.assertIn('COPY --from=ffmpeg9-build /opt/ffmpeg9/',text)
-        self.assertNotIn('rm /usr/local/bin/ffmpeg',text)
+        self.assertNotIn('linuxserver/ffmpeg',text)
         script=(root/'deploy/truenas/build_ffmpeg9.sh').read_text()
         self.assertIn('sha256sum -c source/source.sha256',script)
         self.assertIn('-Dbuilt_in_models=true',script)
         self.assertIn('nv-codec-headers-n13.0.19.0',script)
+
+    def test_no_active_docker_recipe_pins_ffmpeg8(self):
+        root=Path(__file__).resolve().parents[1]
+        for path in (root/'deploy').rglob('Dockerfile*'):
+            with self.subTest(path=str(path)):
+                self.assertNotIn('ffmpeg:8.',path.read_text())
+                self.assertNotIn('ffmpeg-8.',path.read_text())
+        self.assertIn('ffmpeg-9.0.2.tar.xz',build_app_release.GPU_READER_SOURCE_CHECKSUMS)
 
 
 if __name__=='__main__':unittest.main()

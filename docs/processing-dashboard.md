@@ -94,3 +94,22 @@ amount of free space.
 
 The app and CLI use the same job progress information. These features are in
 the code; check the [status report](STATUS.md) for deployment context.
+
+## GPU activity readings
+
+The next dashboard update shows **GPU Encoding**, **GPU Decoding** and **GPU
+Compute** separately beside CPU and available RAM. Encoding and decoding use
+dedicated video engines; low compute usage does not mean encoding is idle.
+
+These readings include other apps. With multiple visible GPUs, each value is
+the highest reading for that engine, possibly from different cards. Do not add
+the percentages together or interpret them as MuxMender-only usage. Missing
+readings show **Unavailable**, and stale snapshots show **Stale** rather than
+presenting an old number as current. This display does not change throttling.
+
+## Find copies you can use to replace originals
+
+Choose **Ready to replace** in Results, or in its Show dropdown. This shows
+the latest results that offer **Replace original with this copy**. Search and
+folder filters still apply. Opening the action checks that the source and copy
+are still available; you must confirm before a replacement is queued.

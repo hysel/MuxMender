@@ -34,7 +34,7 @@ def main():
     if real_profiles and args.start_in_research and not args.runtime_wheel:parser.error('Real profiles need a private pinned Linux PyAV wheel')
     runtime_hash=None
     if args.runtime_wheel:
-        if args.runtime_wheel.name!='av-18.1.0-cp311-abi3-manylinux_2_28_x86_64.whl':parser.error('Unsupported qualification runtime wheel')
+        if args.runtime_wheel.name!='av-19.0.0-cp312-abi3-manylinux_2_28_x86_64.whl':parser.error('Unsupported qualification runtime wheel')
         runtime_hash=hashlib.sha256(args.runtime_wheel.read_bytes()).hexdigest()
     if args.codec!='hevc' and not longer:parser.error('--codec applies only to hdr-sdr-long')
     title=('Mobius SDR excerpt with copied tracks' if longer else 'HDR-to-SDR short comparison') if hdr else 'Full-source audio fix qualification'
@@ -91,7 +91,7 @@ if RUNTIME_HASH:
    p=pathlib.PurePosixPath(entry)
    if p.is_absolute() or '..' in p.parts:raise ValueError('Unsafe runtime wheel')
   runtime.extractall(root/'runtime')
- (root/'runtime-evidence.json').write_text(json.dumps(dict(sha256=RUNTIME_HASH,version='18.1.0',scope='Private isolated Linux research only')))
+ (root/'runtime-evidence.json').write_text(json.dumps(dict(sha256=RUNTIME_HASH,version='19.0.0',scope='Private isolated Linux research only')))
 (root/'launch.sh').write_text(LAUNCHER)
 (root/'research-options.json').write_text(json.dumps(dict(codec=CODEC,preset_matrix=PRESET_MATRIX)))
 if REQUEST_IDS:

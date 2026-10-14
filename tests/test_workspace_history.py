@@ -43,6 +43,13 @@ class WorkspaceHistoryTests(unittest.TestCase):
         self.assertEqual(fresh.state['view']['theme'],'dark')
         self.assertNotIn('app_version',fresh.state['jobs'][0])
         self.assertEqual(fresh.state['extension_field'],'preserved')
+
+    def test_replaceable_filter_is_saved_without_changing_jobs(self):
+        self.job();before=[dict(j) for j in self.c.state['jobs']]
+        self.c.action(dict(action='view-preferences',preferences=dict(filter='replaceable')))
+        fresh=Controls(self.media,self.output,lambda _:True,['hevc','av1'])
+        self.assertEqual(fresh.state['view']['filter'],'replaceable')
+        self.assertEqual(self.c.state['jobs'],before)
         self.assertEqual(fresh.snapshot()['app_version'],VERSION)
         for prefs in ({'sort':'bad'},{'show_archived':1},{'delete_media':True}):
             with self.assertRaises(ValueError):self.c.action(dict(action='view-preferences',preferences=prefs))

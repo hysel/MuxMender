@@ -31,7 +31,7 @@ def main():
         video=source(args.video_request)
         progress('NVIDIA reader · short strict feasibility check',0,2,unit='diagnostic cases',
                  detail='60-second reader check only; GPU decoding does not imply corruption recovery')
-        command=['/usr/local/bin/ffmpeg','-v','error','-nostdin','-xerror',
+        command=['/opt/ffmpeg9/bin/ffmpeg','-v','error','-nostdin','-xerror',
                  '-hwaccel','cuda','-hwaccel_output_format','cuda','-c:v','h264_cuvid',
                  '-i',str(video),'-map','0:v:0','-t','60','-fps_mode','passthrough','-f','null','-']
         p=subprocess.run(command,capture_output=True,text=True,timeout=300)
