@@ -58,7 +58,8 @@ changed. Isolated Linux qualification passed 27 checks, including generated
 video frame-hash equality after a CPU-triggered pause, cancellation while paused,
 lease expiry, and supervisor-death cleanup. Additional regression checks ensure
 clearing CPU pressure cannot clear an active GPU pause. Real competing-app load
-and final packaged-image checks remain release qualification limits.
+remains a release qualification limit. The subsequent isolated committed-code
+image passed its resource and recovery integration checks; it was not deployed.
 
 The combined Linux integration run completed 114 tests: 109 passed and five
 browser-script tests were skipped because Node was absent there. Those five

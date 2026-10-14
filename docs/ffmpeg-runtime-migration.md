@@ -86,3 +86,37 @@ Historical baseline comparison tools and evidence remain accurate and isolated.
 The existing release-material archive describes the old wheel and must not be
 reused for this candidate. Collect and verify new wheel library sources and
 notices before publication; do not rename old archives to imply new provenance.
+
+## Committed-code image closeout (October 13)
+
+The isolated image based on the qualified native runtime and source revision
+`6dbb168f1ab2b75bc403f7c3331d6d8f11f04d3e` passed qualification. Its image ID is
+`sha256:e260dbacfab19df23b7fee08f58445839a1907d8be8ee399e8953e0f6bf919aa`.
+
+- Runtime suite: 268 passed, ten Node-dependent browser checks skipped.
+- Resource/recovery integration: 110 passed, five Node-dependent checks skipped.
+- Generated GPU checks: ten passed.
+- Generated safe-copy and cancellation checks passed before and after container
+  recreation, with unchanged sources and retained history.
+
+The five integration skips overlap the ten runtime skips. All ten were accounted
+for by test ID and rerun on the development host with Node: their seven modules
+passed all 22 tests. These are script/DOM regressions, not a visual browser audit.
+
+The failed first image attempt is retained as evidence: its graph tests assumed
+eight CPUs while the container had four. Tests now specify allocation explicitly
+and cover smaller quotas and user ceilings. Production resource limits and
+quality checks were not relaxed.
+
+Source verification reconfirmed 350 archives covering 111 OS source versions,
+including the cached exact-version supplement, and all 61 extracted wheel notice
+files matched their recorded checksums. This establishes integrity and coverage,
+not completed redistribution review. The supplement signature, combined public
+source/notice assembly and final privacy/license review remain open. The private
+test image must not be published as-is.
+
+Real external CPU/GPU workload qualification is still open. Synthetic contention
+and owned-stage pause/resume checks do not certify competition with another app.
+Container recreation checks above also do not establish frame-level encode
+continuation during upgrades. No production deployment or media replacement was
+performed during this qualification.
