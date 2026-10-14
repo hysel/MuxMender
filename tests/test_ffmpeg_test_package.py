@@ -15,7 +15,7 @@ package=importlib.util.module_from_spec(spec);spec.loader.exec_module(package)
 
 class TestPackageTests(unittest.TestCase):
     def test_inventory_includes_linked_and_unlinked_regressions(self):
-        ledger=json.loads((ROOT/'docs/fix-ledger.json').read_text())
+        ledger={'schema':1,'fixes':[{'id':'FF-001','tests':['test_ffmpeg_test_package.py']}]}
         index=package.regression_index(ROOT,ledger)
         self.assertEqual(len(index),len(list((ROOT/'tests').glob('test_*.py'))))
         self.assertTrue(any(not e['fix_ids'] for e in index))
@@ -25,7 +25,9 @@ class TestPackageTests(unittest.TestCase):
     def test_archive_manifest_matches_contents_and_never_bundles_runtime_media(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination=Path(temporary)/'package'
-            result=package.build(destination)
+            ledger=Path(temporary)/'ledger.json'
+            ledger.write_text(json.dumps({'schema':1,'fixes':[]}))
+            result=package.build(destination,ledger_path=ledger)
             archive=Path(result['archive'])
             self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(),result['sha256'])
             with tarfile.open(archive) as source:
@@ -33,4 +35,4 @@ class TestPackageTests(unittest.TestCase):
                 for name,digest in manifest['files'].items():
                     self.assertEqual(hashlib.sha256(source.extractfile(name).read()).hexdigest(),digest,name)
                 self.assertFalse(any(Path(m.name).suffix in ('.mkv','.mp4','.m4a','.avi','.exe') for m in source.getmembers()))
-            with self.assertRaises(FileExistsError):package.build(destination)
+            with self.assertRaises(FileExistsError):package.build(destination,ledger_path=ledger)

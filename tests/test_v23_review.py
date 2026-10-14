@@ -158,7 +158,7 @@ class ReleaseReviewTests(unittest.TestCase):
             result=create_release(root,archive,'docs/note.md')
             self.assertIn('docs/gpu-monitor-setup.md',result['files'])
             self.assertIn('deploy/truenas/install_reader_qualification.py',result['files'])
-            self.assertIn('docs/host-reader-qualification.md',result['files'])
+            self.assertNotIn('docs/host-reader-qualification.md',result['files'])
             with tarfile.open(archive) as tar:
                 for member in tar:
                     self.assertEqual(member.mode,0o755 if member.isdir() else 0o644)

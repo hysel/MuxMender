@@ -3,6 +3,7 @@ import io
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +12,16 @@ import prepare_hosted_build as build
 
 
 class HostedBuild(unittest.TestCase):
+    def test_build_helpers_are_in_git(self):
+        if not (build.ROOT / '.git').exists():
+            self.skipTest('Source archive without Git metadata')
+        tracked = set(subprocess.check_output(['git', 'ls-files'], cwd=build.ROOT, text=True).splitlines())
+        for name in ('tools/install_fel_runtime.py', 'tools/build_app_release.py',
+                     'tools/patch_cuda_ffprobe.py', 'tools/audit_image_runtime.py',
+                     'tools/smoke_app_release.py', 'tools/prepare_hosted_build.py',
+                     'deploy/truenas/build_ffmpeg9.sh', 'deploy/truenas/requirements-av1-runtime.txt'):
+            self.assertIn(name, tracked, 'Build helper missing from clean checkout: ' + name)
+
     def test_source_pins_complete(self):
         self.assertEqual(set(build.SOURCES), set(build.FFMPEG9_SOURCE_CHECKSUMS))
 

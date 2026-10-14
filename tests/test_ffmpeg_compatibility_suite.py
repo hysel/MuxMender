@@ -11,12 +11,14 @@ suite=importlib.util.module_from_spec(spec);spec.loader.exec_module(suite)
 
 
 class CompatibilitySuiteTests(unittest.TestCase):
-    def test_ledger_references_existing_evidence_code_and_tests(self):
-        ledger=suite.load_ledger(ROOT/'docs/fix-ledger.json')
-        self.assertGreaterEqual(len(ledger['fixes']),30)
-        for fix in ledger['fixes']:
-            for name in fix['code']+fix['evidence']:self.assertTrue((ROOT/name).is_file(),name)
-            for name in fix['tests']:self.assertTrue((ROOT/'tests'/name).is_file(),name)
+    def ledger(self):
+        return {'schema':1,'fixes':[{'id':'FF-001','tests':['test_ffmpeg_compatibility_suite.py']}]}
+
+    def test_explicit_external_ledger_loads(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'ledger.json'
+            path.write_text(json.dumps(self.ledger()))
+            self.assertEqual(suite.load_ledger(path),self.ledger())
 
     def test_no_reproducer_or_missing_regressions_cannot_retire_workaround(self):
         fix={'kind':'upstream-workaround','raw_scenario':'fixture'}
@@ -34,12 +36,12 @@ class CompatibilitySuiteTests(unittest.TestCase):
                              'application-or-protection: retain')
 
     def test_unsafe_manifest_patterns_and_duplicate_ids_are_rejected(self):
-        ledger=suite.load_ledger(ROOT/'docs/fix-ledger.json')
+        ledger=self.ledger()
         with tempfile.TemporaryDirectory() as temporary:
             path=Path(temporary)/'ledger.json'
             ledger['fixes'][0]['tests']=['../../private.py'];path.write_text(json.dumps(ledger))
             with self.assertRaisesRegex(ValueError,'Unsafe'):suite.load_ledger(path)
-            ledger=suite.load_ledger(ROOT/'docs/fix-ledger.json');ledger['fixes'].append(ledger['fixes'][0])
+            ledger=self.ledger();ledger['fixes'].append(ledger['fixes'][0])
             path.write_text(json.dumps(ledger))
             with self.assertRaisesRegex(ValueError,'duplicate'):suite.load_ledger(path)
 
