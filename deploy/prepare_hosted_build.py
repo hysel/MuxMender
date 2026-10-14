@@ -6,6 +6,7 @@ import sys
 import urllib.request
 
 from install_fel_runtime import CHECKSUMS, PACKAGES
+from prepare_build_notices import validate as validate_notices
 
 ROOT = Path(__file__).resolve().parents[1]
 FFMPEG9_SOURCE_CHECKSUMS = {Path(name).name: digest for digest, name in
@@ -35,6 +36,7 @@ def fetch(url, destination, expected):
 def main():
     if sys.platform != 'linux':
         raise RuntimeError('Run on the Linux build runner, not the development PC')
+    validate_notices(ROOT)
     for name, url in SOURCES.items():
         fetch(url, ROOT / 'vendor/ffmpeg9-source' / name, FFMPEG9_SOURCE_CHECKSUMS[name])
     shutil.copyfile(ROOT / 'deploy/truenas/ffmpeg9-source.sha256',
@@ -56,10 +58,6 @@ def main():
         shutil.copyfile(ROOT / 'vendor/ffmpeg9-source' / name, reader / name)
     shutil.copyfile(ROOT / 'deploy/patch_cuda_ffprobe.py', reader / 'patch_cuda_ffprobe.py')
     shutil.copyfile(ROOT / 'deploy/truenas/Dockerfile.hdr-gpu-reader', reader / 'Dockerfile')
-    notices = ROOT / 'public-materials'
-    notices.mkdir()
-    (notices / 'REVIEW-PENDING.md').write_text(
-        'Build verification only. Source and notice review must finish before distribution.\n')
 
 
 if __name__ == '__main__':
