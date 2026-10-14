@@ -112,3 +112,4 @@ tools/*
 !tools/benchmark_sdr_validation.py
 !tools/qualify_full_vmaf_threads.py
 !tools/qualify_resource_release.py
+!tools/qualify_cpu_contention.py

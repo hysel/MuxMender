@@ -115,8 +115,18 @@ not completed redistribution review. The supplement signature, combined public
 source/notice assembly and final privacy/license review remain open. The private
 test image must not be published as-is.
 
-Real external CPU/GPU workload qualification is still open. Synthetic contention
-and owned-stage pause/resume checks do not certify competition with another app.
+At image closeout, real external CPU/GPU workload qualification was still open.
+The CPU follow-up below closes that portion; external GPU contention remains open.
 Container recreation checks above also do not establish frame-level encode
 continuation during upgrades. No production deployment or media replacement was
 performed during this qualification.
+
+### Real CPU contention follow-up
+
+The administrator-run CPU test subsequently passed on October 13. An isolated
+competing container produced finite low-priority CPU load; actual host and app
+counters drove the unchanged yielding policy. The generated media task paused,
+resumed after the cooldown, and produced identical frame hashes. The run took
+about 97 seconds; its two test containers were removed automatically. No library
+mount, GPU workload or production change was involved. This closes the real CPU
+contention gap for this host, not the separate external-GPU contention test.
