@@ -30,7 +30,9 @@ def main():
     repository=os.environ['GITHUB_REPOSITORY'].lower()
     if os.environ['GITHUB_REF']!='refs/heads/main':raise ValueError('Promotion requires main')
     if not re.fullmatch(r'[a-z0-9_.-]+/[a-z0-9_.-]+',repository):raise ValueError('Invalid repository')
-    version=os.environ['VERSION'];digest=os.environ['MANIFEST_DIGEST']
+    version=os.environ['VERSION'];digest=os.environ.get('MANIFEST_DIGEST')
+    if not digest and os.environ.get('RESOLVE_PUBLISHED_DIGEST')!='1':
+        raise ValueError('Manifest digest required unless resolving the reviewed published image')
     raw=Path(os.environ['REVIEW_PATH']).read_bytes()
     if hashlib.sha256(raw).hexdigest()!=os.environ['REVIEW_SHA']:raise ValueError('Review checksum differs')
     review=json.loads(raw)
@@ -44,7 +46,16 @@ def main():
     if not re.fullmatch(r'\d{8}-v\d+',version):raise ValueError('Invalid version')
     with urllib.request.urlopen(urllib.request.Request(endpoint+version,headers=headers),timeout=30) as response:
         data=response.read()
+    if not digest:
+        digest='sha256:'+hashlib.sha256(data).hexdigest()
     content_type=verify(data,digest,review,version,repository)
+    if os.environ.get('REQUIRE_ANONYMOUS_PULL')=='1':
+        anonymous_url='https://ghcr.io/token?'+urllib.parse.urlencode(dict(service='ghcr.io',scope='repository:'+repository+':pull'))
+        with urllib.request.urlopen(anonymous_url,timeout=30) as response:
+            anonymous_token=json.load(response)['token']
+        anonymous_headers={'Authorization':'Bearer '+anonymous_token,'Accept':ACCEPT}
+        with urllib.request.urlopen(urllib.request.Request(endpoint+version,headers=anonymous_headers),timeout=30) as response:
+            verify(response.read(),digest,review,version,repository)
     # PUT only the stable alias, never the immutable version tag or image layers.
     with urllib.request.urlopen(urllib.request.Request(endpoint+'stable',data=data,
             headers={**headers,'Content-Type':content_type},method='PUT'),timeout=30) as response:
