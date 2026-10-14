@@ -44,6 +44,13 @@ jobs among production queue items or count test copies as reclaimed disk space.
 
 # Repository privacy
 
+Keep Git source-only: code, generated-fixture test definitions, configuration,
+build scripts, documentation and required license notices. Do not commit media,
+screenshots, compiled binaries, downloaded dependencies, archives or run outputs.
+Store release/dependency bundles outside the checkout. Do not remove required
+licenses or rebuild sources merely to reduce package size. CI checks the tracked
+working tree; this is not a historical Git-object audit.
+
 Do not name real movies, series, episodes, or identifiable media release filenames
 in code, tests, configuration, documentation, example commands, filenames, or
 commit messages. Use neutral case
