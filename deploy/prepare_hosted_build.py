@@ -5,10 +5,11 @@ import shutil
 import sys
 import urllib.request
 
-from build_app_release import FFMPEG9_SOURCE_CHECKSUMS
 from install_fel_runtime import CHECKSUMS, PACKAGES
 
 ROOT = Path(__file__).resolve().parents[1]
+FFMPEG9_SOURCE_CHECKSUMS = {Path(name).name: digest for digest, name in
+    (line.split() for line in (ROOT / 'deploy/truenas/ffmpeg9-source.sha256').read_text().splitlines() if line.strip())}
 SOURCES = {
     'ffmpeg-9.0.2.tar.xz': 'https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz',
     'nv-codec-headers-n13.0.19.0.tar.gz': 'https://codeload.github.com/FFmpeg/nv-codec-headers/tar.gz/refs/tags/n13.0.19.0',
@@ -53,7 +54,7 @@ def main():
     reader.mkdir()
     for name in ('ffmpeg-9.0.2.tar.xz', 'nv-codec-headers-n13.0.19.0.tar.gz'):
         shutil.copyfile(ROOT / 'vendor/ffmpeg9-source' / name, reader / name)
-    shutil.copyfile(ROOT / 'tools/patch_cuda_ffprobe.py', reader / 'patch_cuda_ffprobe.py')
+    shutil.copyfile(ROOT / 'deploy/patch_cuda_ffprobe.py', reader / 'patch_cuda_ffprobe.py')
     shutil.copyfile(ROOT / 'deploy/truenas/Dockerfile.hdr-gpu-reader', reader / 'Dockerfile')
     notices = ROOT / 'public-materials'
     notices.mkdir()

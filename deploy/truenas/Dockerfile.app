@@ -26,8 +26,8 @@ RUN if [ -f /opt/muxmender-readers/ffprobe-cuda ]; then chmod 0555 /opt/muxmende
 ENV PYTHONPATH=/opt/muxmender:/opt/muxmender-runtime PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 ENV PATH=/opt/ffmpeg9/bin:/opt/dovi:/opt/hdr10plus:$PATH
 COPY vendor/fel-runtime-archives/ /tmp/fel-runtime-archives/
-COPY tools/install_fel_runtime.py /opt/muxmender-tools/install_fel_runtime.py
-RUN python3 -B /opt/muxmender-tools/install_fel_runtime.py --archives /tmp/fel-runtime-archives --destination /opt/muxmender/runtime/felbaker --execute
+COPY deploy/install_fel_runtime.py /opt/muxmender-deploy/install_fel_runtime.py
+RUN python3 -B /opt/muxmender-deploy/install_fel_runtime.py --archives /tmp/fel-runtime-archives --destination /opt/muxmender/runtime/felbaker --execute
 RUN python3 -B -c "import hdr_auto, hdr10plus_preserve, dv_workflow, av1_content_light; assert av1_content_light.available()" && hdr10plus_tool --version && dovi_tool --version && mkvmerge --version
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,video,utility,graphics
 USER 568:568
