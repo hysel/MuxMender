@@ -1,6 +1,13 @@
 name: Build candidate on GitHub
 on:
   workflow_dispatch:
+    inputs:
+      materials_release:
+        description: Draft release containing build-notices.tar
+        required: true
+      materials_sha256:
+        description: SHA256 of build-notices.tar
+        required: true
 permissions:
   contents: read
 concurrency:
@@ -12,10 +19,26 @@ jobs:
     environment: container-release
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    permissions:
+      # Draft release assets require push access to read. No registry permission.
+      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: Fetch and verify required notices
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MATERIALS_RELEASE: ${{ inputs.materials_release }}
+          MATERIALS_SHA256: ${{ inputs.materials_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$MATERIALS_RELEASE" =~ ^[0-9]{8}-v[0-9]+$ ]]
+          [[ "$MATERIALS_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          gh release download "$MATERIALS_RELEASE" --repo "$GITHUB_REPOSITORY" --pattern build-notices.tar --dir "$RUNNER_TEMP/notices-download"
+          python3 -B deploy/prepare_build_notices.py --archive "$RUNNER_TEMP/notices-download/build-notices.tar" --sha256 "$MATERIALS_SHA256" --destination "$RUNNER_TEMP/notices-verified"
+          cp -a "$RUNNER_TEMP/notices-verified/public-materials" public-materials
       - name: Fetch checksum-pinned upstream inputs
         run: python3 -B deploy/prepare_hosted_build.py
       - name: Build FFmpeg 9 GPU reader from source
