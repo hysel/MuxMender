@@ -17,12 +17,15 @@ def command(archive,revision):
             '--source-digest',revision,'--deny-self-hosted-runners','--format','json']
 
 
-def verify(archive,receipt):
+def verify(archive,receipt,bundle=None,gh='gh'):
     archive=Path(archive)
     if archive.is_symlink() or not archive.is_file():raise ValueError('Regular archive required')
     if receipt.get('schema')!=1 or not re.fullmatch(r'sha256:[a-f0-9]{64}',receipt.get('image_id','')):
         raise ValueError('Invalid candidate receipt')
     args=command(archive,receipt.get('revision',''))
+    args[0]=str(gh)
+    if bundle is not None:
+        args.extend(['--bundle',str(bundle)])
     with archive.open('rb') as stream:sha=hashlib.file_digest(stream,'sha256').hexdigest()
     if sha!=receipt.get('sha256') or archive.stat().st_size!=receipt.get('size_bytes'):
         raise ValueError('Archive differs from candidate receipt')

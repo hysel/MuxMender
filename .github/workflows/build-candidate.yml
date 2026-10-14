@@ -91,9 +91,14 @@ jobs:
           python3 -B deploy/export_candidate.py muxmender-candidate:ci "$RUNNER_TEMP/candidate"
           cp "$RUNNER_TEMP/receipts/runtime.json" "$RUNNER_TEMP/candidate/runtime.json"
       - name: Sign candidate build provenance
+        id: provenance
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661
         with:
           subject-path: ${{ runner.temp }}/candidate/candidate-image.tar
+      - name: Retain offline provenance bundle
+        env:
+          BUNDLE_PATH: ${{ steps.provenance.outputs.bundle-path }}
+        run: cp "$BUNDLE_PATH" "$RUNNER_TEMP/candidate/attestation.jsonl"
       - name: Retain candidate for qualification
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
