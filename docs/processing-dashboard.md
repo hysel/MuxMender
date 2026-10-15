@@ -3,6 +3,12 @@
 The dashboard should answer three questions: what is running, what is it doing,
 and what happened to the files that finished?
 
+Lifetime savings and compact server readings stay at the top of Overview.
+The CPU, GPU and RAM values remain visible while the next reading arrives.
+The last-update time tells you when they were collected. If refreshing fails,
+a small message appears and the dashboard retries automatically; it does not
+mean a conversion has stopped. Open **Resource details** for more information.
+
 ## Three places to work
 
 A full safe copy keeps the original until you decide otherwise. In Results,

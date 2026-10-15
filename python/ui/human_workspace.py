@@ -18,6 +18,34 @@ button,input,select{border-radius:9px}button,input:not([type=checkbox]),select{m
 </style>'''
 
 SCRIPT = r'''<script>
+let resourceReading=null,resourceFeedError=false;
+function renderResourceSummary(body){
+ if(body){
+  resourceFeedError=!!body.snapshot_error;
+  if(!body.snapshot_error&&body.resources?.telemetry&&Number.isFinite(body.snapshot_updated)&&(!resourceReading||body.snapshot_updated>resourceReading.stamp))resourceReading={metrics:body.resources.telemetry,stamp:body.snapshot_updated};
+ }
+ const paused=!!globalThis.liveUpdatesPaused;
+ const metrics=resourceReading?.metrics||{};
+ const fields=[['resource-cpu','cpu_percent','%',0],['resource-gpu','gpu_encode_percent','%',0],['resource-gpu-decode','gpu_decode_percent','%',0],['resource-gpu-compute','gpu_compute_percent','%',0],['resource-ram','available_gib',' GiB',1]];
+ for(const [id,key,suffix,digits] of fields){
+  const node=document.getElementById(id);if(!node)continue;
+  node.textContent=Number.isFinite(metrics[key])?metrics[key].toFixed(digits)+suffix:'—';
+  node.title=Number.isFinite(metrics[key])?'Last received reading':'No reading available';
+ }
+ const status=document.getElementById('resource-feed-status');
+ if(status){
+  const message=paused?'Display updates paused':resourceReading?'Server readings':'Waiting for server readings…';
+  if(status.textContent!==message)status.textContent=message;
+ }
+ const note=document.getElementById('resource-feed-note');
+ if(note){
+  note.hidden=paused||!resourceFeedError;
+  note.textContent=resourceReading?'Could not refresh readings. Showing the last update; retrying automatically.':'Could not load readings. Retrying automatically.';
+ }
+ const stamp=document.getElementById('resource-feed-time');
+ if(stamp)stamp.textContent=resourceReading?'Last update '+new Date(resourceReading.stamp*1000).toLocaleTimeString():'';
+}
+setInterval(()=>renderResourceSummary(),5000);
 function renderSetupGuide(){
  const selected=typeof activeFolder!=='undefined'&&activeFolder!==null;
  const reviewing=!document.getElementById('request-preview').hidden;
@@ -31,8 +59,7 @@ function renderWorkspaceSummary(body){
  put('queue-running',counts.running||0);put('queue-waiting',counts.pending||0);
  const latest=groupedAttempts((body.jobs||[]).filter(j=>!j.superseded_by)).map(g=>g.latest);
  put('queue-attention',latest.filter(j=>['errors','attention'].includes(outcomeCategory(j))).length);
- const number=(key,suffix,digits=0)=>body.snapshot_stale||body.snapshot_error?'Stale':Number.isFinite(metrics[key])?metrics[key].toFixed(digits)+suffix:'Unavailable';
- put('resource-cpu',number('cpu_percent','%'));put('resource-gpu',number('gpu_encode_percent','%'));put('resource-gpu-decode',number('gpu_decode_percent','%'));put('resource-gpu-compute',number('gpu_compute_percent','%'));put('resource-ram',number('available_gib',' GiB',1));
+ renderResourceSummary(body);
  document.querySelectorAll('[data-result-shortcut]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.resultShortcut===document.getElementById('result-filter').value)));
  const filter=document.getElementById('result-filter');
  const names={all:'Completed results',active:'Queued & running',ready:'Copies ready for review',replaceable:'Ready to replace',kept:'Original kept',attention:'Needs attention',replaced:'Space saved',complete:'Inspections and tests',history:'All requests'};
@@ -66,7 +93,9 @@ def refine(html):
     html=html.replace('<div class="savings-symbol" aria-hidden="true">↓</div>',
                       '<div class="savings-message"><strong>What counts here?</strong><p>Only originals replaced with smaller files. Test copies don’t count.</p></div>')
     html=html.replace('<p id="resource-status" class="control-note">',
-                      '<dl class="resource-strip" aria-label="Server resources"><div><dt>CPU <small>host use</small></dt><dd id="resource-cpu">—</dd></div><div><dt>GPU Encoding</dt><dd id="resource-gpu">—</dd></div><div><dt>GPU Decoding</dt><dd id="resource-gpu-decode">—</dd></div><div><dt>GPU Compute</dt><dd id="resource-gpu-compute">—</dd></div><div><dt>RAM <small>available</small></dt><dd id="resource-ram">—</dd></div></dl><p class="control-note gpu-scope">GPU readings include other apps. Each value is the busiest visible GPU for that engine; percentages are not added together.</p><details class="resource-details"><summary>Resource details</summary><p id="resource-status" class="control-note">')
+                      '<dl class="resource-strip" aria-label="Server resources"><div><dt>CPU <small>host use</small></dt><dd id="resource-cpu">—</dd></div><div><dt>GPU Encoding</dt><dd id="resource-gpu">—</dd></div><div><dt>GPU Decoding</dt><dd id="resource-gpu-decode">—</dd></div><div><dt>GPU Compute</dt><dd id="resource-gpu-compute">—</dd></div><div><dt>RAM <small>available</small></dt><dd id="resource-ram">—</dd></div></dl><details class="resource-details"><summary>Resource details</summary><p class="control-note gpu-scope">GPU readings include other apps. Each value is the busiest visible GPU for that engine; percentages are not added together.</p><p id="resource-status" class="control-note">')
+    html=html.replace('<dl class="resource-strip"', '<p id="resource-feed-status" role="status">Waiting for server readings…</p><dl class="resource-strip"',1)
+    html=html.replace('<details class="resource-details">', '<p id="resource-feed-time"></p><p id="resource-feed-note" hidden></p><details class="resource-details">',1)
     html=html.replace('Collecting CPU, GPU and available RAM measurements…</p></div></section>',
                       'Collecting CPU, GPU and available RAM measurements…</p></details></div></section>',1)
     html=html.replace('<section class="panel" id="activity"',

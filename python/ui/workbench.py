@@ -115,9 +115,20 @@ main{border:8px solid var(--soft);border-top:0;box-shadow:0 0 0 1px var(--border
 .theme-control select{background:var(--panel);font-family:inherit}
 .connection-bar{color:var(--muted);border-bottom:1px solid var(--hairline);padding:10px 0}
 .page-heading{padding:18px 0 16px}.page-heading h1{font-family:inherit;font-size:clamp(1.5rem,3vw,2rem);letter-spacing:.04em;text-transform:uppercase}
-.page-heading p{font-size:.83rem}.workspace-status{grid-template-columns:minmax(0,1fr) 300px;border:1px solid var(--border);box-shadow:inset 0 0 0 4px var(--bg);margin-bottom:16px}
+.page-heading p{font-size:.83rem}.workspace-status{grid-template-columns:minmax(0,2fr) minmax(0,3fr);align-items:start;border:1px solid var(--border);box-shadow:inset 0 0 0 4px var(--bg);margin-bottom:16px}
 .savings-hero{padding:16px 22px}.savings-number{font-size:clamp(2.6rem,5vw,3.4rem);color:var(--accent);margin:6px 0;letter-spacing:-.035em}
-.savings-hero .eyebrow{color:var(--signal);font-size:.75rem;letter-spacing:.08em}#live-resources{padding:10px 20px}.resource-strip>div{padding:8px 0}
+.savings-hero .eyebrow{color:var(--signal);font-size:.75rem;letter-spacing:.08em}
+#live-resources{padding:16px 20px;align-self:start;min-width:0}
+.resource-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 16px;margin:0}
+.resource-strip>div{display:block;min-width:0;padding:0;border:0}
+.resource-strip dt{line-height:1.5}.resource-strip small{display:block;margin:0}
+.resource-strip dd{margin:4px 0 0;font-variant-numeric:tabular-nums}
+.resource-details{margin-top:8px}.resource-details summary,.savings-hero summary{min-height:44px;display:list-item;align-content:center}
+.resource-details .gpu-scope{margin:4px 0 8px;font-size:.76rem}
+#resource-feed-status{font-size:.76rem;margin:0 0 10px;color:var(--signal)}
+#resource-feed-time,#resource-feed-note{font-size:.72rem;color:var(--muted);margin:8px 0 0;line-height:1.5}
+@media(min-width:1100px){.resource-strip{grid-template-columns:repeat(5,minmax(0,1fr))}}
+@media(max-width:460px){.resource-strip{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .queue-glance{gap:8px;margin-bottom:20px}.queue-glance>div,.queue-glance>div:first-child,.queue-glance>div:last-child{padding:8px 12px;border-top:1px solid var(--border)}
 .queue-glance strong{font-size:1.4rem;color:var(--signal)}
 .panel-head h2{color:var(--signal);text-transform:uppercase;font-size:.95rem;letter-spacing:.08em}

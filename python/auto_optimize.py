@@ -25,7 +25,7 @@ from native_pipeline import stage,decode_maps_after_frame_audit,discard_audio_cl
 from source_format import valid_pixel_format
 import legacy_color
 import hdr_inspection
-from media_metadata import (canonical_tags, canonical_chapters, equivalent_ratio,
+from media_metadata import (canonical_tags, canonical_chapters, equivalent_ratio, effective_pixel_aspect,
                             equivalent_stream_language, compatible_measured_rate, display_matrix)
 
 PLANAR_FORMATS={f'yuv{chroma}p{depth}' for chroma in ('420','422','444')
@@ -209,7 +209,7 @@ def stream_metadata_check(before, after, codec, *, verified_frame_count=None, ve
                     except (ValueError,ZeroDivisionError):return False
                 return compatible_measured_rate(a.get(key), b.get(key), verified_frame_count)
             if key == 'sample_aspect_ratio':
-                return equivalent_ratio(a.get(key), b.get(key))
+                return effective_pixel_aspect(a) == effective_pixel_aspect(b)
             return a.get(key) == b.get(key)
         changed=[k for k in keys if not matches(k)]
         if changed:
@@ -713,12 +713,12 @@ class Workflow:
         self.guard()
         return destination
 
-    def compare_frame_files(self,reference,output):
+    def compare_frame_files(self,reference,output,*,reference_video=None,output_video=None):
         if self.hdr_mode:
             from hdr10plus_preserve import frame_records
             from hdr10plus_validation import validate_frames
             return validate_frames(frame_records(reference),frame_records(output),mode=self.hdr_mode)['frames']
-        return compare_frames(reference,output)
+        return compare_frames(reference,output,reference_video=reference_video,output_video=output_video)
 
     def reference_window(self, source, probe, seconds):
         """Subtitle cue tails do not measure the moving-video sample length."""
@@ -924,7 +924,8 @@ class Workflow:
             if self.hdr_mode:raise ValueError('HDR resizing requires qualified dynamic metadata handling')
             count=compare_frame_rows(expected_frame_rows(compact_rows(reference_frames,'width'),target),
                                      compact_rows(frames,'width'))
-        else:count = self.compare_frame_files(reference_frames, frames)
+        else:count = self.compare_frame_files(reference_frames, frames,
+                         reference_video=main_video(before),output_video=main_video(actual))
         self.check_metadata(reference,output,expected_metadata(before,identifier),actual,codec,label,
                             verified_frame_count=count,verified_hdr_frames=bool(self.hdr_mode),
                             verified_variable_timing=True)
@@ -1160,19 +1161,27 @@ def compact_record_rows(lines,required):
             yield row
 
 
-def compare_frames(reference, output):
+def compare_frames(reference, output,*,reference_video=None,output_video=None):
     progress('Comparing frame geometry and timestamps',detail='Comparing collected frame evidence; percentage unavailable')
-    return compare_frame_rows(compact_rows(reference,'width'),compact_rows(output,'width'))
+    return compare_frame_rows(compact_rows(reference,'width'),compact_rows(output,'width'),
+                              reference_video=reference_video,output_video=output_video)
 
 
-def compare_frame_rows(reference,output):
+def compare_frame_rows(reference,output,*,reference_video=None,output_video=None):
     """Compare every record. Representation does not change validation rules."""
     count = 0
     fields = ('width', 'height', 'pix_fmt', 'sample_aspect_ratio')
+    reference_aspect=effective_pixel_aspect(reference_video) if reference_video is not None else None
+    output_aspect=effective_pixel_aspect(output_video) if output_video is not None else None
+    def aspect(frame,fallback):
+        raw=frame.get('sample_aspect_ratio')
+        if raw in (None,'','N/A','unknown','unspecified','0:1','0/1') and fallback is not None:
+            return fallback
+        return raw
     for a, b in itertools.zip_longest(reference,output):
         if a is None or b is None:
             raise ValueError('Decoded frame count changed')
-        changed=[k for k in fields if not (equivalent_ratio(a.get(k),b.get(k)) if k=='sample_aspect_ratio'
+        changed=[k for k in fields if not (equivalent_ratio(aspect(a,reference_aspect),aspect(b,output_aspect)) if k=='sample_aspect_ratio'
                     else a.get(k)==b.get(k))]
         if changed:
             details=', '.join(f'{k}: {a.get(k)!r} -> {b.get(k)!r}' for k in changed)
