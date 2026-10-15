@@ -14,6 +14,21 @@ published image; you do not need to build it on your server.
 Update discovery is periodic, not instant. A source-code commit is not an image
 release. The stable tag changes only after publication and promotion.
 
+## If no update appears
+
+Check that the repository is `ghcr.io/hysel/muxmender`, the tag is `stable`, and
+image update checks and downloads are enabled. A numbered tag stays on that
+release; it does not follow `stable`.
+
+A green GitHub build or a draft release is not an update announcement. The image
+still needs its release checks and publication. If it has not reached `stable`,
+there is nothing for TrueNAS to download yet. You do not need to build the image
+yourself or install the maintainers' test tools.
+
+Faster image builds make releases quicker to prepare. They do not, by themselves,
+make video conversion faster. Check the release notes for changes that affect
+processing speed.
+
 ## Standalone Docker
 
 Pull the new stable image and recreate the container with the same configuration.

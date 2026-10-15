@@ -28,6 +28,8 @@ workflow. Install **`ghcr.io/hysel/muxmender:stable`** to follow the stable rele
 GitHub Container Registry supplies the ready-built app. You do not need to clone
 the repository, build an image on TrueNAS, or run conversion scripts. Once the
 container is installed, select videos, set options and manage jobs in the browser.
+Release testing is handled separately by maintainers. You do not need research
+containers, qualification scripts or administrator helper commands to use the app.
 See the [release notes and known limits](https://github.com/hysel/MuxMender/releases)
 and [installation guide](docs/wiki/Installation.md). Start with a small folder
 and safe-copy mode; publishing a new image does not update your installed app.
@@ -189,6 +191,11 @@ folder when the container is recreated.
   `docker compose pull` and `docker compose up -d`. For TrueNAS update
   notifications, follow [stable-channel setup](docs/stable-updates.md).
   An interrupted job is not guaranteed to resume at the exact frame.
+
+If TrueNAS does not offer an update, check that the new image has actually been
+published to `stable`. A successful GitHub build, draft release or merged change
+does not mean it is available yet. Keep the same repository and tag; you do not
+need to build it yourself. See [update troubleshooting](docs/stable-updates.md#if-no-update-appears).
 
 ## How it works
 
