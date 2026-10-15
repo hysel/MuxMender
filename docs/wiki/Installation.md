@@ -14,6 +14,8 @@ For complete, copyable setup instructions, see the README's
 Install the ready-built image from GitHub Container Registry. You do not need to
 clone this repository, build on TrueNAS or run a release script. After installation,
 select files, choose settings, manage the queue and review results in the browser.
+Maintainers run release checks separately. You do not need research containers,
+qualification scripts or administrator helper commands for everyday use.
 
 ## What you need
 

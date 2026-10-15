@@ -8,6 +8,23 @@ TrueNAS portal link must use that same host port.
 
 If the app reports a missing path, check the host folders in its mount settings.
 Both must exist. Inside the container, the app expects `/media` and `/output`.
+Check any extra mounts too. An old optional GPU-monitor path can prevent saving
+the app if that host path no longer exists. It is not required for basic conversion;
+follow the current GPU-sharing setup if you want that feature.
+
+## TrueNAS doesn't show an update
+
+Use repository `ghcr.io/hysel/muxmender` with tag `stable`, and enable image update
+checks and downloads. A numbered tag does not follow the stable channel.
+Checks are periodic, so an update may not appear immediately.
+
+A successful GitHub build, merged change or draft release is not a published
+stable update. Wait for publication rather than building it yourself. See
+[update guidance](https://github.com/hysel/MuxMender/blob/main/docs/stable-updates.md).
+The release test tools are for maintainers, not something you need to install.
+
+Faster image packaging does not mean faster video processing. Release notes
+describe changes that affect conversion speed separately.
 
 ## I see permission denied
 
