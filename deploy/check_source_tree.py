@@ -2,9 +2,23 @@
 from pathlib import Path
 import subprocess
 import unittest
+import re
 
 
 class RepositoryContentTests(unittest.TestCase):
+    def test_no_private_installation_examples(self):
+        root=Path(__file__).resolve().parents[1]
+        if not (root/'.git').exists():self.skipTest('Source archive has no Git inventory')
+        paths=subprocess.check_output(['git','ls-files','-z'],cwd=root).decode().split('\0')
+        patterns=(rb'/mnt/'+rb'FR4G', rb'192\.168\.1\.(?:232|212|72)\b',
+                  rb'[CE]:[/\\]Users[/\\]'+rb'itama', rb'GPU-'+rb'cebbcdda')
+        issues=[]
+        for name in paths:
+            path=root/name
+            if not name or not path.is_file():continue
+            if any(re.search(pattern,path.read_bytes(),re.I) for pattern in patterns):issues.append(name)
+        self.assertEqual(issues,[], 'Private installation examples must stay outside the published source')
+
     def test_tracked_tree_contains_no_binary_or_generated_artifacts(self):
         root=Path(__file__).resolve().parents[1]
         if not (root/'.git').exists():self.skipTest('Source archive has no Git inventory')
