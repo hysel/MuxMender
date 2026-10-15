@@ -1,5 +1,0 @@
-# Reuse the exact public v60 runtime; no dependency rebuild or private receipt.
-FROM ghcr.io/hysel/muxmender@sha256:89d4bf3fc38f2198ea4df7d576f00ce6841899022a13bdb21ace80fc3e6aa7d3
-COPY python/ /opt/muxmender/
-COPY deploy/truenas/RELEASE-20261012-v61.md /opt/muxmender-notices/RELEASE-20261012-v61.md
-USER 568:568
