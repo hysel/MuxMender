@@ -5,6 +5,7 @@ Audio and subtitles remain copies; their bitrate is additional to video.
 """
 from copy import deepcopy
 from fractions import Fraction
+from media_metadata import effective_pixel_aspect
 
 PRESETS={
     'original':dict(label='Original resolution — automatic size reduction',width=None,height=None,
@@ -32,7 +33,7 @@ def geometry(video,identifier):
     if policy['width'] is None:return dict(width=width,height=height,sar=video.get('sample_aspect_ratio'),resized=False)
     ratio=min(Fraction(1),Fraction(policy['width'],width),Fraction(policy['height'],height))
     if ratio==1:return dict(width=width,height=height,sar=video.get('sample_aspect_ratio'),resized=False)
-    sar=Fraction(str(video.get('sample_aspect_ratio','1:1')).replace(':','/'))
+    sar=effective_pixel_aspect(video)
     if sar<=0:raise ValueError('Unresolved source pixel aspect ratio')
     unit=4 if video.get('field_order') in ('tt','bb','tb','bt') else 2
     new_width=max(2,int(width*ratio)//2*2)

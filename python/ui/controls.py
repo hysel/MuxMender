@@ -251,6 +251,7 @@ async function refreshControls(){if(controlPollBusy)return;controlPollBusy=true;
  const response=await fetch('/api/controls',{signal:AbortSignal.timeout(30000)});if(!response.ok)throw Error('Job controls are unavailable. Check the app connection or ask your administrator to enable them.');const body=await response.json();received=true;if(body.csrf_token)controlToken=body.csrf_token;
  if(actionVersion!==queueActionVersion)return; // An old poll cannot undo an acknowledged queue action.
  const freshQueue=Number.isFinite(body.queue_snapshot_updated)&&Math.abs(Date.now()/1000-body.queue_snapshot_updated)<15;
+ if(typeof renderResourceSummary==='function')renderResourceSummary(body);
  if((body.snapshot_stale||body.snapshot_error)&&!freshQueue){controlReady=false;queueStatusUnavailable=true;renderQueueActions(lastQueueControl,true);controlElement('control-availability').textContent=body.snapshot_updated?'Queue status is delayed. Last displayed results may be out of date.':'Loading queue status…';for(const id of ['preview-job','clear-waiting-queue']){const el=controlElement(id);if(el)el.disabled=true}if(typeof connectionUpdate==='function')connectionUpdate('controls',false);return}
  lastQueueControl=body;queueStatusUnavailable=false;renderQueueActions(body,false);
  if(!resourceProfileBusy&&!resourceProfileDirty){controlElement('resource-profile').value=body.resource_profile||'shared';controlElement('resource-profile').initialized=true}
@@ -276,6 +277,6 @@ async function refreshControls(){if(controlPollBusy)return;controlPollBusy=true;
  controlElement('replacement-availability').textContent=body.replacement_enabled?'Replacement available. Choose it explicitly and confirm to remove originals after verification.':'Copy-only storage: make /media writable in TrueNAS to use replacement. No replacement environment variable is needed.';
  controlElement('control-state').textContent=(body.wait_reason||(body.paused?(body.pause_reason||'Queue paused'):'Queue ready'))+' · '+(body.counts.pending||0)+' waiting · '+(body.counts.running||0)+' running';
  if(typeof receiveControls==='function')receiveControls(body);
- }catch(error){controlElement('control-availability').textContent=received?'Display update failed; retrying. Processing is unaffected.':error.message;controlElement('preview-job').disabled=true;if(received)console.error(error);else{queueStatusUnavailable=true;renderQueueActions(lastQueueControl,true);if(typeof connectionUpdate==='function')connectionUpdate('controls',false)}}
+ }catch(error){if(!received&&typeof renderResourceSummary==='function')renderResourceSummary({snapshot_error:true});controlElement('control-availability').textContent=received?'Display update failed; retrying. Processing is unaffected.':error.message;controlElement('preview-job').disabled=true;if(received)console.error(error);else{queueStatusUnavailable=true;renderQueueActions(lastQueueControl,true);if(typeof connectionUpdate==='function')connectionUpdate('controls',false)}}
  finally{controlPollBusy=false;clearTimeout(controlTimer);controlTimer=setTimeout(refreshControls,10000)}}refreshControls();
 </script>'''

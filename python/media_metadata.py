@@ -96,6 +96,33 @@ def equivalent_ratio(left,right):
         return False
 
 
+def effective_pixel_aspect(stream):
+    """Resolve SAR for geometry only, never for frame rate or timing.
+
+    An absent SAR uses declared display geometry, or square pixels when neither
+    layer declares an aspect. Explicit anamorphic ratios are never discarded.
+    """
+    unknown = (None, '', 'N/A', 'unknown', 'unspecified', '0:1', '0/1')
+    raw = stream.get('sample_aspect_ratio')
+    dar = stream.get('display_aspect_ratio')
+    try:
+        sar = None if raw in unknown else Fraction(str(raw).replace(':', '/'))
+        display = None if dar in unknown else Fraction(str(dar).replace(':', '/'))
+        if sar is not None and sar <= 0 or display is not None and display <= 0:
+            raise ValueError('Non-positive aspect ratio')
+        if display is not None:
+            width, height = int(stream['width']), int(stream['height'])
+            if min(width, height) <= 0:
+                raise ValueError('Invalid dimensions')
+            inferred = display * Fraction(height, width)
+            if sar is not None and inferred != sar:
+                raise ValueError('Conflicting pixel and display aspect ratios')
+            return inferred
+        return sar if sar is not None else Fraction(1)
+    except (ValueError, TypeError, ZeroDivisionError, KeyError) as exc:
+        raise ValueError('Unresolved video aspect ratio: '+str(exc)) from exc
+
+
 def compatible_measured_rate(left, right, verified_frame_count):
     """Permit tiny average-rate rounding only after independent frame validation.
 
