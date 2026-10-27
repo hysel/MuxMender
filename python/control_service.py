@@ -166,7 +166,7 @@ class Controls(CopyApproval, WorkspaceHistory):
                     entries=entries[offset:offset+100],next_offset=offset+100 if len(entries)>offset+100 else None)
 
     def settings(self, data):
-        if not isinstance(data,dict) or set(data)-{'path','mode','codec','hardware','quality','output_preset','quality_profile','hdr_policy','minimum_savings','savings_mode','recursive','recheck','legacy_color','history_mode','age_unit','age_value','timeout_minutes'}:
+        if not isinstance(data,dict) or set(data)-{'path','mode','codec','hardware','quality','output_preset','quality_profile','hdr_policy','minimum_savings','savings_mode','recursive','recheck','legacy_color','history_mode','age_unit','age_value','age_comparison','timeout_minutes'}:
             raise ValueError('Unknown setting')
         mode=data.get('mode','analyze');codec=data.get('codec','auto')
         hardware=data.get('hardware','auto');quality=data.get('quality','auto')
@@ -201,7 +201,7 @@ class Controls(CopyApproval, WorkspaceHistory):
             raise ValueError('Selected codec must be playback-verified in app settings')
         from media_workflow import file_age_settings, processing_timeout_minutes
         timeout_minutes=processing_timeout_minutes(data.get('timeout_minutes',120))
-        age=file_age_settings(data.get('age_unit','all'),data.get('age_value'))
+        age=file_age_settings(data.get('age_unit','all'),data.get('age_value'),data.get('age_comparison','within'))
         return dict(mode=mode,codec=codec,hardware=hardware,quality=quality,output_preset=output_preset,quality_profile=quality_profile,hdr_policy=hdr_policy,**age,timeout_minutes=timeout_minutes,
                     minimum_savings=savings,savings_mode=savings_mode,recursive=recursive,codecs=codecs,recheck=history_mode=='all',
                     history_mode=history_mode,legacy_color=legacy_color)

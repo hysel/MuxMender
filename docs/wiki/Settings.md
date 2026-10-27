@@ -65,9 +65,12 @@ another server's acceleration record or disable quality checks to speed things u
 
 ### Age filters and time limits
 
-Use the creation-age filter to select all files or recently created files by
-hours, days or weeks. Filesystem dates may reflect copying rather than when a
-video was made.
+Use **File creation date** to select all files, files **Created within the last**
+interval, or files **Older than** an interval. Enter an age in minutes, hours,
+days or weeks. For example, **Older than → 2 → Days** leaves recent additions
+alone. The preview shows which files match. Filesystem dates may reflect copying
+rather than when a video was made; files with unavailable creation dates are
+excluded when filtering.
 
 A processing time limit applies to individual stages, not the entire batch.
 Change it before adding jobs. New settings don't rewrite requests already in

@@ -202,7 +202,7 @@ def restyle(html):
     anchor = '<button id="show-results" type="button" hidden>Show more results</button>'
     html = html.replace(anchor, anchor + ''.join(secondary), 1)
     # File age is an optional filter, not another mandatory setup step.
-    start = html.index('<div class="control-grid"><div><label for="file-age-unit">')
+    start = html.index('<div class="control-grid"><div><label for="file-age-comparison">')
     end = html.index('<label for="output-preset">', start)
     selection = html[start:end]
     html = html[:start] + '<details class="control-advanced selection-options"><summary>Filter by file age (optional)</summary>' + selection + '</details>' + html[end:]

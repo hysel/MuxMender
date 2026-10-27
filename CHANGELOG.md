@@ -6,6 +6,12 @@ The notes below describe changes prepared for a future release.
 
 ## Unreleased
 
+### Folder selection
+
+- Filter files by **Older than** as well as **Created within the last**, using
+  minutes, hours, days or weeks. Preview shows the matching files before you add
+  them to the queue. Existing queued requests are unchanged.
+
 ### Conversion fixes
 
 - Keep original audio tracks with existing decoding issues unchanged and show a
