@@ -1,10 +1,15 @@
 # Queue file-age filter
 
-In Select and set up, choose **File creation age**:
+In Select and set up, choose **File creation date**:
 
 - **All files** (default): creation date does not restrict selection.
-- **Hours**, **days**, or **weeks**: enter a positive whole number to select files
-  created within that recent interval, including its boundary.
+- **Created within the last**: select recently created files, including the age
+  boundary.
+- **Older than**: select files created before the age boundary. For example,
+  **Older than → 2 → Days** leaves files created in the last two days alone.
+
+For either filter, enter a positive whole number and choose **Minutes**, **Hours**,
+**Days**, or **Weeks**. The default is still **All files**.
 
 The filter works with the selected folder scope, including subfolders by default,
 or an individually selected video. Preview lists only matching videos and reports
@@ -18,12 +23,5 @@ timestamp. A filesystem or mount that does not expose birth time cannot safely b
 age-filtered: such files are excluded and counted, not assigned guessed dates.
 Copying or replacing files may change their filesystem creation time.
 
-The standalone automatic-workflow adapter uses the same selection helper:
-
-```text
-python -m media_workflow VIDEO --output-dir OUTPUT --age-unit days --age-value 7
-```
-
-This CLI example analyzes the single video if it matches; it does not enable
-conversion or replacement. The queue stores the selected age settings with each
-submitted job. No encoder-quality, preservation or publication checks change.
+The queue stores the selected age settings with each submitted job. No
+encoder-quality, preservation or replacement checks change.

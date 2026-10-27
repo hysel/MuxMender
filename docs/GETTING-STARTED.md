@@ -31,7 +31,7 @@ check the portal setting when deploying an update.
    1 GB. Preview shows the exact requirement; fixed percentages remain available.
 4. **Preview and queue the selection.** Past decisions may mean some files do
    not need another attempt. The [creation-age filter](file-age-filter.md) can
-   limit a new request to recently created files.
+   limit a new request to recently created files or files older than a chosen age.
 5. **Follow progress and read the results.** A kept file is not necessarily a
    failure: the output may not save enough space or meet the quality target.
 

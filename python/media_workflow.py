@@ -19,12 +19,14 @@ def validated_output_container(status, path):
     return suffix in ('.mp4','.mov') and status.get('output_container')==suffix[1:]
 
 
-def file_age_settings(unit='all', value=None):
+def file_age_settings(unit='all', value=None, comparison='within'):
+    if comparison not in ('within', 'older'):
+        raise ValueError('File age comparison must be within or older')
     if unit == 'all':
-        return dict(age_unit='all', age_value=None)
-    if unit not in ('hours', 'days', 'weeks') or type(value) is not int or not 1 <= value <= 100000:
-        raise ValueError('File age requires 1–100000 whole hours, days or weeks')
-    return dict(age_unit=unit, age_value=value)
+        return dict(age_unit='all', age_value=None, age_comparison='within')
+    if unit not in ('minutes', 'hours', 'days', 'weeks') or type(value) is not int or not 1 <= value <= 100000:
+        raise ValueError('File age requires 1–100000 whole minutes, hours, days or weeks')
+    return dict(age_unit=unit, age_value=value, age_comparison=comparison)
 
 
 def creation_time(path):
@@ -53,15 +55,17 @@ def creation_time(path):
 
 
 def file_age_match(path, settings, now=None):
-    age = file_age_settings(settings.get('age_unit', 'all'), settings.get('age_value'))
+    age = file_age_settings(settings.get('age_unit', 'all'), settings.get('age_value'),
+                            settings.get('age_comparison', 'within'))
     if age['age_unit'] == 'all':
         return True, None
     birth = creation_time(path)
     if birth is None:
         return False, 'creation_date_unavailable'
     now = time.time() if now is None else now
-    seconds = age['age_value'] * {'hours': 3600, 'days': 86400, 'weeks': 604800}[age['age_unit']]
-    return (True, None) if now-seconds <= birth <= now else (False, 'outside_age_window')
+    seconds = age['age_value'] * {'minutes': 60, 'hours': 3600, 'days': 86400, 'weeks': 604800}[age['age_unit']]
+    selected = birth < now-seconds if age['age_comparison'] == 'older' else now-seconds <= birth <= now
+    return (True, None) if selected else (False, 'outside_age_window')
 
 
 def processing_timeout_minutes(value=120):
@@ -132,12 +136,13 @@ def main(argv=None):
     parser.add_argument('--timeout-minutes',type=int,default=120,
                         help='Execution limit per long processing stage, 1–1440 minutes (default: 120); excludes validation-slot waiting')
     parser.add_argument('--legacy-color',choices=('inspect','bt709-limited'),default='inspect')
-    parser.add_argument('--age-unit', choices=('all','hours','days','weeks'), default='all')
+    parser.add_argument('--age-unit', choices=('all','minutes','hours','days','weeks'), default='all')
     parser.add_argument('--age-value', type=int)
+    parser.add_argument('--age-comparison', choices=('within','older'), default='within')
     args=parser.parse_args(argv)
     try:
         processing_timeout_minutes(args.timeout_minutes)
-        age = file_age_settings(args.age_unit, args.age_value)
+        age = file_age_settings(args.age_unit, args.age_value, args.age_comparison)
         selected, reason = file_age_match(args.source, age)
     except ValueError as exc:
         parser.error(str(exc))
