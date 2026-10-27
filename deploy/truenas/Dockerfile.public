@@ -39,7 +39,7 @@ COPY python/ /opt/muxmender/
 COPY LICENSE /opt/muxmender-notices/MuxMender-LICENSE
 # Review materials must accompany the public context; audit checks their hashes.
 COPY public-materials/ /opt/muxmender-notices/public-materials/
-RUN python3 -B -c "import hdr_auto, hdr10plus_preserve, dv_workflow, av1_content_light; assert av1_content_light.available()" && hdr10plus_tool --version && dovi_tool --version && mkvmerge --version
+RUN python3 -B -c "import hdr_auto, hdr10plus_preserve, dv_workflow, av1_content_light, av1_hdr_metadata, audio_crc_policy, sqlite3; assert av1_content_light.available()" && hdr10plus_tool --version && dovi_tool --version && mkvmerge --version
 USER 568:568
 EXPOSE 8765
 ENTRYPOINT ["/usr/bin/tini", "--", "python3", "-B", "-m", "app_service"]

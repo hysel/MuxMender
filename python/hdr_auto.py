@@ -76,16 +76,24 @@ def encode_preserved(workflow, source, output, settings, info, before, label, du
     video=main_video(before)
     hevc=settings['codec']=='hevc'
     av1_light=None
+    av1_frames=None
     if settings['codec']=='av1':
         from av1_content_light import source_light,available
-        if available():av1_light=source_light(workflow,source,before,label)
-    encoded=output.with_name(output.stem+'-before-hdr-finalization.mkv') if hevc or av1_light is not None else output
+        if available():
+            if video.get('codec_name')=='hevc':
+                av1_frames=workflow.frame_cache.get(str(source.resolve()))
+                if av1_frames is None:av1_frames=workflow.frame_file(source,label+'-hdr-source',before['format'])
+            else:av1_light=source_light(workflow,source,before,label)
+    encoded=output.with_name(output.stem+'-before-hdr-finalization.mkv') if hevc or av1_light is not None or av1_frames is not None else output
     command=encode_command(workflow.args.ffmpeg,source,encoded,settings,info,before['streams'])
     if hevc:command=command[:-1]+chroma_options(video)+command[-1:]
     elif settings['codec']=='av1':
         command=command[:-1]+av1_chroma_options(video)+command[-1:]
     workflow.execute(workflow.preserve_covers(command,source,before,label),label,duration)
-    if av1_light is not None:
+    if av1_frames is not None:
+        from av1_hdr_metadata import finalize as finalize_av1_hdr
+        finalize_av1_hdr(workflow,source,encoded,output,av1_frames,label,duration)
+    elif av1_light is not None:
         from av1_content_light import finalize as finalize_av1
         finalize_av1(workflow,encoded,output,av1_light,label,duration)
     if not hevc:

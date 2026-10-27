@@ -23,6 +23,22 @@ from task_progress import digest
 from savings_policy import requirement, meets_requirement
 
 
+def scene_validation(scene, returncode):
+    """Keep the actual preservation failure visible in queue results."""
+    files=list(Path(scene).glob('dv81-*/validation.json'))
+    if len(files)!=1:
+        raise RuntimeError(f'Dolby Vision sample did not produce one validation report (found {len(files)}, exit {returncode}).')
+    try:
+        evidence=json.loads(files[0].read_text())
+        if not isinstance(evidence,dict):raise ValueError('Expected a report object')
+    except (OSError,ValueError) as exc:
+        raise RuntimeError('Dolby Vision sample validation report could not be read: '+str(exc)) from exc
+    if returncode or evidence.get('error'):
+        detail=str(evidence.get('error') or f'processing exited with code {returncode}')
+        raise RuntimeError('Dolby Vision sample failed: '+detail[-2000:])
+    return evidence
+
+
 def score_pass(score,mean,p5):
     return (score.get('passed') is True and
             all(type(score.get(k)) in (int,float) and math.isfinite(score[k])
@@ -225,9 +241,7 @@ def run(args,source,root,data,baseline):
                     minimum_savings_percent=args.minimum_savings_percent,ffmpeg=args.ffmpeg,
                     ffprobe=args.ffprobe,dovi_tool='dovi_tool',source_guard=guard)
                 code=dv.run(options)
-                files=list(scene.glob('dv81-*/validation.json'))
-                if code or len(files)!=1:raise RuntimeError('DV scene failed; see retained validation report')
-                evidence=json.loads(files[0].read_text())
+                evidence=scene_validation(scene,code)
                 sample=sample_evidence(evidence,source,start,seconds,combined,args.vmaf_mean,args.vmaf_p5,
                                        additional_tracks=additional)
                 sample['output']=evidence.get('output')
