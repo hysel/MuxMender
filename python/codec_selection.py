@@ -142,6 +142,8 @@ def select_candidate(report, minimum_savings_percent=25.0):
             if type(sample.get('bytes')) is not int or sample['bytes'] <= 0:
                 reasons.append('invalid_output_size')
         row = dict(id=trial_id, codec=trial.get('codec'), rejected_reasons=sorted(set(reasons)))
+        errors=list(dict.fromkeys(str(s['error']) for s in samples if s.get('error')))
+        if errors:row['processing_errors']=errors
         row['assessment']='inconclusive'
         partial_rejection=(trial.get('quality_early_screen') is True and
             structural_reasons==['unmatched_reference_samples'] and
@@ -189,6 +191,11 @@ def select_candidate(report, minimum_savings_percent=25.0):
         else:
             result['outcome_category']='error'
             result['reason']='Evaluation incomplete: one or more encoders or validation checks failed or lacked evidence. Original retained; retry after resolving the issue.'
+            errors=list(dict.fromkeys(error for row in result['candidates'] for error in row.get('processing_errors',[])))
+            if errors:
+                result['processing_errors']=errors
+                first=' '.join(errors[0].split())
+                result['reason']='Evaluation incomplete: '+first[:300]+('…' if len(first)>300 else '')+'. Original retained. See details for the failed checks.'
     if eligible:
         _, _, winner, savings = min(eligible, key=lambda row: (row[0], row[1]))
         result.update(action='encode_copy', reason='Smallest eligible measured sample output',

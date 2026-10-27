@@ -4,6 +4,7 @@ from ui.workspace import STYLE, SCRIPT as RESULTS_SCRIPT
 from ui.workspace_history import SCRIPT as HISTORY_SCRIPT
 from ui.activity_reports import PANEL as REPORT_PANEL, SCRIPT as REPORT_SCRIPT, STYLE as REPORT_STYLE
 from app_version import VERSION
+from urllib.parse import quote
 from ui.outcome_summary import SCRIPT as OUTCOME_SCRIPT
 
 controls = PANEL[:PANEL.index('<details class="control-advanced"><summary>Job queue & logs')]+ '</div></section>'
@@ -54,7 +55,7 @@ HTML = '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name=
 <div id="user-results"></div><button id="show-results" type="button" hidden>Show more results</button>
 </div></section>
 <details class="panel help"><summary>How decisions are made</summary><div class="panel-body"><p><strong>Create smaller copies</strong> tests short sections using supported encoders. Only candidates meeting quality and size checks proceed to full conversion and validation.</p><p><strong>Original kept</strong> means the tested options did not qualify, or you chose not to convert. A skipped video is not an error.</p><p><strong>Needs attention</strong> means processing stopped or the input is unsupported. Open its details for the reason. No source file is deleted.</p><p>Advanced settings are optional. Automatic mode compares playback-verified formats available on your hardware. Testing covers sampled visual quality and full-file preservation/decode checks, not a perceptual guarantee for every frame.</p></div></details>
-<footer>MuxMender <span id="app-version">'''+VERSION+'''</span> · Replacement is opt-in · History and preferences are stored on the /output mount.</footer></main>
+<footer>MuxMender <span id="app-version">'''+VERSION+'''</span> · <a href="https://github.com/hysel/MuxMender/releases/tag/'''+quote(VERSION, safe='')+'''" target="_blank" rel="noopener noreferrer">Release notes<span class="sr-only"> (opens a new tab)</span></a> · Replacement is opt-in · History and preferences are stored on the /output mount.</footer></main>
 '''+HISTORY_SCRIPT+OUTCOME_SCRIPT+REPORT_SCRIPT+RESULTS_SCRIPT+SCRIPT+'''</body></html>'''
 HTML=HTML.replace('<a href="#results">Results</a>','<a href="#results">Results</a><a href="#reports">Reports</a>')
 HTML=HTML.replace('<section class="panel" id="results"',REPORT_PANEL+'<section class="panel" id="results"')

@@ -77,3 +77,13 @@ recover interrupted replacements.
 Old release downloads and development test files are separate from your library.
 They can be reviewed after an update is working, but keep a known-good rollback
 image. Avoid broad Docker cleanup commands on a server that runs other apps.
+## Conflicting video timestamps
+
+If a result says the source has conflicting video timestamps, some pictures
+are scheduled to play before pictures that should come earlier. MuxMender keeps
+the original because conversion would require changing that timing. This is
+different from a variable frame rate, which is supported.
+
+Retrying the same file will not repair its timestamps. Use a source copy with
+correct timing. MuxMender does not silently rebuild the timeline or shift the
+video against its audio.

@@ -23,7 +23,14 @@ function applyTheme(value){if(!['system','light','dark'].includes(value))value='
 try{applyTheme(localStorage.getItem('muxmender-theme')||'system')}catch(e){applyTheme('system')}
 userEl('theme').addEventListener('change',()=>applyTheme(userEl('theme').value));
 userEl('toggle-updates').addEventListener('click',()=>{globalThis.liveUpdatesPaused=!globalThis.liveUpdatesPaused;userEl('toggle-updates').setAttribute('aria-pressed',String(globalThis.liveUpdatesPaused));userEl('toggle-updates').textContent=globalThis.liveUpdatesPaused?'Resume display updates':'Freeze display only';userEl('connection-state').textContent=globalThis.liveUpdatesPaused?'Display paused · jobs continue':'Reconnecting…';if(!globalThis.liveUpdatesPaused){refreshUserJobs();if(typeof refreshControls==='function')refreshControls()}});
-function userReason(job){const raw=String(job.reason||job.detail||job.error||'');const s=job.state;
+function userReason(job){const reason=userReasonBase(job),warning=sourceAudioNotice(job);return reason+(warning?' '+warning:'');}
+function sourceAudioNotice(job){
+ if(['pending','running'].includes(job.state)||!(Array.isArray(job.source_audio_warnings)&&job.source_audio_warnings.length))return '';
+ return ['replaced','verified','awaiting-playback','playback-approved'].includes(job.state)
+  ?'Audio warning: the original audio had decoding issues and was kept unchanged. Those issues remain.'
+  :'Audio warning: the source already has decoding issues. Video conversion does not repair the audio.';
+}
+function userReasonBase(job){const raw=String(job.reason||job.detail||job.error||'');const s=job.state;
  if(job.publication_only&&s==='pending')return 'Approved replacement is waiting for its turn. The existing safe copy will be used; no re-encoding.';
  if(job.publication_only&&s==='running')return 'Verifying and publishing the approved copy. The original is removed only after verified publication.';
  if(s==='pending')return 'Waiting for its turn. See Current work for queue status.';
@@ -31,6 +38,7 @@ function userReason(job){const raw=String(job.reason||job.detail||job.error||'')
  if(s==='replaced')return 'Original replaced after automated checks and verified copying. No playback review was required.';
  if(/quant_step_size/i.test(raw))return 'The source audio could not be decoded. Original kept. Check the source audio before retrying.';
  if(/source video reader failed/i.test(raw))return 'The source video reader reported an error before conversion. Original kept. Open details for the decoder error.';
+ if(/source video presentation timestamps do not increase/i.test(raw))return 'The source has conflicting video timestamps. Original kept: conversion would require repairing its timing first. Open details for the affected frame.';
  if(/source audio preflight/i.test(raw))return 'The source reader reported an error before conversion. Original kept. Open details to see whether it concerns audio, video or the container.';
  if(raw.startsWith('Unsupported input:'))return raw;
  if(['verified','awaiting-playback','playback-approved'].includes(s))return 'Automated checks passed. Review playback before replacing the original.';

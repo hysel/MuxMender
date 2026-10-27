@@ -715,6 +715,7 @@ class Controls(CopyApproval, WorkspaceHistory):
                 results=list(folder.glob('auto-*/status.json'))
                 if len(results)==1:
                     result=read(results[0]);stage=result.get('state')
+                    job['source_audio_warnings']=result.get('source_audio_warnings',[])
                     selection=read(results[0].parent/'selection.json') or result.get('decision',{})
                     job['evidence']=decision_evidence(results[0].parent,selection)
                     if stage=='validated-copy-awaiting-playback':
@@ -763,6 +764,8 @@ class Controls(CopyApproval, WorkspaceHistory):
                 state,reason='interrupted','Service stopped; review retained outputs/recovery journal before retrying'
             if job.get('artifact_cleanup',{}).get('state')=='needs-attention':
                 reason+=' Temporary-file cleanup needs attention: '+str(job['artifact_cleanup'].get('error','see cleanup report'))
+            if job.get('source_audio_warnings') and 'Original audio had decoding issues' not in reason:
+                reason+=' Source audio has decoding issues. Existing audio issues remain; conversion does not repair them.'
             job.update(state=state,reason=reason,finished=time.time())
             self.state['failures']=self.state['failures']+1 if state=='failed' else 0
             # A failed video is terminal for that request, not for the queue.
@@ -794,7 +797,9 @@ class Controls(CopyApproval, WorkspaceHistory):
             job.update(saved_bytes=receipt['saved_bytes'],published_path=receipt['target'],
                        published_signature=signature(Path(receipt['target'])),published_identity=source_identity(receipt['target']),
                        published_sha256=receipt['output_sha256'])
-            return 'replaced','Original replaced after full validation and verified publication.'
+            warning=(' Original audio had decoding issues and was kept unchanged; existing audio issues remain.'
+                     if read(result/'status.json').get('source_audio_warnings') else '')
+            return 'replaced','Original replaced after full validation and verified publication.'+warning
         except DestinationConflict as exc:return 'skipped',str(exc)
         except Exception as exc:return 'failed','Replacement needs attention: '+str(exc)
 

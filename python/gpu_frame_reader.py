@@ -126,7 +126,7 @@ def reader_environment():
     return dict(os.environ,MUXMENDER_RESEARCH_CUDA_READER='1')
 
 
-SDR_FRAME_FIELDS='best_effort_timestamp_time,width,height,pix_fmt,sample_aspect_ratio,interlaced_frame,top_field_first,repeat_pict,color_primaries,color_transfer,color_space,color_range'
+SDR_FRAME_FIELDS='pts_time,best_effort_timestamp_time,width,height,pix_fmt,sample_aspect_ratio,interlaced_frame,top_field_first,repeat_pict,color_primaries,color_transfer,color_space,color_range'
 
 
 def sdr_reader_request(cpu,source,video,duration,qualification,threads=2,decoder_options=(),container=None):

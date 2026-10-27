@@ -243,6 +243,19 @@ Open the dashboard, choose a few videos, select **Create smaller copies**, and
 add them to the queue. Read the results and check playback before choosing
 replacement. No processing commands or scripts are needed.
 
+## Existing audio issues
+
+Existing audio decoding issues, including CRC errors, do not by themselves stop
+MuxMender from making the video smaller. The original compressed audio is kept
+unchanged, and the result warns you that its existing issues remain. MuxMender
+does not repair, drop, or re-encode the damaged audio. It may still glitch during
+playback, just as the original can.
+
+Every copied audio packet and its timing must pass preservation checks. Unreadable
+tracks, changed audio, video-quality failures, and insufficient savings still
+prevent replacement. This policy takes effect in
+the next release that includes it, not in an already installed image.
+
 ## What has been tested?
 
 Selected SDR, HDR10, legacy AVI and DVD-rip workflows have passed project tests.
@@ -257,6 +270,9 @@ including known failures and the distinction between automatic and research use.
 
 The [release notes](https://github.com/hysel/MuxMender/releases) describe what is
 available in each published image. Merging code does not update a running app.
+You can also open **Release notes** beside the installed version at the bottom
+of the dashboard. Read the notes for the new version before applying an update;
+TrueNAS custom-app image updates may not display them in the update dialog.
 
 For storage maintenance, see [what remains after a task](docs/post-task-cleanup.md).
 Keep history and

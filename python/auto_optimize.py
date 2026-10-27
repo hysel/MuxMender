@@ -96,7 +96,10 @@ def paired_streams(before, after):
     def ordered(data):
         return sorted(data['streams'],key=lambda stream: bool(is_cover(stream)))
     old,new=ordered(before),ordered(after)
-    if len(old)!=len(new):raise ValueError('Track count changed')
+    if len(old)!=len(new):
+        def inventory(streams):
+            return ', '.join(f"{s.get('index', '?')}:{s.get('codec_type', '?')}/{s.get('codec_name', '?')}" for s in streams)
+        raise ValueError(f'Track count changed: source {len(old)} [{inventory(old)}]; output {len(new)} [{inventory(new)}]')
     return list(zip(old,new))
 
 
@@ -333,6 +336,21 @@ def probe_rate_retry(ffmpeg, settings, info, video, timeout=30):
     return result
 
 
+def metadata_probe_failure(source, diagnostic):
+    """Explain a confirmed unreadable header without claiming the whole file is empty."""
+    detail=diagnostic.strip()[-2000:]
+    if 'EBML header parsing failed' in diagnostic:
+        try:
+            with Path(source).open('rb') as stream:header=stream.read(4096)
+        except OSError:
+            header=b''
+        if len(header)==4096 and not any(header):
+            return ('The container header could not be read, and the first 4 KiB of this file are all zero bytes. '
+                    'The file may be incomplete or damaged. Wait for any transfer to finish or use a complete source. '
+                    'Original kept. Reader details: '+detail)
+    return 'Could not read media metadata: '+detail
+
+
 class Workflow:
     def check_metadata(self, reference, output, before, after, codec, label, **verified):
         evidence=None
@@ -386,6 +404,10 @@ class Workflow:
         self.aac_priming_outputs={}
         self.source_packet_cache=None
         self.audio_audits={}
+        self.audio_crc_warnings=[]
+        self.crc_source_proofs={}
+        self.crc_packet_audits={}
+        self.audio_diagnostic_counts={}
         self.source_pcm_cache={}
         self.output_suffix='.mkv'
         self.essence_options={}
@@ -576,9 +598,14 @@ class Workflow:
             self.guard()
             raw=cached['raw']
         else:
-            raw = subprocess.check_output([self.args.ffprobe, '-v', 'error', '-show_streams',
-               '-show_chapters', '-show_format', '-show_data_hash', 'sha256', '-of', 'json', *self.decoder_options(source),str(source)],
-               text=True, timeout=60)
+            try:
+                raw = subprocess.check_output([self.args.ffprobe, '-v', 'error', '-show_streams',
+                   '-show_chapters', '-show_format', '-show_data_hash', 'sha256', '-of', 'json', *self.decoder_options(source),str(source)],
+                   text=True, stderr=subprocess.PIPE, timeout=60)
+            except subprocess.CalledProcessError as exc:
+                detail=exc.stderr or 'The reader returned no diagnostic message.'
+                if isinstance(detail,bytes):detail=detail.decode('utf-8',errors='replace')
+                raise RuntimeError(metadata_probe_failure(source,detail)) from exc
             if cacheable:
                 self.guard()
                 if identity!=self.audit_identity(source) or content_hash!=digest(source,self.guard):
@@ -849,12 +876,42 @@ class Workflow:
             self.execute(retry,label+'-original-clock',duration,strict_decode=True)
             return True
 
+    def check_source_crc_audio(self, source, index, duration, codec='ac3'):
+        """Source audio diagnosis; never used to approve changed packets."""
+        from audio_crc_policy import source_audio_diagnostics
+        identity=self.audit_identity(source)
+        key=(str(source.resolve()),index,codec)
+        cached=self.crc_source_proofs.get(key)
+        if cached and cached['identity']==identity:return cached['count']
+        label=f'source-crc-audio-{index}'
+        command=[self.args.ffmpeg,'-hide_banner','-nostdin','-v','error',
+                      *(['-err_detect','crccheck+explode'] if codec=='ac3' else []),*self.reader_input_options(source),
+                      '-i',str(source),'-map',f'0:{index}','-af','asetpts=N/SR/TB',
+                      '-progress','pipe:1','-nostats','-f','null','-']
+        decode_failure=None
+        try:self.execute(command,label,duration)
+        except RuntimeError as exc:
+            import re
+            # Invalid-data/decode-error exits can describe an existing source
+            # defect. Timeout, cancellation, OOM and other exits never qualify.
+            if not re.match(r'^Stage failed \((?:69|183)\):',str(exc)):raise
+            decode_failure=exc
+        log=self.directory/f'{self.serial:03d}-{label}.log'
+        with log.open(encoding='utf-8') as stream:
+            next(stream)  # Our recorded command, not decoder output.
+            count=source_audio_diagnostics(stream,codec)
+        if decode_failure and not count:raise decode_failure
+        if self.audit_identity(source)!=identity:raise ValueError('Source changed during CRC diagnosis')
+        self.crc_source_proofs[key]=dict(identity=identity,count=count)
+        return count
+
     def preflight_source_audio(self, source, metadata, source_hash=None):
-        """Catch damaged source audio before codec trials or full encoding.
+        """Diagnose source audio before codec trials or full encoding.
 
         Read the complete tracks, not seeked samples (AVI seeking can itself
         start inside an audio frame). Never trim, conceal or re-encode defects.
-        Output decode validation remains independent and mandatory.
+        Existing audio defects may be retained with complete packet identity;
+        video, track-reading and infrastructure failures remain blocking.
         """
         indices=[s['index'] for s in metadata['streams'] if s.get('codec_type')=='audio']
         if not indices:return
@@ -871,7 +928,7 @@ class Workflow:
                 version=subprocess.check_output([str(executable),'-version'],text=True,
                     stderr=subprocess.STDOUT,timeout=10)
                 code=hashlib.sha256()
-                for name in ('auto_optimize.py','native_pipeline.py','runtime_support.py','media_metadata.py','iso_chapters.py'):
+                for name in ('auto_optimize.py','audio_crc_policy.py','native_pipeline.py','runtime_support.py','media_metadata.py','iso_chapters.py'):
                     code.update(Path(__file__).with_name(name).read_bytes())
                 context=dict(schema='complete-source-audio-v1',source_sha256=source_hash,
                     tracks=indices,ffmpeg_sha256=executable_hash,ffmpeg_version=version,
@@ -886,7 +943,9 @@ class Workflow:
             except (OSError,ValueError,subprocess.SubprocessError):cache=None
         try:
             clock_retry=self.discard_decode([self.args.ffmpeg,'-hide_banner','-nostdin','-v','error','-xerror',
-                          '-threads','2',*self.reader_input_options(source),'-i',str(source),
+                          '-threads','2',*(['-err_detect','crccheck+explode'] if any(
+                              s.get('codec_name')=='ac3' and s.get('codec_type')=='audio' for s in metadata['streams']) else []),
+                          *self.reader_input_options(source),'-i',str(source),
                           *[item for index in indices for item in ('-map',f'0:{index}')],
                           # This discard-only decoder check is about sample integrity.
                           # Source timestamps are validated independently against the
@@ -895,6 +954,26 @@ class Workflow:
                           '-progress','pipe:1','-nostats','-f','null','-'],
                          'source-audio-preflight-decode',float(metadata['format']['duration']))
         except RuntimeError as exc:
+            # Diagnose every track independently; do not treat a video/input
+            # failure observed during audio probing as an audio exception.
+            import re
+            from audio_crc_policy import decoder_names
+            first_tag=re.search(r'\[([A-Za-z0-9_]+) @ 0x[0-9a-fA-F]+\]',str(exc))
+            audio_codecs={s.get('codec_name') for s in metadata['streams'] if s.get('codec_type')=='audio'}
+            audio_codecs=set().union(*(decoder_names(c) for c in audio_codecs))
+            if first_tag and first_tag.group(1) in audio_codecs:
+                from audio_crc_policy import warning
+                warnings=[]
+                for stream in metadata['streams']:
+                    if stream.get('codec_type')!='audio':continue
+                    index=stream['index']
+                    count=self.check_source_crc_audio(source,index,float(metadata['format']['duration']),stream.get('codec_name'))
+                    if count:warnings.append(warning(index,count))
+                if warnings:
+                    self.audio_crc_warnings=warnings
+                    save(evidence,dict(state='passed-with-source-audio-warning',warnings=warnings,
+                        complete_decode=False,policy='existing-audio-issues-exact-packet-preservation'))
+                    return
             # Opening an input for an audio-only decode may also probe video.
             # Attribute an explicit decoder tag without concealing its error.
             import re
@@ -933,6 +1012,14 @@ class Workflow:
         self.validate_output_preset(output,actual,label)
         maps,reused=decode_maps_after_frame_audit(actual,count)
         covered=self.audited_audio_indices(reference,output) if reused else set()
+        crc_record=self.crc_packet_audits.get((str(reference.resolve()),str(output.resolve())))
+        crc_covered=set()
+        if crc_record:
+            if crc_record['identity']!=(self.audit_identity(reference),self.audit_identity(output)):
+                raise ValueError('Media changed after CRC audio packet verification')
+            crc_covered=crc_record['indices']
+        # Only explicit audio maps can be exempted; never a broad/video map.
+        maps=[mapping for mapping in maps if mapping not in {f'0:{i}' for i in crc_covered}]
         maps=[mapping for mapping in maps if mapping not in {f'0:{i}' for i in covered}]
         if maps:
             self.discard_decode([self.args.ffmpeg, '-hide_banner', '-nostdin', '-v', 'error', '-xerror',
@@ -945,7 +1032,8 @@ class Workflow:
         save(self.directory/(label+'-decode-evidence.json'),dict(video_audit_reused=reused,
             verified_video_frames=count,audio_maps=maps if reused else 'all',strict_decode=True,
             complete_pcm_audits_reused=sorted(covered),
-            note='Current complete video frame comparison plus full audio decode; not historical evidence reuse'))
+            unchanged_crc_audio_tracks=sorted(crc_covered),source_audio_warnings=self.audio_crc_warnings,
+            note='Complete video comparison; audio strictly decoded or existing source issues preserved by complete packet identity'))
         temporary=self.color_intermediates.pop(output.resolve(),None)
         if temporary:
             path,identity=temporary
@@ -992,13 +1080,13 @@ class Workflow:
         save(self.directory/(label+'-output-preset.json'),proof)
         if not proof['passed']:raise ValueError('Output exceeded selected preset video bitrate')
 
-    def decoded_audio_evidence(self, source, index, pcm, evidence, label, duration, *, reuse_source=False):
+    def decoded_audio_evidence(self, source, index, pcm, evidence, label, duration, *, reuse_source=False, source_issue_codec=None):
         """Reuse only completed source decoding, never an output's PCM proof."""
         source=Path(source);evidence=Path(evidence)
         if evidence.parent.resolve()!=self.directory.resolve():raise ValueError('Unsafe audio evidence path')
         # Full-file hashing is cheap for bounded samples, but can cost more than
         # decoding a large source. Larger files retain the original fresh path.
-        eligible=(reuse_source and source.is_file() and not source.is_symlink() and
+        eligible=(reuse_source and not source_issue_codec and source.is_file() and not source.is_symlink() and
                   source.stat().st_size<=64*1024*1024)
         identity=self.audit_identity(source) if eligible else None
         source_hash=digest(source,self.guard) if eligible else None
@@ -1014,7 +1102,14 @@ class Workflow:
         self.execute([self.args.ffmpeg,'-v','error','-nostdin','-n','-copyts','-threads','2',
                       *self.reader_input_options(source),'-i',str(source),'-map','0:'+str(index),'-c:a',pcm,
                       '-progress','pipe:1','-nostats','-f','framehash','-hash','sha256',str(evidence)],
-                     label,duration,strict_decode=True)
+                     label,duration,strict_decode=not bool(source_issue_codec))
+        if source_issue_codec:
+            from audio_crc_policy import source_audio_diagnostics
+            log=self.directory/f'{self.serial:03d}-{label}.log'
+            with log.open(encoding='utf-8') as stream:
+                next(stream)
+                count=source_audio_diagnostics(stream,source_issue_codec)
+            self.audio_diagnostic_counts[(str(source.resolve()),index,pcm)]=count
         if eligible and evidence.is_file() and not evidence.is_symlink():
             self.guard()
             if identity!=self.audit_identity(source) or source_hash!=digest(source,self.guard):
@@ -1035,7 +1130,17 @@ class Workflow:
         for index in indices:
             cover=any(s['index']==index and is_cover(s) for s in before['streams'])
             try:
-                compare_packets(original[index],encoded[index],cover=cover)
+                compare_packets(original[index],encoded[index],cover=cover,guard=self.guard)
+                stream=next(s for s in before['streams'] if s['index']==index)
+                if self.audio_crc_warnings and stream.get('codec_type')=='audio':
+                    identity=(self.audit_identity(reference),self.audit_identity(output))
+                    self.check_source_crc_audio(reference,index,float(before['format']['duration']),stream.get('codec_name'))
+                    if identity!=(self.audit_identity(reference),self.audit_identity(output)):
+                        raise ValueError('Media changed during CRC audio packet verification')
+                    key=(str(reference.resolve()),str(output.resolve()))
+                    record=self.crc_packet_audits.setdefault(key,dict(identity=identity,indices=set()))
+                    if record['identity']!=identity:raise ValueError('Media changed during CRC audio packet verification')
+                    record['indices'].add(output_indices[index])
                 if index not in self.aac_priming_outputs.get(output.resolve(),set()):continue
                 # Preserved decoder priming requires full decoded evidence even
                 # when compressed packet timestamps happen to compare equal.
@@ -1050,18 +1155,32 @@ class Workflow:
                                   if stream.get('codec_type')=='audio' else None)
                 if missing_duration or reconstructed:
                     evidence=[]
+                    issue_codec=stream.get('codec_name') if self.audio_crc_warnings else None
                     for side,path in [('source',reference),('output',output)]:
                         hashes=self.directory/(label+f'-audio-duration-{index}-{side}.framehash')
                         hashes=self.decoded_audio_evidence(path,index if side=='source' else output_indices[index],
                             'pcm_f64le',hashes,label+f'-audio-duration-{index}-{side}',
-                            float(before['format']['duration']),reuse_source=side=='source')
+                            float(before['format']['duration']),reuse_source=side=='source',source_issue_codec=issue_codec)
                         evidence.append(hashes)
                     proof=compare_decoded_audio(*evidence)
+                    if issue_codec:
+                        counts=[self.audio_diagnostic_counts[(str(path.resolve()),i,'pcm_f64le')]
+                                for path,i in ((reference,index),(output,output_indices[index]))]
+                        if counts[0]!=counts[1]:raise ValueError('Copied audio decoder diagnostics changed')
+                        proof['existing_audio_diagnostics_per_side']=counts
+                        proof['audio_repaired']=False
                     proof['packet_representation_case']='reconstructed-truehd-timestamps' if reconstructed else 'missing-audio-duration'
                     save(self.directory/(label+f'-audio-duration-{index}-presentation.json'),proof)
                     compare_packets(original[index],encoded[index],audio_duration_verified=missing_duration,
-                                    audio_timestamps_verified=reconstructed)
-                    self.remember_audio_audit(reference,output,output_indices[index],audio_identity)
+                                    audio_timestamps_verified=reconstructed,guard=self.guard)
+                    if issue_codec:
+                        if audio_identity!=(self.audit_identity(reference),self.audit_identity(output)):
+                            raise ValueError('Media changed during audio timing verification')
+                        key=(str(reference.resolve()),str(output.resolve()))
+                        record=self.crc_packet_audits.setdefault(key,dict(identity=audio_identity,indices=set()))
+                        if record['identity']!=audio_identity:raise ValueError('Media changed during audio timing verification')
+                        record['indices'].add(output_indices[index])
+                    else:self.remember_audio_audit(reference,output,output_indices[index],audio_identity)
                     continue
                 from packet_validation import aac_initialization_timestamp_case, aac_terminal_duration_case, packet_rows, compare_decoded_audio
                 if stream.get('codec_name')!='aac':raise
@@ -1072,18 +1191,32 @@ class Workflow:
                     raise
                 evidence=[]
                 first_output=[]
+                issue_codec=stream.get('codec_name') if self.audio_crc_warnings else None
                 for side,path,packets in [('source',reference,original[index]),('output',output,encoded[index])]:
                     hashes=self.directory/(label+f'-aac-{index}-{side}.framehash')
                     hashes=self.decoded_audio_evidence(path,index if side=='source' else output_indices[index],
                         'pcm_f32le',hashes,label+f'-aac-{index}-{side}-presentation',
-                        float(before['format']['duration']),reuse_source=side=='source')
+                        float(before['format']['duration']),reuse_source=side=='source',source_issue_codec=issue_codec)
                     evidence.append(hashes)
                     first_output.append(next(itertools.islice(packet_rows(packets),1,None))['pts_time'] if non_output_case else None)
                 proof=compare_decoded_audio(*evidence,*first_output)
+                if issue_codec:
+                    counts=[self.audio_diagnostic_counts[(str(path.resolve()),i,'pcm_f32le')]
+                            for path,i in ((reference,index),(output,output_indices[index]))]
+                    if counts[0]!=counts[1]:raise ValueError('Copied audio decoder diagnostics changed')
+                    proof['existing_audio_diagnostics_per_side']=counts
+                    proof['audio_repaired']=False
                 proof['packet_representation_case']='terminal-duration' if terminal else ('preserved-priming' if priming_verified else ('non-output-initial-pts' if non_output_case else 'missing-initial-duration'))
                 save(self.directory/(label+f'-aac-{index}-presentation.json'),proof)
-                compare_packets(original[index],encoded[index],aac_initialization_verified=non_output_case or not (terminal or priming_verified),aac_terminal_verified=terminal,aac_priming_verified=priming_verified)
-                self.remember_audio_audit(reference,output,output_indices[index],audio_identity)
+                compare_packets(original[index],encoded[index],aac_initialization_verified=non_output_case or not (terminal or priming_verified),aac_terminal_verified=terminal,aac_priming_verified=priming_verified,guard=self.guard)
+                if issue_codec:
+                    if audio_identity!=(self.audit_identity(reference),self.audit_identity(output)):
+                        raise ValueError('Media changed during audio timing verification')
+                    key=(str(reference.resolve()),str(output.resolve()))
+                    record=self.crc_packet_audits.setdefault(key,dict(identity=audio_identity,indices=set()))
+                    if record['identity']!=audio_identity:raise ValueError('Media changed during audio timing verification')
+                    record['indices'].add(output_indices[index])
+                else:self.remember_audio_audit(reference,output,output_indices[index],audio_identity)
 
     def quality(self, reference, output, label, count, duration):
         # Safe generated basename and cwd avoid platform/path escaping in filter syntax.
@@ -1170,6 +1303,7 @@ def compare_frames(reference, output,*,reference_video=None,output_video=None):
 def compare_frame_rows(reference,output,*,reference_video=None,output_video=None):
     """Compare every record. Representation does not change validation rules."""
     count = 0
+    previous_timestamps = [None, None]
     fields = ('width', 'height', 'pix_fmt', 'sample_aspect_ratio')
     reference_aspect=effective_pixel_aspect(reference_video) if reference_video is not None else None
     output_aspect=effective_pixel_aspect(output_video) if output_video is not None else None
@@ -1200,6 +1334,16 @@ def compare_frame_rows(reference,output,*,reference_video=None,output_video=None
             if 'side_data_type' in frame and any(x in frame['side_data_type'].lower() for x in ('dovi', 'dolby', 'mastering', 'content light', 'hdr', 'display matrix')):
                 raise ValueError('Unexpected HDR/geometry frame side data')
         timestamps = [Fraction(f['best_effort_timestamp_time']) for f in (a, b)]
+        for side, frame in enumerate((a, b)):
+            raw=frame.get('pts_time')
+            value=Fraction(raw) if raw not in (None,'N/A') else timestamps[side]
+            previous=previous_timestamps[side]
+            if previous is not None and value<=previous:
+                if side==0:
+                    raise ValueError(f'Source video presentation timestamps do not increase at frame {count+1}. '
+                                     'Original retained: conversion would require a separate timestamp repair.')
+                raise ValueError(f'Output video presentation timestamps do not increase at frame {count+1}')
+            previous_timestamps[side]=value
         if abs(timestamps[0]-timestamps[1]) > Fraction(1,500):
             raise ValueError('Decoded frame timing changed')
         count += 1
@@ -1208,11 +1352,12 @@ def compare_frame_rows(reference,output,*,reference_video=None,output_video=None
     return count
 
 
-def compare_packets(reference, output, cover=False, *, aac_initialization_verified=False, aac_terminal_verified=None, aac_priming_verified=False, audio_duration_verified=None, audio_timestamps_verified=None):
+def compare_packets(reference, output, cover=False, *, aac_initialization_verified=False, aac_terminal_verified=None, aac_priming_verified=False, audio_duration_verified=None, audio_timestamps_verified=None, guard=lambda:None):
     progress('Comparing copied track evidence',detail='Checking packet hashes and timestamps; percentage unavailable')
     count=0
     for a, b in itertools.zip_longest(compact_rows(reference, 'data_hash'), compact_rows(output, 'data_hash')):
         count+=1
+        if count%4096==1:guard()
         if a is None or b is None or a['data_hash'] != b['data_hash']:
             raise ValueError('Copied packet payload/count changed')
         if cover:continue  # Static attachments have no playback timeline.
@@ -1526,6 +1671,8 @@ def run(args):
         guard()
         source_hash = digest(source, guard)
         workflow.preflight_source(source,data,source_hash)
+        state['source_audio_warnings']=workflow.audio_crc_warnings
+        save(directory/'status.json',state)
         plan['output_container']=workflow.output_suffix.lstrip('.')
         save(directory/'plan.json',plan)
         progress('Checking available encoders and quality tools',directory=directory)

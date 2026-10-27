@@ -27,6 +27,7 @@ function reportRows(rows,scope,category,query){
 }
 function reportReason(j){
  const reason=String(j.reason||j.error||j.detail||'');
+ if(sourceAudioNotice(j))return userReason(j);
  if(/source audio preflight|quant_step_size/i.test(reason))return userReason(j);
  if(/Dolby Vision|confirmed RPU/i.test(reason)&&reportGroup(j)==='problems')return 'Dolby Vision information needs inspection. Original kept.';
  if(j.state==='replaced')return 'The validated smaller file replaced the original.';

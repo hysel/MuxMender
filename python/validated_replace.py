@@ -91,6 +91,7 @@ def replace_validated(source, media, writable, result_dir, minimum_savings, job_
     if stage.exists() or backup.exists():raise ValueError('Prior replacement files require manual recovery; refusing to overwrite')
     journal=result_dir/'replacement.json'
     record=dict(state='staging',source=str(source),target=str(target),backup=str(backup),stage=str(stage),
+                source_audio_warnings=status.get('source_audio_warnings',[]),
                 source_sha256=status['source_sha256'],output_sha256=status['output_sha256'],original_bytes=before.st_size,output_bytes=output.stat().st_size,saved_bytes=before.st_size-output.stat().st_size)
     write(journal,record)
     progress('Publishing validated copy',detail='Copying to source storage; original retained')

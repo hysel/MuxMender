@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import urllib.parse
 import urllib.request
+from release_notes import check as check_release_notes
 
 ACCEPT='application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json'
 
@@ -36,6 +37,7 @@ def main():
     raw=Path(os.environ['REVIEW_PATH']).read_bytes()
     if hashlib.sha256(raw).hexdigest()!=os.environ['REVIEW_SHA']:raise ValueError('Review checksum differs')
     review=json.loads(raw)
+    check_release_notes()
     auth=base64.b64encode((os.environ['GITHUB_ACTOR']+':'+os.environ['GH_TOKEN']).encode()).decode()
     token_url='https://ghcr.io/token?'+urllib.parse.urlencode(dict(service='ghcr.io',scope='repository:'+repository+':pull,push'))
     with urllib.request.urlopen(urllib.request.Request(token_url,headers={'Authorization':'Basic '+auth}),timeout=30) as response:

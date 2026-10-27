@@ -86,6 +86,15 @@ before installing; the image uses Linux amd64 with NVIDIA GPU access, even when
 the host runs Windows. See the README for Windows setup and qualification limits.
 Numbered release tags remain available for pinning or rollback.
 
+## What changed in an update?
+
+Choose **Release notes** beside the version at the bottom of MuxMender to read
+about your installed version. Before updating, open
+[GitHub releases](https://github.com/hysel/MuxMender/releases) and read the notes
+for the new version. They cover features, fixes, performance changes, required
+steps and known issues. TrueNAS custom-app image updates may not show this link
+in their own update dialog.
+
 The release includes `compose.release.yaml`. Replace every `REPLACE_*` value
 with your own settings and use `stable` for `REPLACE_RELEASE_VERSION`.
 Create the host folders first and grant the selected user access. The template

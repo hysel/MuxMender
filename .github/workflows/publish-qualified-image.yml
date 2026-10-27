@@ -46,6 +46,10 @@ jobs:
           for key in ('IMAGE_SHA','REVIEW_SHA'):
               assert re.fullmatch('[0-9a-f]{64}',os.environ[key])
           PY
+      - name: Check release notes before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B deploy/release_notes.py --allow-draft
       - name: Download reviewed assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -104,6 +108,10 @@ jobs:
           docker tag "$QUALIFIED_IMAGE" "$target"
           docker push "$target" | tee "$RUNNER_TEMP/push-result.txt"
           echo "Uploaded $target from $QUALIFIED_IMAGE without rebuilding. Visibility and anonymous pull remain to be verified." >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$VERSION" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false --latest=false
       - name: Verify public image and promote stable
         if: inputs.promote_stable
         env:

@@ -20,6 +20,48 @@ No media changes during refactoring tests: use generated fixtures. Do not change
 the running app, resume a queue, or create a Docker release unless requested.
 Ask before git commit, merge or push. Preserve unrelated user changes.
 
+# Continue until completion or required user input
+
+Keep working on the authorized task until it is complete. Do not stop between
+steps or require the user to type "next", "continue", or repeat an approval
+already given. Progress updates are not stopping points: report briefly and
+continue executing, testing, investigating failures, and verifying the result.
+
+While a test or background job runs, continue other safe, in-scope work and
+monitor the job through completion using the available tools. Starting a job
+is not the same as completing the task. Do not claim ongoing monitoring unless
+an actual monitoring process is running.
+
+Pause unfinished work only when user input, a decision, credentials, or required
+approval is genuinely necessary, or when the user asks to stop. Explain the
+specific blocker and ask for exactly what is needed. If the answer blocks only
+one part of the task, continue the other authorized work where possible.
+Persistence does not expand permission: retain all safety, quality, preservation,
+commit, publication, and deployment requirements in this file.
+
+# Resolve known errors before committing
+
+When an error is discovered, fix it and verify the fix before committing.
+This includes older failures uncovered during review, not only the newest error.
+Maintain an explicit list of discovered errors and their verification status;
+do not treat a historical failure as resolved without supporting evidence.
+Do not commit, push, merge, or publish while known errors remain unresolved.
+If an error cannot be resolved, explain the blocker and obtain the user's
+explicit approval to defer that specific error before proceeding. General
+approval to commit or release does not authorize deferring known errors.
+Never bypass quality or preservation checks merely to make a failure disappear.
+
+# Existing source audio issues
+
+Existing audio decoding defects (including CRC errors) are reported warnings,
+not a reason by themselves to block video size reduction. Preserve the original
+compressed audio unchanged; never conceal, drop, repair, or re-encode it silently.
+Approval still requires complete copied-packet and timing verification plus the
+normal video quality, metadata and savings checks. Unreadable tracks, newly
+introduced audio changes, video errors and infrastructure failures remain blocking.
+Keep the source-audio warning in results and replacement receipts. Distinguish
+preservation of an existing defect from clean audio decoding or an audio repair.
+
 # Fix and upstream compatibility records
 
 Keep developer fix ledgers and research evidence in the local development archive,

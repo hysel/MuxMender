@@ -1,5 +1,19 @@
 # Update the app
 
+## Read what changed
+
+Open **Release notes** beside the version at the bottom of the MuxMender page.
+It opens the notes for your installed version. To review an update before
+installing it, visit [all releases](https://github.com/hysel/MuxMender/releases)
+and select the offered version.
+
+Each stable release includes a readable changelog covering new features, fixes,
+performance changes, any steps you need to take, and known issues. The notes
+are published before the stable image is updated.
+
+TrueNAS 25.10.7 custom-app image updates do not show a release-notes link in
+their update dialog. Use GitHub to read the notes before updating.
+
 Use repository **ghcr.io/hysel/muxmender** and tag **stable**. This downloads the
 published image; you do not need to build it on your server.
 
