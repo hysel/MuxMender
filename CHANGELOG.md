@@ -2,15 +2,17 @@
 
 For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
-The notes below describe changes prepared for a future release.
+The version notes below describe the changes included in each package.
 
-## Unreleased
+## 20261027-v64
 
 ### Folder selection
 
 - Filter files by **Older than** as well as **Created within the last**, using
   minutes, hours, days or weeks. Preview shows the matching files before you add
   them to the queue. Existing queued requests are unchanged.
+
+## 20261015-v63
 
 ### Conversion fixes
 
