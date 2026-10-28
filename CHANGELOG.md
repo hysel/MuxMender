@@ -4,6 +4,13 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
+## Unreleased
+
+- Recover AVI samples whose copied audio clock rounds differently from the
+  video clock. Restore only the temporary sample's timestamps from matching
+  original packets, then repeat normal picture, timing and copied-track checks.
+  Original media and quality requirements are unchanged.
+
 ## 20261028-v65
 
 - Before HEVC encoding, read HDR10+ metadata through the HEVC stream and check

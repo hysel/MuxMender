@@ -9,6 +9,14 @@ import json
 import math
 
 
+class ReferenceDisplayTimingError(ValueError):
+    """Unchanged sample pictures no longer have original display timing."""
+
+
+class ReferenceTrackTimingError(ValueError):
+    """Unchanged copied packets no longer share the original track clock."""
+
+
 def align_copy_seek(plan, streams, origin, maximum_seconds):
     """Avoid per-stream rounding of a seek while retaining its absolute end.
 
@@ -92,7 +100,7 @@ def verify_decoded_slice(source, sample, expected_shift=None, tolerance=Fraction
     pairs=list(zip(source[matches[0]:],sample))
     shift=Fraction(pairs[0][1]['pts'])-Fraction(pairs[0][0]['pts'])
     if any(abs(Fraction(b['pts'])-Fraction(a['pts'])-shift)>tolerance for a,b in pairs):
-        raise ValueError('Decoded reference display timing changed')
+        raise ReferenceDisplayTimingError('Decoded reference display timing changed')
     return shift
 
 
@@ -123,7 +131,7 @@ def verify_source_slice(source, sample, expected_shift=None, *, decoded_source=N
                     (source[i].get('pts_time') not in (None,'N/A') and sample[0].get('pts_time') not in (None,'N/A')
                      and abs(Fraction(sample[0]['pts_time'])-Fraction(source[i]['pts_time'])-expected_shift)<=tolerance))]
     if payload_matches and not matches:
-        raise ValueError('Reference stream timestamp shift differs from the other tracks')
+        raise ReferenceTrackTimingError('Reference stream timestamp shift differs from the other tracks')
     if len(matches) != 1:
         raise ValueError('Reference is not one unique contiguous source slice')
     shift = expected_shift
@@ -147,7 +155,7 @@ def verify_source_slice(source, sample, expected_shift=None, *, decoded_source=N
                 if shift is None:
                     shift = delta
                 if abs(shift-delta)>tolerance:
-                    raise ValueError('Reference stream alignment changed')
+                    raise ReferenceTrackTimingError('Reference stream alignment changed')
     if shift is None:
         raise ValueError('Reference has no verifiable timestamps')
     if missing_dts:
@@ -253,8 +261,8 @@ def recover_reference(workflow, source, metadata, position, seconds, label, *, e
     decoded_source=decoded(source,'source',True);decoded_sample=decoded(output,'sample')
     try:
         decoded_shift=verify_decoded_slice(decoded_source,decoded_sample,shift,tolerance)
-    except ValueError as error:
-        if generated_pts and not workflow.hdr_mode and suffix=='.mkv' and str(error)=='Decoded reference display timing changed':
+    except ReferenceDisplayTimingError:
+        if generated_pts and not workflow.hdr_mode and suffix=='.mkv':
             return recover_lossless_reference(workflow,source,metadata,plan,label,original,
                                               decoded_source,decoded,packets,tolerance)
         raise
@@ -274,7 +282,14 @@ def recover_reference(workflow, source, metadata, position, seconds, label, *, e
             continue
         extra=dict(decoded_source=decoded_source,decoded_sample=decoded_sample,
                    reorder_depth=video.get('has_b_frames',0)) if stream['index']==video['index'] else {}
-        verify_source_slice(a,b,shift,tolerance=tolerance,**extra)
+        try:
+            verify_source_slice(a,b,shift,tolerance=tolerance,**extra)
+        except ReferenceTrackTimingError:
+            if generated_pts and not workflow.hdr_mode and suffix=='.mkv':
+                original=canonical_audio_packets(workflow,source,metadata,original,begin,end,label)
+                return recover_lossless_reference(workflow,source,metadata,plan,label,original,
+                                                  decoded_source,decoded,packets,tolerance,canonical_audio=True)
+            raise
         checked.append(stream['index'])
     workflow.guard()
     evidence=dict(method='verified-keyframe-boundaries',plan={k:str(v) for k,v in plan.items()},
@@ -315,7 +330,87 @@ def compressed_window_bytes(original, copied, metadata, decoded_source, decoded_
     return sum(sizes)
 
 
-def recover_lossless_reference(workflow,source,metadata,plan,label,original,decoded_source,decoded,packets,tolerance):
+def canonical_audio_packets(workflow,source,metadata,original,begin,end,label):
+    """AVI seek indexes may estimate VBR audio clocks; demux from the origin."""
+    from auto_optimize import compact_rows
+    from task_progress import run_probe
+    from artifact_manifest import command_outputs
+    evidence=workflow.directory/(label+'-canonical-audio-all-packets.txt')
+    command=[workflow.args.ffprobe,'-v','error',*workflow.reader_input_options(source),
+             '-read_intervals','%'+format(float(end),'.9f'),'-select_streams','a',
+             '-show_packets','-show_data_hash','sha256','-show_entries',
+             'packet=stream_index,pts,dts,duration,pts_time,dts_time,duration_time,data_hash,size,flags',
+             '-of','compact=p=0',str(source)]
+    with command_outputs(workflow.directory,[*command,str(evidence)]):
+        run_probe(command,evidence,'Checking original audio clock from the beginning',
+                  workflow.args.timeout,workflow.guard,float(end))
+    if evidence.with_suffix(evidence.suffix+'.stderr').stat().st_size:
+        raise ValueError('Original audio clock reader reported errors')
+    audio={s['index']:Fraction(s['time_base']) for s in metadata['streams'] if s['codec_type']=='audio'}
+    rows=[p for p in original if p['stream_index'] not in audio]
+    for number,row in enumerate(compact_rows(evidence,'data_hash')):
+        if number%4096==0:workflow.guard()
+        index=int(row['stream_index']);row['stream_index']=index
+        if index not in audio:raise ValueError('Unexpected stream in original audio clock evidence')
+        for field in ('pts','dts','duration'):
+            if row.get(field) not in (None,'N/A'):row[field+'_time']=str(int(row[field])*audio[index])
+        if row.get('pts_time') not in (None,'N/A') and begin<=Fraction(row['pts_time'])<=end:rows.append(row)
+    return rows
+
+
+def restore_sample_audio_clocks(workflow,source_metadata,sample,sample_metadata,original,copied,shift,label,tolerance):
+    """Only generated sample clocks may be restored from exact source packets."""
+    import subprocess
+    from auto_optimize import paired_streams
+    from artifact_manifest import command_outputs
+    plans=[]
+    for a,b in paired_streams(source_metadata,sample_metadata):
+        if a['codec_type']!='audio':continue
+        before=[p for p in original if p['stream_index']==a['index']]
+        after=[p for p in copied if p['stream_index']==b['index']]
+        try:verify_source_slice(before,after,shift,tolerance=tolerance)
+        except ReferenceTrackTimingError:
+            matches=[i for i in range(len(before)-len(after)+1) if after and
+                     all(x['data_hash']==y['data_hash'] for x,y in zip(before[i:],after))]
+            if len(matches)!=1:raise ValueError('Sample audio clock restoration needs unique unchanged source packets')
+            rows=before[matches[0]:matches[0]+len(after)]
+            timestamps=[]
+            for row in rows:
+                if row.get('pts_time') in (None,'N/A'):raise ValueError('Missing original audio clock')
+                timestamps.append(Fraction(row['pts_time'])+shift)
+            if any(b<=a for a,b in zip(timestamps,timestamps[1:])):
+                raise ValueError('Original audio clocks are not strictly increasing')
+            plans.append((b['index'],timestamps))
+    if not plans:return sample
+    identified=json.loads(subprocess.check_output(['mkvmerge','-J',str(sample)],text=True,timeout=workflow.args.timeout))
+    tracks=[t for t in identified['tracks'] if t['type']=='audio']
+    audio=[s for s in sample_metadata['streams'] if s['codec_type']=='audio']
+    if len(tracks)!=len(audio):raise ValueError('Sample audio track inventory changed')
+    ids={s['index']:t['id'] for s,t in zip(audio,tracks)}
+    output=workflow.directory/(label+'-original-audio-clocks.mkv')
+    if output.exists() or output.is_symlink():raise ValueError('Sample clock restoration needs a new output')
+    command=['mkvmerge','--engage','force_passthrough_packetizer','--disable-track-statistics-tags',
+             '--disable-lacing','-o',str(output)]
+    for index,timestamps in plans:
+        path=workflow.directory/(label+'-audio-'+str(index)+'-timestamps.txt')
+        with command_outputs(workflow.directory,[str(path)]):
+            with path.open('x',encoding='utf-8') as handle:
+                handle.write('# timestamp format v2\n')
+                for point in timestamps:handle.write(format(float(point*1000),'.9f')+'\n')
+        command+=['--timestamps',str(ids[index])+':'+str(path)]
+    command.append(str(sample))
+    workflow.execute(command,'Restoring original audio clocks in the working sample',
+                     float(sample_metadata['format']['duration']))
+    report=dict(method='original-packet-identity-and-common-video-offset',
+                original_media_unchanged=True,validation_required=True,
+                tracks=[dict(sample_stream_index=index,packets=len(points),
+                             first_relative_pts=str(points[0]),last_relative_pts=str(points[-1]))
+                        for index,points in plans])
+    (workflow.directory/(label+'-sample-audio-clock.json')).write_text(json.dumps(report,indent=2),encoding='utf-8')
+    return output
+
+
+def recover_lossless_reference(workflow,source,metadata,plan,label,original,decoded_source,decoded,packets,tolerance,*,canonical_audio=False):
     """Repair only the staging representation, with independent source proof."""
     from auto_optimize import main_video,paired_streams
     from media_metadata import equivalent_ratio
@@ -327,7 +422,16 @@ def recover_lossless_reference(workflow,source,metadata,plan,label,original,deco
     output=workflow.directory/(label+'-lossless.mkv')
     command=[workflow.args.ffmpeg,'-hide_banner','-nostdin','-n','-xerror','-copyts',
              '-ss',decimal(start-origin),*workflow.reader_input_options(source),*workflow.decoder_options(source),
-             '-i',str(source),'-ss',decimal(start),'-t',decimal(end-start),'-map','0','-c','copy',
+             '-i',str(source)]
+    if canonical_audio:
+        # Only the video input seeks. Copied audio comes from a second demuxer
+        # that reads from the origin; it never decodes or re-encodes the audio.
+        command += [*workflow.reader_input_options(source),'-i',str(source)]
+    command += ['-ss',decimal(start),'-t',decimal(end-start)]
+    for stream in metadata['streams']:
+        input_index=1 if canonical_audio and stream['codec_type']=='audio' else 0
+        command += ['-map',str(input_index)+':'+str(stream['index'])]
+    command += ['-c','copy',
              '-c:v:0','ffv1','-level:v:0','3','-g:v:0','1','-slicecrc:v:0','1','-threads:v:0','2',
              '-pix_fmt:v:0',video['pix_fmt'],'-fps_mode:v:0','passthrough','-enc_time_base:v:0','demux',
              '-map_chapters','-1','-avoid_negative_ts','disabled','-output_ts_offset','0',
@@ -344,6 +448,13 @@ def recover_lossless_reference(workflow,source,metadata,plan,label,original,deco
     decoded_sample=decoded(output,'lossless-sample')
     shift=verify_decoded_slice(decoded_source,decoded_sample,-start,tolerance)
     copied=packets(output,'lossless-sample')
+    if canonical_audio:
+        restored=restore_sample_audio_clocks(workflow,metadata,output,after,original,copied,shift,label,tolerance)
+        if restored!=output:
+            output=restored;after=workflow.probe(output)
+            decoded_sample=decoded(output,'original-clock-sample')
+            shift=verify_decoded_slice(decoded_source,decoded_sample,-start,tolerance)
+            copied=packets(output,'original-clock-sample')
     copied_tracks={}
     for a,b in paired_streams(metadata,after):
         if a['index']==video['index']:continue
@@ -360,7 +471,8 @@ def recover_lossless_reference(workflow,source,metadata,plan,label,original,deco
     workflow.guard()
     evidence=dict(method='verified-lossless-source-window',plan={k:str(v) for k,v in plan.items()},
                   common_timestamp_shift=str(shift),decoded_pictures_exact=True,decoded_timing_preserved=True,
-                  copied_tracks_exact=True,compressed_source_bytes=budget,size_basis='original-compressed-packet-payloads',
+                  copied_tracks_exact=True,canonical_audio_clock=canonical_audio,
+                  compressed_source_bytes=budget,size_basis='original-compressed-packet-payloads',
                   working_bytes=output.stat().st_size,timestamp_tolerance_seconds=str(tolerance))
     (workflow.directory/(label+'-lossless-recovery.json')).write_text(json.dumps(evidence,indent=2),encoding='utf-8')
     return output,evidence
