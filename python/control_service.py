@@ -629,11 +629,15 @@ class Controls(CopyApproval, WorkspaceHistory):
 
     def step(self):
         with self.mutex:
+            if self.stop_event.is_set() or self.state['paused']:return
             next_job=next((j for j in self.state['jobs'] if j['state']=='pending'),None)
             publication=next_job if next_job and next_job.get('publication_only') else None
         if publication:return self.step_approved_copy(publication)
+        # Standalone-work discovery can scan retained reports. Do not hold up
+        # dashboard polling, pause or cancellation while that I/O completes.
+        blocker=self.busy()
         with self.mutex:
-            if self.stop_event.is_set() or self.state['paused'] or self.busy() or self.gpu_yield.status.get('block_admission'):return
+            if self.stop_event.is_set() or self.state['paused'] or blocker or self.gpu_yield.status.get('block_admission'):return
             job=next((j for j in self.state['jobs'] if j['state']=='pending'),None)
             if job is None:return
             # Another worker may have claimed the earlier encode after our
@@ -865,7 +869,11 @@ class Controls(CopyApproval, WorkspaceHistory):
                         resource=cpu_yield if sys.platform.startswith('linux') else None)
                 if yielding['block_admission']:allowed=False
                 with self.mutex:
-                    if allowed and not self.state['paused'] and any(j['state']=='pending' for j in self.state['jobs']) and not self.busy():
+                    consider_start=allowed and not self.state['paused'] and any(j['state']=='pending' for j in self.state['jobs'])
+                blocker=self.busy() if consider_start else False
+                with self.mutex:
+                    if (consider_start and not blocker and not self.stop_event.is_set()
+                            and not self.state['paused'] and any(j['state']=='pending' for j in self.state['jobs'])):
                         worker=threading.Thread(target=self.worker_step,daemon=True,name='media-job')
                         self.workers.append(worker);worker.start();self.governor.last_launch=time.monotonic()
                 self.stop_event.wait(5)

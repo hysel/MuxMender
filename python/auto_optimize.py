@@ -400,6 +400,7 @@ class Workflow:
         self.color_intermediates = {}
         self.hdr_mode=getattr(args,'hdr_mode',None)
         self.frame_cache={}
+        self.hdr_metadata_cache={}
         self.hdr_intermediates={}
         self.aac_priming_outputs={}
         self.source_packet_cache=None
@@ -1763,7 +1764,8 @@ def run(args):
             # Do not accept pathological keyframe preroll spanning another sample.
             window=workflow.reference_window(reference,probe,max(args.seconds,15) if recovery else args.seconds)
             references.append((reference, probe, frames, count))
-            report['references'].append(dict(id=str(i),path=str(reference), bytes=reference.stat().st_size, position=position,window=window,
+            reference_bytes=recovery['compressed_source_bytes'] if recovery and recovery.get('method')=='verified-lossless-source-window' else reference.stat().st_size
+            report['references'].append(dict(id=str(i),path=str(reference), bytes=reference_bytes, position=position,window=window,
                                              recovery=recovery))
             # Defer expensive VMAF until a candidate can actually save space.
         info = mm.probe(source, args.ffprobe)
@@ -1955,6 +1957,10 @@ def run(args):
             if workflow.hdr_mode:
                 workflow_stage('inspect')
                 workflow.prepare_full_hdr_reference(source,data)
+            else:
+                workflow_stage('inspect')
+                from source_timing import check_tail
+                check_tail(workflow,source,data)
             workflow_stage('encode')
             workflow.encode_preserving_color(source,output,settings,info,data,'full-encode',duration)
             # Rejection needs no expensive full-picture validation. Encoding has

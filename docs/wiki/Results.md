@@ -10,7 +10,8 @@ shown first; details keep earlier attempts available.
 | Replaced | The checked output is in the library and the original was removed. |
 | Original kept | No acceptable smaller output was found, or you chose to keep it. Read the reason. |
 | Needs attention | An error prevented completion. Open details before retrying. |
-| Interrupted or cancelled | That attempt didn't finish. It isn't an approved output. |
+| Cancelled | You stopped this attempt or removed it from the queue. Cancellation itself isn't a processing error. |
+| Interrupted | Processing stopped unexpectedly. Check details and any recovery files before retrying. |
 
 A kept original isn't necessarily an error. It may already be small, or the
 tested alternatives may miss the quality or savings target. Repeating the same
@@ -20,6 +21,8 @@ The results filter applies to the list, not the queue. Selecting completed
 results doesn't mean active processing has stopped. Check Overview for that.
 Search, sort, folder filters and report exports help you review a larger batch.
 Hiding old results doesn't delete videos or erase processing history.
+Cancelled attempts appear in completed results, separately from errors. Older
+failed attempts remain in history until a later retry produces a new result.
 
 ## Read progress without guessing
 

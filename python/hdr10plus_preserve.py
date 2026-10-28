@@ -210,24 +210,32 @@ def finalize(args):
             if source_frames.with_suffix(source_frames.suffix+'.stderr').stat().st_size:
                 raise ValueError('Decoder errors in original HDR evidence')
         from hdr10plus_validation import hdr_metadata
-        dynamic=False
+        dynamic=False;source_frame_count=0
         from hevc_content_light import content_light
         light_values=set();complete_light=True
         for number,frame in enumerate(frame_records(source_frames)):
+            source_frame_count+=1
             if number%4096==0:guard()
             items=hdr_metadata(frame)
             dynamic=any('2094-40' in item.get('side_data_type','') or 'HDR10+' in item.get('side_data_type','') for item in items) or dynamic
             try:light_values.add(content_light(frame))
             except ValueError:complete_light=False
         restore_dynamic=mode=='hdr10plus' or (mode=='pq' and dynamic)
+        metadata=None
         if restore_dynamic:
             if video.get('codec_name')!='hevc':
                 raise ValueError('HDR10+ extraction from this source codec is not implemented')
-            command([args.hdr10plus_tool,'extract',source,'-o',run/'hdr10plus.json'],'Extracting HDR10Plus')
+            from hdr10plus_extraction import extract_metadata,validate_coverage
+            metadata=getattr(args,'reference_hdr10plus_json',None)
+            if metadata is None:
+                metadata=run/'hdr10plus.json'
+                extract_metadata(args.ffmpeg,args.hdr10plus_tool,source,metadata,args.timeout,guard,duration,root)
+            coverage=validate_coverage(metadata,source_frame_count,guard)
+            (run/'hdr10plus-coverage.json').write_text(json.dumps(coverage,indent=2))
         command([args.ffmpeg,'-v','error','-nostdin','-n','-i',encoded,'-map','0:v:0','-c','copy',
                  '-bsf:v','hevc_mp4toannexb','-f','hevc',raw],'Extracting encoded video')
         if restore_dynamic:
-            command([args.hdr10plus_tool,'inject','-i',raw,'-j',run/'hdr10plus.json','-o',injected],'Restoring HDR10Plus')
+            command([args.hdr10plus_tool,'inject','-i',raw,'-j',metadata,'-o',injected],'Restoring HDR10Plus')
         else:
             injected=raw  # Static metadata must already survive encoding; full validation proves it.
         if complete_light and len(light_values)>1:
