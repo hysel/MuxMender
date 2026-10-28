@@ -80,9 +80,13 @@ image. Avoid broad Docker cleanup commands on a server that runs other apps.
 ## Conflicting video timestamps
 
 If a result says the source has conflicting video timestamps, some pictures
-are scheduled to play before pictures that should come earlier. MuxMender keeps
+share a playback time or are scheduled out of order. MuxMender keeps
 the original because conversion would require changing that timing. This is
 different from a variable frame rate, which is supported.
+
+A short check near the end can catch these conflicts before a full encode.
+Files that pass that check still need complete validation; it does not inspect
+the whole timeline.
 
 Retrying the same file will not repair its timestamps. Use a source copy with
 correct timing. MuxMender does not silently rebuild the timeline or shift the

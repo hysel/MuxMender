@@ -4,6 +4,29 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
+## 20261028-v65
+
+- Before HEVC encoding, read HDR10+ metadata through the HEVC stream and check
+  its coverage against all decoded source frames. Reuse that extraction within the
+  job and remove its temporary data when the job finishes.
+- Check original video timestamps near the end before a full SDR encode. If
+  decoded pictures and original packets confirm a timing conflict, keep the
+  original and explain that a separate repair is needed. Complete output
+  validation remains required for files that proceed.
+- Preserve audio/video alignment when cutting MPEG-4 AVI samples whose tracks
+  use different timestamp clocks. Copied packets, decoded pictures and timing
+  must still match the source; quality and savings checks are unchanged.
+- Recover AVI sample timing through short, independently verified lossless
+  samples when stream copying changes display timing. Check original pictures,
+  timestamps and copied audio, and estimate savings from original compressed
+  bytes rather than temporary sample sizes.
+- Explain a copied sample's track-timing mismatch separately from missing or
+  ambiguous source packets.
+- Keep slow standalone-job discovery outside the queue lock so it does not
+  block dashboard reads, pause or cancellation while scanning saved reports.
+- Show cancelled attempts as **Cancelled**, rather than **Needs attention**,
+  and keep them out of the attention filter.
+
 ## 20261027-v64
 
 ### Folder selection

@@ -36,9 +36,10 @@ function userReasonBase(job){const raw=String(job.reason||job.detail||job.error|
  if(s==='pending')return 'Waiting for its turn. See Current work for queue status.';
  if(s==='running')return 'Work is in progress. See Current work for the current step.';
  if(s==='replaced')return 'Original replaced after automated checks and verified copying. No playback review was required.';
+ if(s==='cancelled')return 'You cancelled this attempt. No further processing is scheduled for it.';
  if(/quant_step_size/i.test(raw))return 'The source audio could not be decoded. Original kept. Check the source audio before retrying.';
  if(/source video reader failed/i.test(raw))return 'The source video reader reported an error before conversion. Original kept. Open details for the decoder error.';
- if(/source video presentation timestamps do not increase/i.test(raw))return 'The source has conflicting video timestamps. Original kept: conversion would require repairing its timing first. Open details for the affected frame.';
+ if(/source video presentation timestamps do not increase|original video has conflicting presentation timestamps/i.test(raw))return 'The source has conflicting video timestamps. Original kept: conversion would require repairing its timing first. Open details for the affected pictures.';
  if(/source audio preflight/i.test(raw))return 'The source reader reported an error before conversion. Original kept. Open details to see whether it concerns audio, video or the container.';
  if(raw.startsWith('Unsupported input:'))return raw;
  if(['verified','awaiting-playback','playback-approved'].includes(s))return 'Automated checks passed. Review playback before replacing the original.';
@@ -69,8 +70,8 @@ function userReasonBase(job){const raw=String(job.reason||job.detail||job.error|
  }
  return raw||'Processing finished. Open details to check the outcome.';
 }
-function userStatus(state){return ({replaced:'Replaced',pending:'Queued',running:'Running',verified:'Ready for review','awaiting-playback':'Ready for review','playback-approved':'Playback approved',skipped:'Original kept','kept-original':'Original kept',analyzed:'Inspection complete',tested:'Samples tested',completed:'Finished — review details',failed:'Needs attention',interrupted:'Interrupted',stale:'Update overdue',unknown:'Needs attention'})[state]||'Needs attention'}
-function resultGroup(state){return state==='replaced'?'replaced':['pending','running'].includes(state)?'active':['verified','awaiting-playback','playback-approved'].includes(state)?'ready':['skipped','kept-original'].includes(state)?'kept':['analyzed','tested','completed'].includes(state)?'complete':'attention'}
+function userStatus(state){return ({replaced:'Replaced',pending:'Queued',running:'Running',verified:'Ready for review','awaiting-playback':'Ready for review','playback-approved':'Playback approved',skipped:'Original kept','kept-original':'Original kept',analyzed:'Inspection complete',tested:'Samples tested',completed:'Finished — review details',cancelled:'Cancelled',failed:'Needs attention',interrupted:'Interrupted',stale:'Update overdue',unknown:'Needs attention'})[state]||'Needs attention'}
+function resultGroup(state){return state==='replaced'?'replaced':['pending','running'].includes(state)?'active':['verified','awaiting-playback','playback-approved'].includes(state)?'ready':['skipped','kept-original'].includes(state)?'kept':['analyzed','tested','completed','cancelled'].includes(state)?'complete':'attention'}
 function sourceBytes(job){return [job.original_bytes,job.source_bytes,job.signature?.[0]].find(v=>Number.isFinite(v)&&v>=0)??null}
 function fileSizeText(bytes){return bytes>=1e9?(bytes/1e9).toFixed(2)+' GB':bytes>=1e6?(bytes/1e6).toFixed(2)+' MB':bytes>=1e3?(bytes/1e3).toFixed(2)+' KB':bytes+' bytes'}
 function queueSizeTotals(jobs){

@@ -75,6 +75,12 @@ def encode_preserved(workflow, source, output, settings, info, before, label, du
     from hdr10_trial import chroma_options
     video=main_video(before)
     hevc=settings['codec']=='hevc'
+    metadata=None
+    if hevc and workflow.hdr_mode in ('pq','hdr10plus'):
+        frames=workflow.frame_cache.get(str(source.resolve()))
+        if frames is None:frames=workflow.frame_file(source,label+'-hdr-source',before['format'])
+        from hdr10plus_extraction import prepare
+        metadata=prepare(workflow,source,frames,duration)
     av1_light=None
     av1_frames=None
     if settings['codec']=='av1':
@@ -104,6 +110,7 @@ def encode_preserved(workflow, source, output, settings, info, before, label, du
     args=SimpleNamespace(source=source,encoded=encoded,output_dir=workflow.directory,
         final_output=output,mode=workflow.hdr_mode,repair_only=True,
         reference_frames=workflow.frame_cache.get(str(source.resolve())),
+        reference_hdr10plus_json=metadata,
         timeout=workflow.args.timeout,guard=workflow.guard,
         recover_empty_dv=bool(getattr(workflow.args,'dv_declaration_recovery',None)),
         ffmpeg=workflow.args.ffmpeg,ffprobe=workflow.args.ffprobe,

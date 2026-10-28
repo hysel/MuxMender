@@ -1,10 +1,41 @@
 """Keyframe sample planning and source-identity checks.
 
 Used only as an evidence-verified recovery from excessive sample preroll.
-No decoded/re-encoded reference is accepted as ground truth.
+Lossless staging requires exact original decoded pixels and display timing,
+unchanged copied-track packets, and original compressed-byte size accounting.
 """
 from fractions import Fraction
 import json
+import math
+
+
+def align_copy_seek(plan, streams, origin, maximum_seconds):
+    """Avoid per-stream rounding of a seek while retaining its absolute end.
+
+    AVI audio and video clocks need not represent the same fractional seek.
+    Select a nearby earlier point representable on every copied track clock.
+    Keep the existing sampling bound; packet and decoded-picture proof still
+    decide whether the resulting reference can be used.
+    """
+    clocks=[Fraction(stream['time_base']) for stream in streams
+            if stream.get('codec_type') in ('video','audio','subtitle')
+            and not stream.get('disposition',{}).get('attached_pic')]
+    if not clocks or any(clock<=0 for clock in clocks):
+        raise ValueError('Copied streams need positive time bases')
+    quantum=Fraction(math.lcm(*(clock.numerator for clock in clocks)),
+                     math.gcd(*(clock.denominator for clock in clocks)))
+    origin=Fraction(origin)
+    relative=Fraction(plan['seek'])-origin
+    steps=relative//quantum
+    aligned=origin+steps*quantum
+    adjustment=Fraction(plan['seek'])-aligned
+    seconds=Fraction(plan['seconds'])+adjustment
+    result=dict(plan)
+    if aligned<origin or seconds>Fraction(maximum_seconds):
+        return result  # Do not expand an already bounded reference arbitrarily.
+    result.update(seek=aligned,seconds=seconds,seek_clock_quantum=quantum,
+                  seek_clock_adjustment=adjustment)
+    return result
 
 
 def plan_keyframe(packets, time_base, requested, seconds, source_end, search_span=None, *, excluded_starts=()):
@@ -85,12 +116,14 @@ def verify_source_slice(source, sample, expected_shift=None, *, decoded_source=N
         raise ValueError('Empty reference stream')
     if any(not p.get('data_hash') for p in source + sample):
         raise ValueError('Missing packet hash')
-    matches = [i for i in range(len(source)-len(sample)+1)
-               if all(a['data_hash'] == b['data_hash']
-                      for a, b in zip(source[i:i+len(sample)], sample))
-               and (expected_shift is None or
+    payload_matches = [i for i in range(len(source)-len(sample)+1)
+                       if all(a['data_hash'] == b['data_hash']
+                              for a, b in zip(source[i:i+len(sample)], sample))]
+    matches = [i for i in payload_matches if (expected_shift is None or
                     (source[i].get('pts_time') not in (None,'N/A') and sample[0].get('pts_time') not in (None,'N/A')
                      and abs(Fraction(sample[0]['pts_time'])-Fraction(source[i]['pts_time'])-expected_shift)<=tolerance))]
+    if payload_matches and not matches:
+        raise ValueError('Reference stream timestamp shift differs from the other tracks')
     if len(matches) != 1:
         raise ValueError('Reference is not one unique contiguous source slice')
     shift = expected_shift
@@ -144,9 +177,11 @@ def recover_reference(workflow, source, metadata, position, seconds, label, *, e
         command=[workflow.args.ffprobe,'-v','error',*workflow.reader_input_options(path),*workflow.decoder_options(path),*(input_options if path==source else [])]
         if interval:command+=['-read_intervals',interval]
         command+=['-show_packets','-show_data_hash','sha256','-show_entries',
-                  'packet=stream_index,pts,dts,duration,pts_time,dts_time,duration_time,data_hash,flags','-of','json',str(path)]
-        run_probe(command,evidence,'Checking sample source packets: '+suffix,
-                  workflow.args.timeout,workflow.guard,float(end-begin),float(begin))
+                  'packet=stream_index,pts,dts,duration,pts_time,dts_time,duration_time,data_hash,flags,size','-of','json',str(path)]
+        from artifact_manifest import command_outputs
+        with command_outputs(workflow.directory,[*command,str(evidence)]):
+            run_probe(command,evidence,'Checking sample source packets: '+suffix,
+                      workflow.args.timeout,workflow.guard,float(end-begin),float(begin))
         if evidence.with_suffix(evidence.suffix+'.stderr').stat().st_size:
             raise ValueError('Packet reader reported errors during sample recovery')
         rows=json.loads(evidence.read_text(encoding='utf-8'))['packets']
@@ -161,6 +196,10 @@ def recover_reference(workflow, source, metadata, position, seconds, label, *, e
     selected=[p for p in original if p['stream_index']==video['index']]
     plan=plan_keyframe(selected,video['time_base'],target,span,origin+Fraction(metadata['format']['duration']),search_span,
                        excluded_starts=excluded_starts)
+    if generated_pts:
+        # Preserve the boundary packet needed by preceding MPEG-4 B pictures.
+        plan['seconds']+=Fraction(video['time_base'])
+        plan=align_copy_seek(plan,metadata['streams'],origin,2*search_span)
     # ffprobe seeks to an earlier keyframe. If that complete GOP is selected,
     # decode its beginning too rather than trimming the proof at the requested
     # packet-search timestamp.
@@ -170,11 +209,6 @@ def recover_reference(workflow, source, metadata, position, seconds, label, *, e
         # Include packets from every copied stream at the newly selected start;
         # audio packets may precede the demuxer's initially returned video GOP.
         original=packets(source,'source-expanded',decimal(begin)+'%'+decimal(end))
-    if generated_pts:
-        # MPEG-4 B pictures preceding the boundary depend on its future I/P
-        # picture. Include that boundary packet rather than flushing without it.
-        # Exact decoded-source comparison below must still certify every frame.
-        plan['seconds']+=Fraction(video['time_base'])
     suffix=getattr(workflow,'output_suffix','.mkv')
     if suffix not in ('.mkv','.mp4','.mov'):raise ValueError('Invalid reference container')
     output=workflow.directory/(label+suffix)
@@ -209,13 +243,22 @@ def recover_reference(workflow, source, metadata, position, seconds, label, *, e
         if is_source:command+=['-ss',decimal(begin-origin),'-t',decimal(end-begin)]
         command+=[*workflow.reader_input_options(path),*workflow.decoder_options(path),'-noautorotate','-i',str(path),'-map','0:V:0','-an','-sn','-dn','-threads','2',
                   '-fps_mode','passthrough','-enc_time_base','demux','-f','framemd5','-']
-        run_probe(command,evidence,'Verifying decoded sample identity: '+suffix,
-                  workflow.args.timeout,workflow.guard)
+        from artifact_manifest import command_outputs
+        with command_outputs(workflow.directory,[*command,str(evidence)]):
+            run_probe(command,evidence,'Verifying decoded sample identity: '+suffix,
+                      workflow.args.timeout,workflow.guard)
         if evidence.with_suffix(evidence.suffix+'.stderr').stat().st_size:
             raise ValueError('Decoder reported errors during sample recovery')
         return parse_framehash(evidence.read_text(encoding='utf-8'))
     decoded_source=decoded(source,'source',True);decoded_sample=decoded(output,'sample')
-    if abs(verify_decoded_slice(decoded_source,decoded_sample,shift,tolerance)-shift)>tolerance:
+    try:
+        decoded_shift=verify_decoded_slice(decoded_source,decoded_sample,shift,tolerance)
+    except ValueError as error:
+        if generated_pts and not workflow.hdr_mode and suffix=='.mkv' and str(error)=='Decoded reference display timing changed':
+            return recover_lossless_reference(workflow,source,metadata,plan,label,original,
+                                              decoded_source,decoded,packets,tolerance)
+        raise
+    if abs(decoded_shift-shift)>tolerance:
         raise ValueError('Recovered decoded sample alignment changed')
     checked=[]
     for stream in metadata['streams']:
@@ -238,4 +281,86 @@ def recover_reference(workflow, source, metadata, position, seconds, label, *, e
                   common_timestamp_shift=str(shift),verified_streams=checked,decoded_pictures_exact=True)
     evidence.update(generated_missing_pts=generated_pts,timestamp_tolerance_seconds=str(tolerance))
     (workflow.directory/(label+'-recovery.json')).write_text(json.dumps(evidence,indent=2),encoding='utf-8')
+    return output,evidence
+
+
+def compressed_window_bytes(original, copied, metadata, decoded_source, decoded_sample, shift, tolerance):
+    """Conservative original payload budget; never count a lossless staging file."""
+    from auto_optimize import main_video
+    verify_decoded_slice(decoded_source,decoded_sample,shift,tolerance)
+    video=main_video(metadata)
+    starts=[i for i in range(len(decoded_source)-len(decoded_sample)+1)
+            if all(a['hash']==b['hash'] and a['size']==b['size']
+                   for a,b in zip(decoded_source[i:],decoded_sample))
+            and abs(Fraction(decoded_sample[0]['pts'])-Fraction(decoded_source[i]['pts'])-shift)<=tolerance]
+    if len(starts)!=1:raise ValueError('Lossless reference needs one original picture window')
+    first=Fraction(decoded_source[starts[0]]['pts'])
+    last=Fraction(decoded_source[starts[0]+len(decoded_sample)-1]['pts'])
+    selected=[p for p in original if p['stream_index']==video['index'] and
+              p.get('pts_time') not in (None,'N/A') and first<=Fraction(p['pts_time'])<=last]
+    if len(selected)!=len(decoded_sample):
+        raise ValueError('Original compressed video byte budget does not cover the decoded window')
+    for source_index,output_index in copied:
+        a=[p for p in original if p['stream_index']==source_index]
+        b=copied[(source_index,output_index)]
+        if not b:continue
+        verify_source_slice(a,b,shift,tolerance=tolerance)
+        matches=[i for i in range(len(a)-len(b)+1)
+                 if all(x['data_hash']==y['data_hash'] for x,y in zip(a[i:],b)) and
+                 abs(Fraction(b[0]['pts_time'])-Fraction(a[i]['pts_time'])-shift)<=tolerance]
+        if len(matches)!=1:raise ValueError('Ambiguous original copied-track byte budget')
+        selected.extend(a[matches[0]:matches[0]+len(b)])
+    sizes=[int(p['size']) for p in selected]
+    if not sizes or any(size<=0 for size in sizes):raise ValueError('Missing original compressed packet sizes')
+    return sum(sizes)
+
+
+def recover_lossless_reference(workflow,source,metadata,plan,label,original,decoded_source,decoded,packets,tolerance):
+    """Repair only the staging representation, with independent source proof."""
+    from auto_optimize import main_video,paired_streams
+    from media_metadata import equivalent_ratio
+    import legacy_color
+    video=main_video(metadata)
+    start,end=plan['keyframe_pts'],plan['end_keyframe_pts']
+    origin=Fraction(metadata['format'].get('start_time','0'))
+    decimal=lambda value:format(float(value),'.9f')
+    output=workflow.directory/(label+'-lossless.mkv')
+    command=[workflow.args.ffmpeg,'-hide_banner','-nostdin','-n','-xerror','-copyts',
+             '-ss',decimal(start-origin),*workflow.reader_input_options(source),*workflow.decoder_options(source),
+             '-i',str(source),'-ss',decimal(start),'-t',decimal(end-start),'-map','0','-c','copy',
+             '-c:v:0','ffv1','-level:v:0','3','-g:v:0','1','-slicecrc:v:0','1','-threads:v:0','2',
+             '-pix_fmt:v:0',video['pix_fmt'],'-fps_mode:v:0','passthrough','-enc_time_base:v:0','demux',
+             '-map_chapters','-1','-avoid_negative_ts','disabled','-output_ts_offset','0',
+             '-progress','pipe:1','-nostats',str(output)]
+    workflow.execute(workflow.preserve_covers(command,source,metadata,label+'-lossless'),
+                     'Preparing verified lossless source window',float(end-start))
+    after=workflow.probe(output);moving=main_video(after)
+    if moving.get('codec_name')!='ffv1':raise ValueError('Lossless source window codec changed')
+    for key in ('width','height','pix_fmt',*legacy_color.FIELDS):
+        if video.get(key) not in legacy_color.UNKNOWN and video.get(key)!=moving.get(key):
+            raise ValueError('Lossless source window changed '+key)
+    if not equivalent_ratio(video.get('sample_aspect_ratio','1:1'),moving.get('sample_aspect_ratio','1:1')):
+        raise ValueError('Lossless source window changed pixel aspect ratio')
+    decoded_sample=decoded(output,'lossless-sample')
+    shift=verify_decoded_slice(decoded_source,decoded_sample,-start,tolerance)
+    copied=packets(output,'lossless-sample')
+    copied_tracks={}
+    for a,b in paired_streams(metadata,after):
+        if a['index']==video['index']:continue
+        if a['codec_type'] not in ('audio','subtitle'):continue
+        if a.get('codec_name')!=b.get('codec_name'):raise ValueError('Lossless source window changed copied codec')
+        rows=[p for p in copied if p['stream_index']==b['index']]
+        if not rows:
+            if a['codec_type']!='subtitle':raise ValueError('Lossless source window lost an audio track')
+            if any(p['stream_index']==a['index'] and p.get('pts_time') not in (None,'N/A') and
+                   start<=Fraction(p['pts_time'])<end for p in original):
+                raise ValueError('Lossless source window lost subtitle events')
+        copied_tracks[(a['index'],b['index'])]=rows
+    budget=compressed_window_bytes(original,copied_tracks,metadata,decoded_source,decoded_sample,shift,tolerance)
+    workflow.guard()
+    evidence=dict(method='verified-lossless-source-window',plan={k:str(v) for k,v in plan.items()},
+                  common_timestamp_shift=str(shift),decoded_pictures_exact=True,decoded_timing_preserved=True,
+                  copied_tracks_exact=True,compressed_source_bytes=budget,size_basis='original-compressed-packet-payloads',
+                  working_bytes=output.stat().st_size,timestamp_tolerance_seconds=str(tolerance))
+    (workflow.directory/(label+'-lossless-recovery.json')).write_text(json.dumps(evidence,indent=2),encoding='utf-8')
     return output,evidence
