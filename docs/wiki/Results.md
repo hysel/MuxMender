@@ -24,6 +24,17 @@ Hiding old results doesn't delete videos or erase processing history.
 Cancelled attempts appear in completed results, separately from errors. Older
 failed attempts remain in history until a later retry produces a new result.
 
+
+## Warnings about original audio
+
+Some source files already have audio decoding problems, such as CRC errors.
+MuxMender can still reduce the video size when it can copy the compressed audio
+unchanged and verify every copied packet and its timing. The result and any
+replacement record keep the warning so you know the issue was already present.
+
+This preserves the audio; it does not repair it. Unreadable tracks or changes
+introduced by conversion still prevent approval.
+
 ## Read progress without guessing
 
 A video usually goes through inspection, sample comparison, full encoding,

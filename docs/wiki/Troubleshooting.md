@@ -61,6 +61,9 @@ If the reason is a decoding or preservation error, retrying unchanged settings
 may reproduce it. Include the app version, action, current step and sanitized
 error text when reporting a problem. Don't publish private file paths or video names.
 
+An existing audio decoding warning may allow conversion when the compressed
+audio and timing can be preserved exactly. See [audio warnings](Results.md#warnings-about-original-audio).
+
 ## Cancel was clicked, but the video still appears
 
 Cancelled attempts remain in history. Check its current state rather than the
@@ -77,6 +80,7 @@ recover interrupted replacements.
 Old release downloads and development test files are separate from your library.
 They can be reviewed after an update is working, but keep a known-good rollback
 image. Avoid broad Docker cleanup commands on a server that runs other apps.
+
 ## Conflicting video timestamps
 
 If a result says the source has conflicting video timestamps, some pictures
