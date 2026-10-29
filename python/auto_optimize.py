@@ -637,8 +637,15 @@ class Workflow:
             from artifact_manifest import command_outputs
             from gpu_admission import stage_context
             with command_outputs(self.directory,command),stage_context(self.performance_video):
-                return stage(command, duration, 0, 100, timeout=self.args.timeout, stall=120,
-                             guard=self.guard, observe=observe, cwd=self.directory, strict_decode=strict_decode)
+                is_encoding=any(str(arg).endswith('_nvenc') for arg in command)
+                timing={}
+                result=stage(command, duration, 0, 100, timeout=self.args.timeout, stall=120,
+                             guard=self.guard, observe=observe, cwd=self.directory, strict_decode=strict_decode,
+                             **({'measurement':timing} if is_encoding else {}))
+                if is_encoding and timing.get('completed'):
+                    if not hasattr(self,'encoding_timings'):self.encoding_timings=[]
+                    self.encoding_timings.append(timing)
+                return result
 
     def probe(self, source):
         progress('Reading media metadata: '+source.name, directory=self.directory)
@@ -1799,7 +1806,7 @@ def run(args):
         plan['output_container']=workflow.output_suffix.lstrip('.')
         save(directory/'plan.json',plan)
         progress('Checking available encoders and quality tools',directory=directory)
-        report = dict(schema='muxmender-codec-trials-v1', source_id=source_hash, source_bytes=baseline['size'], color_mode=workflow.hdr_mode or 'sdr', references=[], trials=[],quality_policy=quality_policy)
+        report = dict(schema='muxmender-codec-trials-v1', source_id=source_hash, source_bytes=baseline['size'], source_duration_seconds=duration, color_mode=workflow.hdr_mode or 'sdr', references=[], trials=[],quality_policy=quality_policy)
         report['output_preset']=args.output_preset
         workflow_stage('compare')
         filters = subprocess.check_output([args.ffmpeg, '-hide_banner', '-filters'], text=True, stderr=subprocess.STDOUT, timeout=30)
@@ -1923,7 +1930,7 @@ def run(args):
                 sample['error']=str(exc)
             return all(sample[k] for k in ('quality_pass','preservation_pass','decode_pass'))
 
-        def trial_candidate(settings, adaptive=False):
+        def trial_candidate(settings, adaptive=False, speed_baseline=None):
             analysis=getattr(args,'nvenc_analysis',None)
             if analysis is not None and settings['encoder'] in ('hevc_nvenc','av1_nvenc'):
                 settings=dict(settings,nvenc_analysis=analysis)
@@ -1971,9 +1978,12 @@ def run(args):
                 trial['samples'].append(sample)
                 try:
                     started = time.monotonic()
+                    timing_start=len(getattr(workflow,'encoding_timings',[]))
                     workflow.encode_preserving_color(reference,output,settings,info,probe,label,float(probe['format']['duration']))
                     sample.update(bytes=output.stat().st_size, encode_completed=True,
                                   encode_seconds=time.monotonic()-started)
+                    native=getattr(workflow,'encoding_timings',[])[timing_start:]
+                    if len(native)==1:sample['encoding_timing']=native[0]
                 except (ValueError, RuntimeError, subprocess.SubprocessError) as exc:
                     guard()  # Changed source/low disk aborts the run, not just this candidate.
                     sample['error'] = str(exc)
@@ -1984,6 +1994,16 @@ def run(args):
                     trial['screened_out']='Encoding failed; evaluation incomplete'
                     save(directory/'trials.json',report)
                     return
+                if speed_baseline is not None and len(trial['samples'])==1:
+                    from encoding_speed import speed_screen
+                    screen=speed_screen(sample,speed_baseline)
+                    if screen['rejected']:
+                        trial.update(speed_screen=screen,
+                            screened_out='Faster preset did not show sufficient first-scene speed gain; remaining encodes and quality checks skipped')
+                        save(directory/'trials.json',report)
+                        progress('Skipping preset: no measured speed gain',directory=directory,
+                                 detail='Keeping the passing baseline; quality requirements unchanged')
+                        return
                 if (early_quality and len(trial['samples'])==1 and len(references)>1 and
                         100*(1-sample['bytes']/report['references'][i]['bytes'])>=args.minimum_savings_percent):
                     if not evaluate_sample(settings,trial_id,sample):
@@ -2065,6 +2085,23 @@ def run(args):
             save(directory/'adaptive-search.json',dict(extra_trials=tested,budget=args.max_extra_trials,
                 result=decision['action'],stop_reason='eligible_candidate' if decision['action']=='encode_copy' else 'bounded_search_exhausted',
                 cpu_fallback='not_run_requires_explicit_opt_in',quality_thresholds_unchanged=True))
+        # A bounded comparison against an already passing candidate, not a
+        # wider blind search. Every faster preset repeats the same scene checks.
+        from encoding_speed import POLICY as SPEED_POLICY, comparison_presets
+        speed_candidates=comparison_presets(report,decision,duration,
+            explicit=bool(getattr(args,'hevc_nvenc_cq',None)) or getattr(args,'research_full_av1_cq',None) is not None)
+        if speed_candidates:
+            speed_started=time.monotonic()
+            report['encoding_selection_policy']=SPEED_POLICY
+            speed_baseline=next(t for t in report['trials'] if t['id']==decision['selected']['id'])
+            for settings in speed_candidates:
+                guard()
+                progress('Comparing a faster encoding preset',directory=directory,
+                         detail='Same quality and savings requirements; at most two additional preset trials')
+                trial_candidate(settings,speed_baseline=speed_baseline)
+            report['encoding_comparison_seconds']=time.monotonic()-speed_started
+            save(directory/'trials.json',report)
+            decision=select_candidate(report,args.minimum_savings_percent)
         save(directory/'selection.json', decision)
         state['quality_policy']=quality_policy
         if getattr(args,'research_full_av1_cq',None) is not None:

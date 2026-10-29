@@ -6,6 +6,12 @@ The version notes below describe the changes included in each package.
 
 ## Unreleased
 
+- Compare up to two faster NVIDIA presets for longer videos after finding a
+  passing candidate. Prefer a measured speed gain only within a bounded size
+  tradeoff; keep the selected quality, savings and full-file validation checks.
+- Measure native encoding time separately from queue waits and GPU-sharing
+  pauses, so scheduling delays do not decide which preset appears faster.
+
 - Avoid an extra GPU scheduling delay after allowing validation to catch up.
   Keep GPU-sharing pauses, pressure backoff and concurrency limits in place.
 - Reuse GPU workload measurements when only a generated metric report filename

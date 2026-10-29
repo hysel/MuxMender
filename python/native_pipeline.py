@@ -89,7 +89,7 @@ def strict_decode_line(line):
 
 
 @validation_limited
-def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None, observe=None, expected_frames=None, cwd=None, strict_decode=False, env=None, pass_fds=()):
+def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None, observe=None, expected_frames=None, cwd=None, strict_decode=False, env=None, pass_fds=(), measurement=None):
     """Stream logs/progress to caller; cap both stalls and total elapsed time."""
     from muxmender import stop_process_tree
     from runtime_support import bounded_ffmpeg_threads
@@ -206,6 +206,9 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None,
             display.update(100)
             stage_progress(100, 0)
             if span:print(f"MUXMENDER_PROGRESS={offset + span:.1f}", flush=True)
+        if measurement is not None:
+            measurement.update(completed=True,scope='native-stage-active-v1',
+                               execution_seconds=max(0,time.monotonic()-started))
         return "".join(log)
     finally:
         if pause_measurement is not None:pause_measurement.__exit__(None,None,None)

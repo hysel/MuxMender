@@ -9,7 +9,7 @@ import math
 from fractions import Fraction
 
 # Bump when the measured search/evaluation policy changes, not for every UI release.
-EVALUATION_POLICY = 'source-driven-broader-sampling-10'
+EVALUATION_POLICY = 'source-driven-speed-aware-sampling-11'
 
 
 def impossible_size_bound(references, samples, minimum_savings_percent):
@@ -108,6 +108,13 @@ def select_candidate(report, minimum_savings_percent=25.0):
                 result['candidates'].append(dict(id=trial_id,codec=trial.get('codec'),**bound,
                     rejected_reasons=['insufficient_savings'],assessment='size_screened',quality_evaluated=False))
                 continue
+        if (trial.get('speed_screen',{}).get('rejected') is True and valid_sizes and encode_evidence
+                and not [r for r in structural_reasons if r!='unmatched_reference_samples']
+                and len(set(sample_ids))==len(sample_ids) and set(sample_ids).issubset(ids)):
+            result['candidates'].append(dict(id=trial_id,codec=trial.get('codec'),
+                rejected_reasons=['insufficient_measured_speed_gain'],assessment='speed_screened',
+                quality_evaluated=False,detail='Kept the passing baseline; faster-preset checks stopped early'))
+            continue
         # A size-screened trial is negative evidence only. It must never become
         # eligible without the ordinary quality/preservation/decode checks.
         if not structural_reasons and valid_sizes and encode_evidence and trial.get('size_screen',{}).get('rejected') is True:
@@ -188,6 +195,9 @@ def select_candidate(report, minimum_savings_percent=25.0):
                 result['reason']=f'Original kept: {quality_count} tested settings failed measured quality. No conversion met the quality requirements.'
             elif not quality_count:
                 result['reason']=f'Original kept: {size_count} tested settings did not save enough space. Quality was not necessarily evaluated; this does not prove the source is optimal.'
+        elif all(row['assessment'] in ('size_screened','insufficient_savings','quality_rejected','speed_screened') for row in result['candidates']):
+            result.update(reason_code='bounded_speed_search_inconclusive',cacheable=False,outcome_category='size_quality',
+                reason='Original kept: no passing candidate remained. Faster-preset checks stopped when they showed no speed benefit; this is not a processing failure.')
         else:
             result['outcome_category']='error'
             result['reason']='Evaluation incomplete: one or more encoders or validation checks failed or lacked evidence. Original retained; retry after resolving the issue.'
@@ -197,11 +207,17 @@ def select_candidate(report, minimum_savings_percent=25.0):
                 first=' '.join(errors[0].split())
                 result['reason']='Evaluation incomplete: '+first[:300]+('…' if len(first)>300 else '')+'. Original retained. See details for the failed checks.'
     if eligible:
-        _, _, winner, savings = min(eligible, key=lambda row: (row[0], row[1]))
+        smallest=min(eligible,key=lambda row:(row[0],row[1]))
+        from encoding_speed import choose
+        chosen,speed=choose(report,eligible,smallest)
+        _, _, winner, savings=chosen
+        if speed:result['encoding_speed_selection']=speed
         result.update(action='encode_copy', reason='Smallest eligible measured sample output',
                       reason_code='candidate_selected',cacheable=False,
                       selected={k: winner[k] for k in ('id', 'codec', 'encoder', 'settings')},
                       estimated_savings_percent=savings)
+    if result.get('encoding_speed_selection'):
+        result['reason']='A faster encoding passed the checks with a similar file size'
     if quality_policy is not None:result['quality_policy']=quality_policy
     return result
 
