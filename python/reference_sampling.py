@@ -17,6 +17,10 @@ class ReferenceTrackTimingError(ValueError):
     """Unchanged copied packets no longer share the original track clock."""
 
 
+class ReferencePacketDurationError(ReferenceTrackTimingError):
+    """A generated copy lost the original packet-duration representation."""
+
+
 def align_copy_seek(plan, streams, origin, maximum_seconds):
     """Avoid per-stream rounding of a seek while retaining its absolute end.
 
@@ -150,7 +154,7 @@ def verify_source_slice(source, sample, expected_shift=None, *, decoded_source=N
             delta = Fraction(right)-Fraction(left)
             if key == 'duration_time':
                 if abs(delta)>tolerance:
-                    raise ValueError('Reference packet duration changed')
+                    raise ReferencePacketDurationError('Reference packet duration changed')
             else:
                 if shift is None:
                     shift = delta
@@ -185,7 +189,7 @@ def recover_reference(workflow, source, metadata, position, seconds, label, *, e
         command=[workflow.args.ffprobe,'-v','error',*workflow.reader_input_options(path),*workflow.decoder_options(path),*(input_options if path==source else [])]
         if interval:command+=['-read_intervals',interval]
         command+=['-show_packets','-show_data_hash','sha256','-show_entries',
-                  'packet=stream_index,pts,dts,duration,pts_time,dts_time,duration_time,data_hash,flags,size','-of','json',str(path)]
+                  'packet=stream_index,pts,dts,duration,pts_time,dts_time,duration_time,data_hash,flags,size,pos','-of','json',str(path)]
         from artifact_manifest import command_outputs
         with command_outputs(workflow.directory,[*command,str(evidence)]):
             run_probe(command,evidence,'Checking sample source packets: '+suffix,
@@ -268,6 +272,13 @@ def recover_reference(workflow, source, metadata, position, seconds, label, *, e
         raise
     if abs(decoded_shift-shift)>tolerance:
         raise ValueError('Recovered decoded sample alignment changed')
+    if not generated_pts and suffix=='.mkv':
+        from sample_durations import restore
+        restored=restore(workflow,metadata,output,workflow.probe(output),original,copied,shift,label,tolerance)
+        if restored!=output:
+            output=restored;copied=packets(output,'original-durations')
+            decoded_sample=decoded(output,'original-durations')
+            verify_decoded_slice(decoded_source,decoded_sample,shift,tolerance)
     checked=[]
     for stream in metadata['streams']:
         if stream['codec_type'] not in ('video','audio','subtitle'):continue

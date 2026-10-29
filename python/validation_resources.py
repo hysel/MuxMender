@@ -349,8 +349,10 @@ def validation_limited(function):
         # another reader. The guard still permits cancellation while waiting.
         options={} if pool=='validation' else dict(pool=pool,env=values.get('env'),
             estimated_duration=values.get('seconds',values.get('duration')))
+        admission_guard=values.get('admission_guard')
         with measured_operation('validation_wait' if pool=='validation' else 'gpu_wait'):
-            with validation_slot(values['command'],values.get('guard') or (lambda:None),**options) as limit:
+            with validation_slot(values['command'],admission_guard or values.get('guard') or (lambda:None),**options) as limit:
+                if admission_guard:admission_guard()
                 if original_phase:progress(original_phase,detail='Resources acquired; processing'+
                     (f'; shared validation allocation: {limit} threads' if type(limit) is int else ''))
                 kind=('frame_validation' if '-show_frames' in values['command'] else

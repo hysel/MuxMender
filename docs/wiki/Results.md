@@ -35,6 +35,17 @@ replacement record keep the warning so you know the issue was already present.
 This preserves the audio; it does not repair it. Unreadable tracks or changes
 introduced by conversion still prevent approval.
 
+## Warnings about the container
+
+In the upcoming release, a result may say that extra bytes followed the declared
+container. If those bytes caused read errors, the app can use an exact temporary
+copy ending at the complete Matroska container boundary. It does not rewrite the
+original, remove media tracks or rebuild playback timing.
+
+The usual full validation is still required. The replacement record keeps the
+warning, and normal cleanup removes the temporary read copy. Incomplete
+containers or extra container segments need separate investigation.
+
 ## Read progress without guessing
 
 A video usually goes through inspection, sample comparison, full encoding,

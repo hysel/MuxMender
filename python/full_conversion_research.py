@@ -8,7 +8,7 @@ from task_progress import digest
 
 
 def require_read_only(source):
-    if not hasattr(os, 'statvfs') or not os.statvfs(source).f_flag & os.ST_RDONLY:
+    if not hasattr(os, 'statvfs') or not hasattr(os,'ST_RDONLY') or not os.statvfs(source).f_flag & os.ST_RDONLY:
         raise ValueError('Full research requires an OS-enforced read-only source mount')
 
 
@@ -41,9 +41,8 @@ def finish(workflow, source, data, info, settings, baseline, source_hash,
         count = workflow.compare_frame_files(frames, frames)
         quality = workflow.quality(source, output, 'research-full', count, duration)
         state['full_quality'] = quality
-        if digest(source, workflow.guard) != source_hash:
-            raise ValueError('Source hash changed; research result invalid')
-        state.update(source_sha256=source_hash, output_sha256=digest(output, workflow.guard),
+        publication_hash=workflow.verified_source_hash(source,source_hash)
+        state.update(source_sha256=publication_hash, output_sha256=digest(output, workflow.guard),
                      state='research-completed-not-approved',
                      all_checks_passed=(decision.get('action') == 'encode_copy' and
                                         state['size_pass'] and quality['passed']))

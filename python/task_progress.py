@@ -68,7 +68,7 @@ from validation_resources import validation_limited
 
 
 @validation_limited
-def run_probe(command,path,label,timeout,guard,duration=None,start=0,env=None,*,expected_fixture_rejection=False):
+def run_probe(command,path,label,timeout,guard,duration=None,start=0,env=None,*,expected_fixture_rejection=False,admission_guard=None):
     from cooperative_pause import configured_lease, OwnedStagePause, launch_owned
     from job_tracking import measured_operation
     lease=configured_lease(command,env)
