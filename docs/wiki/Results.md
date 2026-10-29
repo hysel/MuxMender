@@ -37,7 +37,7 @@ introduced by conversion still prevent approval.
 
 ## Warnings about the container
 
-In the upcoming release, a result may say that extra bytes followed the declared
+A result may say that extra bytes followed the declared
 container. If those bytes caused read errors, the app can use an exact temporary
 copy ending at the complete Matroska container boundary. It does not rewrite the
 original, remove media tracks or rebuild playback timing.
