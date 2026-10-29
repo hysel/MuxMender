@@ -668,7 +668,8 @@ class Workflow:
     def frame_file(self, source, label, metadata=None):
         metadata=metadata if metadata is not None else self.probe(source)['format']
         from reader_qualification import source_identity
-        learning_source=str(Path(source).resolve()) in self.reader_learning_sources
+        learning_source=(float(metadata['duration'])>=60 and
+                         str(Path(source).resolve()) in self.reader_learning_sources)
         reader_before=source_identity(source) if learning_source else None
         path = self.directory/(label+'-frames.jsonl')
         from gpu_frame_reader import load_qualification
