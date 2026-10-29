@@ -8,6 +8,14 @@ from autonomous_queue import read,signature
 
 class CopyApproval:
     def copy_evidence(self, job):
+        if job.get('copy_request_of'):
+            original=next((j for j in self.state['jobs'] if j['id']==job['copy_request_of']),None)
+            if (not original or original.get('copy_request_of') or not original.get('publication_only') or
+                    any(original.get(k)!=job.get(k) for k in ('source','signature','source_identity','approved_copy'))):
+                raise ValueError('Restarted approved copy has no matching original validation request')
+            if self.recovery_info(original)['publication_record_found']:
+                raise ValueError('The original approved copy requires publication recovery')
+            job=original
         self.check_media_access('replace')
         if job['settings']['mode']!='encode' or job.get('publication_authorized') is False:
             raise ValueError('Only publication-qualified full safe copies can be approved')
@@ -111,6 +119,7 @@ class CopyApproval:
             if self.copy_evidence(job)!=job['approved_copy']:
                 raise ValueError('Approved publication inputs changed; original retained')
             folder=self.request_folder(job)
+            if job.get('copy_request_of') and not folder.exists():folder.mkdir(exist_ok=False)
             job.update(state='running',started=time.time(),reason='Verifying and publishing the approved copy; no re-encoding')
             self.save()
         state,reason=self.publish_result(job,Path(job['source']),folder,Path(job['approved_copy']['result']))

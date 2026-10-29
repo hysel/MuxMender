@@ -33,7 +33,7 @@ PANEL = '''<section class="panel" id="workflow"><div class="panel-head"><h2>New 
 <label for="timeout-minutes">Processing time limit per stage (minutes)</label><input id="timeout-minutes" type="number" min="1" max="1440" step="1" value="120" aria-describedby="timeout-help"><p id="timeout-help" class="control-note">Choose 1–1440 minutes for each long encoding or validation stage. Default: 120. Waiting for a validation slot does not count. This is not a whole-job limit. Short tool checks and stalled-encoder protection have separate limits. Applies to newly queued jobs only.</p>
 <label for="minimum-savings">Savings target</label><select id="minimum-savings" aria-describedby="minimum-savings-help"><option value="size-aware" selected>Size-aware (recommended)</option><option value="25">Fixed: 25% smaller</option><option value="20">Fixed: 20% smaller</option><option value="15">Fixed: 15% smaller</option><option value="10">Fixed: 10% smaller</option></select><p id="minimum-savings-help" class="control-note">Size-aware requires the smaller of 25% or 1 GB saved, with a 100 MB minimum. Preview shows each file’s target. GB and MB are decimal. Quality checks stay the same.</p>
 <label for="legacy-color">Missing color information</label><select id="legacy-color"><option value="inspect">Inspect and preserve source color; never guess</option><option value="bt709-limited">Sample test only: assume BT.709 limited range</option></select><p class="control-note">Inspection uses declared metadata and verified codec defaults, preserving unspecified color tags where supported. Choose Retry skipped/failed files to reconsider earlier skips. The BT.709 assumption is sample-only and cannot authorize full conversion or replacement.</p>
-<label for="recheck-history">Previously processed files</label><select id="recheck-history"><option value="reuse">Use saved history (default)</option><option value="retry">Retry skipped/failed files only</option><option value="all">Recheck everything, including successful conversions</option></select>
+<label for="recheck-history">Previously processed files</label><select id="recheck-history"><option value="reuse">Use saved history (default)</option><option value="retry">Retry skipped, failed or cancelled files</option><option value="all">Recheck everything, including successful conversions</option></select>
 <p class="control-note">Retry only includes unchanged skipped, failed or interrupted files. It excludes successful conversions, deliberate Keep original decisions, new/changed files and active jobs. Recheck everything can re-encode successful outputs.</p>
 <p class="control-note">Original resolution keeps the existing quality policy. Lower-resolution presets have their own verified geometry, video bitrate and target-resolution quality checks. Frame timing, audio, subtitles and chapters remain protected. A smaller file is accepted only after every required check passes.</p>
 </div></div></details>
@@ -55,7 +55,7 @@ function previewEligibility(body){
  let message=eligible?eligible+' video(s) can be queued; '+blocked.length+' excluded by history or an active job.':'Nothing can be added with these settings.';
  const active=blocked.filter(row=>['pending','running'].includes(row.history_state)).length;
  if(active===blocked.length)message+=' These videos are already queued or running. Wait for their current jobs to finish.';
- else if(body.settings?.history_mode==='retry')message+=' “Retry skipped/failed files only” excludes successful conversions, files marked Keep original, and files without an eligible earlier result. To test this selection again, choose “Recheck everything, including successful conversions”, then preview again.';
+ else if(body.settings?.history_mode==='retry')message+=' “Retry skipped, failed or cancelled files” excludes successful conversions, files marked Keep original, and files without an eligible earlier result. To test this selection again, choose “Recheck everything, including successful conversions”, then preview again.';
  else if(body.settings?.history_mode!=='all')message+=' Saved history excludes these videos. To test this selection again, choose “Recheck everything, including successful conversions”, then preview again.';
  else message+=' Review the reason beside each excluded video; active jobs cannot be added twice.';
  return {eligible,message};
@@ -245,6 +245,7 @@ function renderQueueActions(body,unavailable=false){
  if(queueActionError&&!queueActionBusy)message=queueActionError+' · '+message;
  const status=controlElement('queue-action-status');if(status&&status.textContent!==message)status.textContent=message;
  if(typeof renderWaitingQueue==='function')renderWaitingQueue(body,ready&&!unavailable&&!queueActionBusy);
+ if(typeof renderCancelledRestart==='function')renderCancelledRestart(body,unavailable);
 }
 async function refreshControls(){if(controlPollBusy)return;controlPollBusy=true;let received=false;try{
  if(globalThis.liveUpdatesPaused||queueActionBusy)return;

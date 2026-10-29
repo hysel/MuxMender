@@ -16,6 +16,7 @@ from urllib.parse import urlparse, parse_qs
 from autonomous_queue import EXTENSIONS, read, write, signature
 from workspace_history import WorkspaceHistory, decision_evidence
 from copy_approval import CopyApproval
+from queue_restart import CancelledQueue
 from app_version import VERSION
 from codec_selection import EVALUATION_POLICY
 from gpu_admission import snapshot as gpu_admission_snapshot
@@ -79,7 +80,7 @@ def handler(base, controls):
     return Handler
 
 
-class Controls(CopyApproval, WorkspaceHistory):
+class Controls(CopyApproval, WorkspaceHistory, CancelledQueue):
     def __init__(self, media, output, readonly, codecs, busy=lambda: False, replacement_root=None):
         self.media, self.output = media.resolve(strict=True), output.resolve(strict=True)
         if self.media == self.output or self.media in self.output.parents or self.output in self.media.parents:
@@ -228,9 +229,9 @@ class Controls(CopyApproval, WorkspaceHistory):
                              self.identity_matches(j,path))),None)
             if protected:return protected
             latest=next((j for j in reversed(related) if j['signature']==fingerprint and self.identity_matches(j,path)),None)
-            if latest and latest['state'] in ('skipped','failed','interrupted'):
+            if latest and latest['state'] in ('skipped','failed','interrupted','cancelled'):
                 return None
-            return dict(id=None,state='not-selected',reason='Retry only: no skipped, failed or interrupted result for this file version')
+            return dict(id=None,state='not-selected',reason='Retry only: no skipped, failed, interrupted or cancelled result for this file version')
         for previous in reversed(records):
             if previous['id']==exclude: continue
             state=previous['state']
@@ -360,6 +361,7 @@ class Controls(CopyApproval, WorkspaceHistory):
                     source_identity=source_identity(row['path']),
                     settings=draft['settings'],state='kept-original' if draft['settings']['mode']=='keep' else 'pending',created=time.time(),
                     batch_id=batch_id,batch_folder=draft.get('folder'),app_version=VERSION,
+                    **({'retry_of':draft['retry_of']} if draft.get('retry_of') else {}),
                     **({'finished':time.time()} if draft['settings']['mode']=='keep' else {})))
                 index.setdefault(row['path'],[]).append(self.state['jobs'][-1])
                 ids.append(identifier)
@@ -388,6 +390,7 @@ class Controls(CopyApproval, WorkspaceHistory):
             live=dict(jobs=jobs,counts=counts,paused=self.state['paused'],
                       ready=self.ready,error=self.error,queue_snapshot_updated=time.time(),
                       resource_profile=self.state.get('resource_profile','shared'))
+            live['cancelled_queue_restart']=self.cancelled_restart_summary()
         with self.poll_mutex:
             if not self.poll_refreshing and time.monotonic()-self.poll_checked>=3:
                 self.poll_refreshing=True
@@ -485,6 +488,7 @@ class Controls(CopyApproval, WorkspaceHistory):
 
     def action(self, data):
         action=data.get('action')
+        if action in ('restart-cancelled-preview','restart-cancelled-confirm'):return self.restart_cancelled(data)
         if action in ('approve-copy-preview','approve-copy-confirm'):return self.copy_action(data)
         if action=='remove-queued':return self.remove_queued(data.get('id'))
         if action in ('clear-queue-preview','clear-queue-confirm'):
@@ -556,6 +560,10 @@ class Controls(CopyApproval, WorkspaceHistory):
             active_originals=[dict(job) for job in active]
             was_paused=self.state['paused']
             old_origin=self.state.get('pause_origin')
+            old_cancellation=self.state.get('last_queue_cancellation')
+            if selected or active:
+                self.state['last_queue_cancellation']=dict(id=uuid.uuid4().hex,created=now,
+                    ids=[j['id'] for j in selected+active])
             if draft.get('include_running'):
                 self.state['paused']=True
                 if not was_paused:self.state['pause_origin']='cancellation'
@@ -570,6 +578,8 @@ class Controls(CopyApproval, WorkspaceHistory):
                 for job,original in zip(selected,originals):job.clear();job.update(original)
                 for job,original in zip(active,active_originals):job.clear();job.update(original)
                 self.state['paused']=was_paused
+                if old_cancellation is None:self.state.pop('last_queue_cancellation',None)
+                else:self.state['last_queue_cancellation']=old_cancellation
                 if old_origin is None:self.state.pop('pause_origin',None)
                 else:self.state['pause_origin']=old_origin
                 raise

@@ -4,6 +4,14 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
+## Unreleased
+
+- Restart the last cancelled queue from the UI, keeping its previous settings
+  and history. Review eligible videos before starting fresh attempts; completed
+  jobs and individually removed items stay untouched.
+- Include cancelled jobs in individual retries and retry-only folder selection.
+  Retrying a selected video does not expire its original file-age selection.
+
 ## 20261029-v68
 
 - Verify complete video packet clocks on the output time base when a transport
