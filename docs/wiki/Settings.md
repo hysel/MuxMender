@@ -95,3 +95,18 @@ excluded when filtering.
 A processing time limit applies to individual stages, not the entire batch.
 Change it before adding jobs. New settings don't rewrite requests already in
 the queue.
+
+## Encoding speed (next release)
+
+For videos at least five minutes long, automatic encoding can compare up to two
+faster NVIDIA presets after finding a passing option. It uses the same source
+scenes and your chosen quality and savings targets.
+
+A faster choice must take at least 20% less measured encoding time, be no slower
+on any tested scene, and produce samples no more than 5% larger than the smallest
+passing option. Its projected encoding time saving must also exceed the time
+spent comparing presets. The projected extra space is also capped at 512 MiB per video.
+A preset that misses the first-scene speed target is stopped before its remaining
+clips and quality checks. If timing evidence is missing or too short to compare,
+the smallest passing option stays selected. Sample timings are estimates; the full file still needs
+all normal checks before it can replace an original.
