@@ -53,7 +53,7 @@ validation and, when selected, replacement. A percentage describes the current
 stage. **100% on one stage isn't 100% of the whole job.** Time estimates also
 refer to the current stage unless explicitly stated otherwise.
 
-The next release replaces the vague **Measuring…** label with **Working…** when
+The app shows **Working…** when
 a check cannot report a percentage, or **Waiting** when it has not started.
 The card explains the current task and shows how long that check has been
 running. A moving bar without a percentage shows activity, not estimated

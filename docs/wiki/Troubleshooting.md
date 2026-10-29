@@ -47,7 +47,7 @@ Look at the current step first. Full encoding and validation both read substanti
 amounts of data. GPU encoding doesn't make every other step GPU-accelerated.
 More concurrent jobs can make each job slower on a shared GPU or storage pool.
 
-In the next release, CPU-only validation can run alongside busy GPU encoding
+CPU-only validation can run alongside busy GPU encoding
 when CPU, RAM and storage have sustained headroom. GPU work keeps its separate
 limits. This can reduce unnecessary waiting; it does not guarantee a particular
 speed increase or change the checks applied to a video.
@@ -94,8 +94,8 @@ image. Avoid broad Docker cleanup commands on a server that runs other apps.
 ## Different duration reports
 
 A duration warning can also come from how containers describe time: one may
-report elapsed length while another reports the ending position. The next
-release can verify exact video clock conversion after a full frame audit,
+report elapsed length while another reports the ending position. The app
+can verify exact video clock conversion after a full frame audit,
 while keeping copied audio and subtitle checks unchanged. Retry an affected
 failure after updating; you do not need to change the source yourself.
 
