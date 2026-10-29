@@ -171,7 +171,9 @@ def validation_slot(command,guard=lambda:None,timeout=None,*,pool='validation',e
             backlogged=(pool=='gpu' and current_workflow_stage()!='validate' and type(estimated_duration) in (int,float) and
                         0<estimated_duration<=60 and time.monotonic()-started<30 and
                         live_waiters(Path(root))>=2)
-            paused=paused or backlogged
+            # Fair queue deferral is not GPU contention. Passing it as a pause
+            # erases healthy measurements and adds a 60-second cooldown on every
+            # poll, long after the 30-second fairness window has ended.
             gpu_state=None
             gpu_telemetry=budget.gpu_sample() if pool=='gpu' else None
             try:
@@ -225,7 +227,7 @@ def validation_slot(command,guard=lambda:None,timeout=None,*,pool='validation',e
                                     ahead=True
                             else:other.unlink()  # Abandoned lease only; never a media file.
                         finally:os.close(probe)
-                    if not ahead and not paused:
+                    if not ahead and not paused and not backlogged:
                         # Keep the legacy first lock for compatibility with older workers.
                         reserve=None
                         try:

@@ -2,6 +2,7 @@
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 import statistics
 import os
@@ -30,7 +31,14 @@ def family(command,seconds,video=None):
     options=[]
     for i,arg in enumerate(command[:-1]):
         if str(arg) in ('-preset','-cq','-pix_fmt','-vf','-filter:v','-filter_complex','-lavfi') or str(arg).startswith(('-c:v','-codec:v')):
-            options.extend((str(arg),str(command[i+1])))
+            value=str(command[i+1])
+            if str(arg) in ('-vf','-filter:v','-filter_complex','-lavfi'):
+                # Generated metric report basenames do not affect GPU work.
+                # Keep model, render, geometry, thread and encoder settings;
+                # unfamiliar/escaped paths remain distinct rather than guessed.
+                value=re.sub(r'(?<![\w])log_path=[A-Za-z0-9_.-]+(?=[:;,\[]|$)',
+                             'log_path=<report>',value)
+            options.extend((str(arg),value))
     # Compare similar-length stages with the same codec/filter settings, not
     # different whole files against small trials. Never persist input paths.
     options.append(str(int(math.log2(max(1,seconds)))))
