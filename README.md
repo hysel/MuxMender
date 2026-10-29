@@ -259,8 +259,7 @@ playback, just as the original can.
 
 Every copied audio packet and its timing must pass preservation checks. Unreadable
 tracks, changed audio, video-quality failures, and insufficient savings still
-prevent replacement. This policy takes effect in
-the next release that includes it, not in an already installed image.
+prevent replacement.
 
 ## What has been tested?
 

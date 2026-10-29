@@ -4,7 +4,7 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
-## Unreleased
+## 20261029-v68
 
 - Verify complete video packet clocks on the output time base when a transport
   stream and Matroska report duration differently. Require exact clock conversion
