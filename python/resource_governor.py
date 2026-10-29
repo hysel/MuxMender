@@ -171,17 +171,14 @@ class HDRQualityWorkerBudget(SDRWorkerBudget):
 
 
 def validation_capacity(data):
-    """A second heavy validator needs measured headroom, not installed RAM."""
+    """CPU-only validators need CPU/RAM/I/O headroom; GPU work has its own pool."""
     keys=('cpus','cpu_percent','container_cpu_percent','available_gib',
-          'host_available_gib','io_pressure','memory_pressure','gpu_percent',
-          'vram_free_gib','gpu_temperature')
+          'host_available_gib','io_pressure','memory_pressure')
     if any(k not in data or not math.isfinite(data[k]) or data[k]<0 for k in keys):return 1
     usage=max(data['cpu_percent'],data['container_cpu_percent'])
     return 2 if (data['cpus']>=12 and usage<=50 and data['cpus']*(1-usage/100)>=6
                  and data['available_gib']>=12 and data['host_available_gib']>=16
-                 and data['io_pressure']<5 and data['memory_pressure']<.1
-                 and data['gpu_percent']<50 and data['vram_free_gib']>=4
-                 and data['gpu_temperature']<75) else 1
+                 and data['io_pressure']<5 and data['memory_pressure']<.1) else 1
 
 
 class Governor:

@@ -6,6 +6,12 @@ The version notes below describe the changes included in each package.
 
 ## Unreleased
 
+- Verify complete video packet clocks on the output time base when a transport
+  stream and Matroska report duration differently. Require exact clock conversion
+  and the full decoded-frame audit; copied audio and subtitle checks stay strict.
+- Let CPU-only validation use available CPU, RAM and storage capacity while GPU
+  encoding is busy. Keep the two-validator ceiling, sustained-headroom checks
+  and separate GPU admission limits.
 - Replace the ambiguous progress label **Measuring…** with **Working…** or
   **Waiting**. Explain what the current check does and show its elapsed time.
   Keep unknown percentages separate from measured progress.

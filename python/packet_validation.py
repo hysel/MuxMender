@@ -5,13 +5,15 @@ sets retain one combined pass to bound storage rereads. Track interleaving may
 change in a remux, so comparisons remain ordered *per stream*. The separate
 complete duration-header proof is unaffected.
 """
-from contextlib import ExitStack
+from contextlib import ExitStack,closing
 import re
 from pathlib import Path
 from task_progress import run_probe
 from job_tracking import progress
 from fractions import Fraction
 from itertools import zip_longest
+import sqlite3
+import tempfile
 
 
 def packet_rows(path):
@@ -21,11 +23,89 @@ def packet_rows(path):
                 yield dict(item.split('=',1) for item in line.strip().split('|') if '=' in item)
 
 
-def duration_header_evidence(before, after, reference, output, guard=lambda: None):
+def nearest_tick(value):
+    """FFmpeg's nearest-tick rescaling, with half ticks away from zero."""
+    sign=-1 if value<0 else 1
+    value=abs(value)
+    return sign*((2*value.numerator+value.denominator)//(2*value.denominator))
+
+
+def native_packet_ticks(packet,key,base):
+    """Resolve an integer clock, checking its serialized microsecond witness."""
+    value=Fraction(packet[key+'_time'])
+    raw=packet.get(key)
+    if raw is None:
+        # Older retained evidence has only six-decimal timestamps. Recover an
+        # integer only when its native tick is larger than that uncertainty.
+        if base<=Fraction(1,1000000):raise ValueError('Integer packet clock evidence required')
+        ticks=nearest_tick(value/base)
+    else:
+        if not re.fullmatch(r'-?\d+',raw):raise ValueError('Invalid integer packet clock')
+        ticks=int(raw)
+    if abs(ticks*base-value)>Fraction(1,2000000):
+        raise ValueError('Packet clock and serialized timestamp disagree')
+    return ticks
+
+
+def native_video_clock_evidence(source,output,before,after,count,guard):
+    """Compare every video clock after exact integer rescaling; no tolerance."""
+    source_base=Fraction(str(before.get('time_base','0')));target_base=Fraction(str(after.get('time_base','0')))
+    if not 0<source_base<target_base<=Fraction(1,500):
+        raise ValueError('Not a finer-to-coarser video clock representation')
+    progress('Verifying exact video packet clocks',
+        detail='Comparing every packet on the output clock; timestamps and durations must match exactly after rescaling')
+    def clocks(path,video,project):
+        base=source_base if project else target_base
+        for packet in packet_rows(path):
+            guard()
+            if int(packet['stream_index'])!=video['index']:continue
+            pts=native_packet_ticks(packet,'pts',base)
+            duration=native_packet_ticks(packet,'duration',base)
+            if project:
+                pts=nearest_tick(pts*base/target_base)
+                duration=(duration*base/target_base).__floor__()
+            if duration<=0:raise ValueError('Video packet duration is unresolved')
+            yield pts,duration
+    checked=0
+    # Codec decoder delay is not a bound on packet reorder depth. Compare in
+    # presentation order using a small disk-backed index, not a whole-film list
+    # or a guessed GOP window. Only generated packet evidence is indexed.
+    from artifact_manifest import command_outputs
+    with ExitStack() as contexts:
+        scratch=contexts.enter_context(tempfile.TemporaryDirectory(prefix='.packet-clock-',dir=Path(output).parent))
+        index=Path(scratch)/'clocks.sqlite'
+        contexts.enter_context(command_outputs(Path(output).parent,[str(index),str(index)+'-journal']))
+        db=contexts.enter_context(closing(sqlite3.connect(str(index))))
+        db.execute('PRAGMA cache_size=-2048')
+        db.execute('CREATE TABLE clocks (side INTEGER, pts INTEGER, duration INTEGER, PRIMARY KEY(side,pts)) WITHOUT ROWID')
+        for side,(path,video) in enumerate(((source,before),(output,after))):
+            batch=[]
+            try:
+                for pts,duration in clocks(path,video,side==0):
+                    batch.append((side,pts,duration))
+                    if len(batch)>=2048:db.executemany('INSERT INTO clocks VALUES(?,?,?)',batch);batch=[]
+                if batch:db.executemany('INSERT INTO clocks VALUES(?,?,?)',batch)
+            except sqlite3.IntegrityError as exc:
+                raise ValueError('Video presentation timestamps are not unique') from exc
+        for left,right in zip_longest(db.execute('SELECT pts,duration FROM clocks WHERE side=0 ORDER BY pts'),
+                                     db.execute('SELECT pts,duration FROM clocks WHERE side=1 ORDER BY pts')):
+            guard()
+            if left is None or right is None or left!=right:
+                raise ValueError('Video packet clocks do not project exactly')
+            checked+=1
+    if checked!=count:raise ValueError('Video packets and verified decoded frame count differ')
+    return dict(method='exact-native-video-clock-rescaling',source_index=before['index'],output_index=after['index'],
+                source_time_base=before['time_base'],output_time_base=after['time_base'],
+                packets=checked,verified_decoded_frames=count,all_packet_clocks_exact=True,
+                pts_rounding='nearest-tick-half-away-from-zero',duration_rounding='whole-output-ticks')
+
+
+def duration_header_evidence(before, after, reference, output, guard=lambda: None, *, verified_frame_count=None):
     """Prove an elapsed-length versus absolute-end header representation case.
 
-    Complete packet spans/counts must agree per timed stream. This supplements,
-    never replaces, decoded frame and copied-packet comparisons.
+    Copied streams retain exact spans/counts. A re-encoded video's clock can
+    instead be proved by exact rescaling after its full decoded frame audit.
+    Neither route replaces decoded frame or copied-packet comparisons.
     """
     from auto_optimize import paired_streams, is_cover
     pairs=[(a,b) for a,b in paired_streams(before,after)
@@ -46,26 +126,34 @@ def duration_header_evidence(before, after, reference, output, guard=lambda: Non
         return result
     left=spans(reference,[a['index'] for a,b in pairs])
     right=spans(output,[b['index'] for a,b in pairs])
+    projection=None
     for a,b in pairs:
-        if left[a['index']]!=right[b['index']]:raise ValueError('Timed stream packet extent or count changed')
-    start=min(row[1] for row in left.values());end=max(row[2] for row in left.values())
-    elapsed=end-start
+        if left[a['index']]!=right[b['index']]:
+            if (projection is not None or a.get('codec_type')!='video' or
+                    type(verified_frame_count) is not int or verified_frame_count<=0 or
+                    left[a['index']][0]!=right[b['index']][0] or left[a['index']][0]!=verified_frame_count):
+                raise ValueError('Timed stream packet extent or count changed')
+            projection=native_video_clock_evidence(reference,output,a,b,verified_frame_count,guard)
+    spans=[(min(row[1] for row in values.values()),max(row[2] for row in values.values())) for values in (left,right)]
+    start,end=spans[0];elapsed=end-start
     if start==0 or elapsed<=0:raise ValueError('Not an offset duration-header case')
     # No widened timing tolerance: allow only the serialized microsecond tick.
     tick=Fraction(1,1000000)
     modes=[]
-    for data in (before,after):
+    for data,(native_start,native_end) in zip((before,after),spans):
         header=Fraction(str(data['format']['duration']))
         declared_start=Fraction(str(data['format']['start_time']))
-        if abs(declared_start-start)>tick:raise ValueError('Declared start differs from packet evidence')
-        mode=next((name for name,value in [('elapsed',elapsed),('absolute-end',end)] if abs(header-value)<=tick),None)
+        if abs(declared_start-native_start)>tick:raise ValueError('Declared start differs from packet evidence')
+        mode=next((name for name,value in [('elapsed',native_end-native_start),('absolute-end',native_end)] if abs(header-value)<=tick),None)
         if mode is None:raise ValueError('Duration header matches neither packet span nor endpoint')
         modes.append(mode)
     if modes[0]==modes[1]:raise ValueError('Not a duration representation difference')
     return dict(kind='elapsed-versus-absolute-end',headers=[str(data['format']['duration']) for data in (before,after)],
                 starts=[str(data['format']['start_time']) for data in (before,after)],
                 packet_start=str(start),packet_end=str(end),elapsed=str(elapsed),
-                streams=len(pairs),complete_packet_spans_equal=True)
+                streams=len(pairs),complete_packet_spans_equal=projection is None,
+                **(dict(native_video_clock_projection=projection,copied_stream_spans_equal=True,
+                        output_packet_start=str(spans[1][0]),output_packet_end=str(spans[1][1])) if projection else {}))
 
 
 def aac_initialization_timestamp_case(reference, output, *, missing_initial_duration=False):
