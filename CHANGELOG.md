@@ -4,6 +4,14 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
+## Unreleased
+
+- Replace the ambiguous progress label **Measuring…** with **Working…** or
+  **Waiting**. Explain what the current check does and show its elapsed time.
+  Keep unknown percentages separate from measured progress.
+- When resource details are delayed, report active jobs as running instead of
+  incorrectly saying they are waiting for a worker.
+
 ## 20261029-v67
 
 - Let a waiting inspection use a GPU reader verified by another job while it
