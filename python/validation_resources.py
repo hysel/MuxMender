@@ -26,7 +26,7 @@ class AdmissionBudget:
         now=time.monotonic()
         if now-self.checked<5:return self.capacity
         self.checked=now
-        try:healthy=validation_capacity(self.governor.sample())==2
+        try:healthy=validation_capacity(self.governor.sample(include_gpu=False))==2
         except (OSError,ValueError,TypeError):healthy=False
         if not healthy:self.healthy_since=None
         elif self.healthy_since is None:self.healthy_since=now

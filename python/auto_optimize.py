@@ -272,8 +272,20 @@ def metadata_check(before, after, codec, *, verified_frame_count=None, verified_
     if any(not math.isfinite(value) or value<=0 for value in durations):
         raise ValueError('Invalid duration; finite positive evidence required')
     if abs(Fraction(str(before['format']['duration']))-Fraction(str(after['format']['duration']))) > Fraction(1,10):
+        projection=(duration_evidence or {}).get('native_video_clock_projection',{})
+        if not isinstance(projection,dict):projection={}
+        source_video=main_video(before);output_video=main_video(after)
+        projected=(type(verified_frame_count) is int and verified_frame_count>0 and
+            (duration_evidence or {}).get('complete_packet_spans_equal') is False and
+            (duration_evidence or {}).get('copied_stream_spans_equal') is True and
+            projection.get('method')=='exact-native-video-clock-rescaling' and
+            projection.get('all_packet_clocks_exact') is True and
+            projection.get('packets')==projection.get('verified_decoded_frames')==verified_frame_count and
+            projection.get('source_index')==source_video['index'] and projection.get('output_index')==output_video['index'] and
+            projection.get('source_time_base')==source_video.get('time_base') and
+            projection.get('output_time_base')==output_video.get('time_base'))
         if not (duration_evidence and duration_evidence.get('kind')=='elapsed-versus-absolute-end'
-                and duration_evidence.get('complete_packet_spans_equal') is True
+                and (duration_evidence.get('complete_packet_spans_equal') is True or projected)
                 and duration_evidence.get('headers')==[str(d['format']['duration']) for d in (before,after)]
                 and duration_evidence.get('starts')==[str(d['format'].get('start_time')) for d in (before,after)]):
             raise ValueError('Duration changed')
@@ -392,10 +404,11 @@ class Workflow:
             for side,path in [('source',reference),('output',output)]:
                 target=self.directory/(label+'-'+side+'-duration-packets.txt')
                 run_probe([self.args.ffprobe,'-v','error','-show_packets','-show_entries',
-                           'packet=stream_index,pts_time,duration_time','-of','compact=p=0',str(path)],
+                           'packet=stream_index,pts,duration,pts_time,duration_time','-of','compact=p=0',str(path)],
                           target,'Verifying complete presentation span: '+side,self.args.timeout,self.guard)
                 paths.append(target)
-            evidence=duration_header_evidence(before,after,*paths,guard=self.guard)
+            evidence=duration_header_evidence(before,after,*paths,guard=self.guard,
+                verified_frame_count=verified.get('verified_frame_count'))
             save(self.directory/(label+'-duration-evidence.json'),evidence)
         metadata_check(before,after,codec,duration_evidence=evidence,chapter_evidence=chapter_evidence,**verified)
 

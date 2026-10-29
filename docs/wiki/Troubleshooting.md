@@ -47,6 +47,11 @@ Look at the current step first. Full encoding and validation both read substanti
 amounts of data. GPU encoding doesn't make every other step GPU-accelerated.
 More concurrent jobs can make each job slower on a shared GPU or storage pool.
 
+In the next release, CPU-only validation can run alongside busy GPU encoding
+when CPU, RAM and storage have sustained headroom. GPU work keeps its separate
+limits. This can reduce unnecessary waiting; it does not guarantee a particular
+speed increase or change the checks applied to a video.
+
 GPU inspection depends on the source codec as well as a matching qualification.
 A verified HEVC or AV1 reader does not automatically accelerate H.264 inspection.
 The current-step details identify the selected reader; GPU encoding can still
@@ -85,6 +90,14 @@ recover interrupted replacements.
 Old release downloads and development test files are separate from your library.
 They can be reviewed after an update is working, but keep a known-good rollback
 image. Avoid broad Docker cleanup commands on a server that runs other apps.
+
+## Different duration reports
+
+A duration warning can also come from how containers describe time: one may
+report elapsed length while another reports the ending position. The next
+release can verify exact video clock conversion after a full frame audit,
+while keeping copied audio and subtitle checks unchanged. Retry an affected
+failure after updating; you do not need to change the source yourself.
 
 ## Conflicting video timestamps
 

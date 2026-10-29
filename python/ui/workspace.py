@@ -118,6 +118,7 @@ function currentTask(job){
  else if(/restore.*hdr|preserv.*hdr/.test(s))detail='Preserving HDR information in the working file before checking the result.';
  else if(/frame timing|hdr frame|every.*frame|decoded.*frame/.test(s))detail='Reading decoded pictures to check their format, playback timing and any HDR information.';
  else if(/copied track|source packets/.test(s))detail='Reading audio or subtitle packets and their timing for preservation checks.';
+ else if(/video packet clocks/.test(s))detail='Checking every video packet against the output clock. Each timestamp and duration must match the exact clock conversion.';
  else if(/hash|digest|checksum/.test(s))detail='Reading file contents to verify their checksum. This checks that the file has not changed.';
  else if(s==='full-decode')detail='Reading the finished copy from beginning to end to check for decoding errors.';
  else if(s==='full-encode'||/full encode$/.test(s))detail='Creating the complete smaller copy. The original stays in place until validation and any approved replacement finish.';
