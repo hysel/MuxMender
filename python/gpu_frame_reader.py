@@ -12,6 +12,7 @@ import os
 from pathlib import Path,PurePosixPath
 import stat
 import sys
+import time
 
 READER_ROOT=Path('/opt/muxmender-readers')
 HOST_QUALIFICATION_ROOT=Path('/opt/muxmender-host-qualification')
@@ -19,6 +20,36 @@ PROOF_FIELDS=('full_eof','every_frame_cpu_gpu_equal','corrupt_controls_rejected'
 # Raw HEVC currently emits no decoded frames with this native artifact. Keep
 # complete CPU reads there even when a containerized HEVC scope is attested.
 NATIVE_DEMUXERS=frozenset(('matroska','webm','mov','mp4','m4a','3gp','3g2','mj2','mpegts','obu'))
+
+
+class QualificationAvailable(Exception):
+    """Replan a queued reader before it has opened any output or media process."""
+    def __init__(self,profile):
+        super().__init__('A matching GPU reader was verified while this stage waited')
+        self.profile=profile
+
+
+def qualification_stamp(storage):
+    try:return sorted((p.name,p.stat().st_mtime_ns,p.stat().st_size)
+                      for p in Path(storage).glob('*.json'))
+    except OSError:return []
+
+
+def qualification_wait_guard(storage,guard,can_use,*,initial_stamp=None):
+    """Observe new app proofs only during admission, never interrupt a reader."""
+    previous=qualification_stamp(storage) if initial_stamp is None else initial_stamp
+    checked=-float('inf')
+    def check():
+        nonlocal previous,checked
+        guard()
+        now=time.monotonic()
+        if now-checked<5:return
+        checked=now;current=qualification_stamp(storage)
+        if current==previous:return
+        previous=current
+        profile=load_qualification(app_storage=storage)
+        if profile is not None and can_use(profile):raise QualificationAvailable(profile)
+    return check
 
 
 def visibility_matches(expected,current,sole_uuid):

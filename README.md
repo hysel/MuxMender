@@ -264,6 +264,12 @@ the next release that includes it, not in an already installed image.
 
 ## What has been tested?
 
+Some container read errors can be handled without changing the source. The
+upcoming release can use a byte-verified temporary copy when stray bytes follow
+a complete Matroska container. Results explain when this happened. The converted
+file must still pass the normal quality, timing and copied-track checks; see
+[container warnings](docs/wiki/Results.md#warnings-about-the-container).
+
 Selected SDR, HDR10, legacy AVI and DVD-rip workflows have passed project tests.
 Results depend on the input, GPU, driver, encoder and player—not just the file
 extension. See [tested formats](docs/TESTED-FORMATS.md) for the scope and limits.

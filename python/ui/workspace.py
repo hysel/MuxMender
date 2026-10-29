@@ -23,7 +23,7 @@ function applyTheme(value){if(!['system','light','dark'].includes(value))value='
 try{applyTheme(localStorage.getItem('muxmender-theme')||'system')}catch(e){applyTheme('system')}
 userEl('theme').addEventListener('change',()=>applyTheme(userEl('theme').value));
 userEl('toggle-updates').addEventListener('click',()=>{globalThis.liveUpdatesPaused=!globalThis.liveUpdatesPaused;userEl('toggle-updates').setAttribute('aria-pressed',String(globalThis.liveUpdatesPaused));userEl('toggle-updates').textContent=globalThis.liveUpdatesPaused?'Resume display updates':'Freeze display only';userEl('connection-state').textContent=globalThis.liveUpdatesPaused?'Display paused · jobs continue':'Reconnecting…';if(!globalThis.liveUpdatesPaused){refreshUserJobs();if(typeof refreshControls==='function')refreshControls()}});
-function userReason(job){const reason=userReasonBase(job),warning=sourceAudioNotice(job);return reason+(warning?' '+warning:'');}
+function userReason(job){const reason=userReasonBase(job),warning=sourceAudioNotice(job),container=job.source_container_warning;return reason+(warning?' '+warning:'')+(container?' '+container:'');}
 function sourceAudioNotice(job){
  if(['pending','running'].includes(job.state)||!(Array.isArray(job.source_audio_warnings)&&job.source_audio_warnings.length))return '';
  return ['replaced','verified','awaiting-playback','playback-approved'].includes(job.state)

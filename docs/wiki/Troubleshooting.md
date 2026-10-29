@@ -47,6 +47,11 @@ Look at the current step first. Full encoding and validation both read substanti
 amounts of data. GPU encoding doesn't make every other step GPU-accelerated.
 More concurrent jobs can make each job slower on a shared GPU or storage pool.
 
+GPU inspection depends on the source codec as well as a matching qualification.
+A verified HEVC or AV1 reader does not automatically accelerate H.264 inspection.
+The current-step details identify the selected reader; GPU encoding can still
+be used later even when inspection needs the CPU.
+
 Keep enough temporary disk space, check resource pressure and choose a time limit
 appropriate for your files. Lower-resolution copies may be faster or smaller,
 but deliberately change the picture; they aren't a free quality-preserving shortcut.

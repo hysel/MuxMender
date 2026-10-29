@@ -720,6 +720,7 @@ class Controls(CopyApproval, WorkspaceHistory):
                 if len(results)==1:
                     result=read(results[0]);stage=result.get('state')
                     job['source_audio_warnings']=result.get('source_audio_warnings',[])
+                    job['source_container_warning']=result.get('source_container_warning')
                     selection=read(results[0].parent/'selection.json') or result.get('decision',{})
                     job['evidence']=decision_evidence(results[0].parent,selection)
                     if stage=='validated-copy-awaiting-playback':

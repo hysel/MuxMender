@@ -34,7 +34,9 @@ PLANAR_FORMATS={f'yuv{chroma}p{depth}' for chroma in ('420','422','444')
 
 
 def encoder_pixel_format(video,encoder):
-    pixel=video['pix_fmt']
+    pixel=video.get('pix_fmt')
+    if not valid_pixel_format(pixel):
+        raise ValueError('Video pixel format requires decoded-frame evidence before encoding')
     if pixel=='yuv420p10le' and encoder.endswith(('_amf','_nvenc','_qsv')):return 'p010le'
     if pixel=='yuv444p10le' and encoder.endswith('_nvenc'):return 'yuv444p16le'
     # Let the real encoder prove this format. Full decoded validation must still
@@ -80,6 +82,30 @@ def main_video(data):
     if not videos:
         raise ValueError('No moving video track found')
     return videos[0]
+
+
+def reference_metadata_from_frames(metadata,source_metadata,frames):
+    """Recover an absent sample header only from its complete decoded audit."""
+    video=main_video(metadata)
+    if valid_pixel_format(video.get('pix_fmt')):return metadata
+    expected=main_video(source_metadata)
+    expected=(expected.get('width'),expected.get('height'),expected.get('pix_fmt'))
+    witness=None;count=0
+    for frame in frames:
+        row=(int(frame.get('width',0)),int(frame.get('height',0)),frame.get('pix_fmt'))
+        if row!=expected or not valid_pixel_format(row[2]):
+            raise ValueError('Decoded reference format does not match the original video')
+        witness=row;count+=1
+    if not count:raise ValueError('Reference has no decoded pictures to establish its pixel format')
+    for key,value in zip(('width','height'),witness[:2]):
+        if video.get(key) not in (None,0,value):raise ValueError('Reference header and decoded geometry disagree')
+    result=dict(metadata,streams=[dict(s) for s in metadata['streams']])
+    moving=main_video(result);moving.update(width=witness[0],height=witness[1],pix_fmt=witness[2])
+    result['decoded_reference_format_evidence']=dict(frames=count,width=witness[0],height=witness[1],
+        pixel_format=witness[2],all_decoded_frames_match_original=True)
+    progress('Recovered sample format from decoded pictures',
+        detail=f'All {count:,} decoded sample pictures match the original geometry and pixel format')
+    return result
 
 
 def cover_labels(stream):
@@ -389,7 +415,9 @@ class Workflow:
         original=getattr(self.args,'source',None)
         source=Path(source)
         reference=(source.parent.resolve()==self.directory.resolve() and source.name.startswith('reference-'))
-        if build is not None and (reference or (original is not None and source.resolve()==Path(original).resolve())):
+        known_original=(original is not None and source.resolve()==Path(original).resolve())
+        read_view=str(source.resolve()) in getattr(self,'reader_source_paths',set())
+        if build is not None and (reference or known_original or read_view):
             return ['-x264_build',str(build)]
         return []
 
@@ -421,8 +449,22 @@ class Workflow:
         self.frame_reader_diagnostics=[]
         from reader_qualification_cache import cache_root
         self.reader_cache_root=cache_root(os.environ.get('MUXMENDER_OUTPUT_ROOT') or getattr(args,'output_dir',None))
+        from gpu_frame_reader import qualification_stamp
+        self.frame_reader_stamp=qualification_stamp(self.reader_cache_root)
         original=getattr(args,'source',None)
         self.reader_learning_sources={str(Path(original).resolve())} if original is not None else set()
+        self.reader_source_paths=set(self.reader_learning_sources)
+        self.source_view=None
+
+    def verified_source_hash(self,source,expected):
+        if digest(source,self.guard)!=expected:raise RuntimeError('Source hash changed; output not approved')
+        if self.source_view is None:return expected
+        proof=self.source_view
+        if str(Path(source).resolve())!=str(Path(proof['view']).resolve()) or expected!=proof['view_sha256']:
+            raise ValueError('Container read-view binding changed')
+        if digest(Path(self.args.source),self.guard)!=proof['source_sha256']:
+            raise RuntimeError('Original source hash changed during container recovery')
+        return proof['source_sha256']
 
     @staticmethod
     def audit_identity(path):
@@ -672,8 +714,9 @@ class Workflow:
                          str(Path(source).resolve()) in self.reader_learning_sources)
         reader_before=source_identity(source) if learning_source else None
         path = self.directory/(label+'-frames.jsonl')
-        from gpu_frame_reader import load_qualification
-        if not self.frame_reader_checked and float(metadata['duration'])>=60:
+        from gpu_frame_reader import load_qualification,qualification_stamp
+        current_stamp=qualification_stamp(self.reader_cache_root)
+        if float(metadata['duration'])>=60 and (not self.frame_reader_checked or current_stamp!=self.frame_reader_stamp):
             diagnostics=[]
             self.frame_reader_qualification=load_qualification(diagnostics=diagnostics,app_storage=self.reader_cache_root)
             self.frame_reader_diagnostics=diagnostics if self.frame_reader_qualification is None else []
@@ -681,16 +724,13 @@ class Workflow:
                 progress('GPU frame reader needs qualification',detail=diagnostics[-1]['reason'],
                          frame_reader_diagnostics=diagnostics)
             self.frame_reader_checked=True
+            self.frame_reader_stamp=current_stamp
         if self.hdr_mode:
-            from gpu_frame_reader import hdr_reader_request,reader_label
-            video=main_video(self.probe(source)) if self.frame_reader_qualification else None
-            command,options,plan=hdr_reader_request(self.args.ffprobe,source,video,metadata['duration'],
-                self.hdr_mode,self.frame_reader_qualification,[*self.reader_input_options(source),*self.decoder_options(source)],metadata.get('format_name'))
-            progress('Selecting frame inspection backend',detail=plan['reason'])
-            from gpu_admission import stage_context
-            with stage_context(video):
-                result=run_probe(command,path,'Checking HDR frame timing: '+label+' · '+reader_label(plan,self.frame_reader_diagnostics),
-                          self.args.timeout,self.guard,float(metadata['duration']),float(metadata.get('start_time',0)),**options)
+            from gpu_frame_reader import hdr_reader_request
+            def choose(profile,video):
+                return hdr_reader_request(self.args.ffprobe,source,video,metadata['duration'],
+                    self.hdr_mode,profile,[*self.reader_input_options(source),*self.decoder_options(source)],metadata.get('format_name'))
+            result,plan=self.run_frame_inspection(source,path,'Checking HDR frame timing: '+label,metadata,choose)
             if path.with_suffix(path.suffix+'.stderr').stat().st_size:
                 raise ValueError('HDR frame decoder reported errors: '+label)
             if plan['backend']=='cpu' and learning_source:
@@ -699,16 +739,12 @@ class Workflow:
             return path
         # Bound CPU contention between queue workers. Do not drop side-data or
         # frames: identical validation fields and full EOF draining are retained.
-        from gpu_frame_reader import sdr_reader_request,reader_label
-        from gpu_admission import stage_context
-        video=main_video(self.probe(source)) if self.frame_reader_qualification else None
-        command,options,plan=sdr_reader_request(self.args.ffprobe,source,video,metadata['duration'],
-            self.frame_reader_qualification,self.performance_threads(),
-            [*self.reader_input_options(source),*self.decoder_options(source)],metadata.get('format_name'))
-        progress('Selecting frame inspection backend',detail=plan['reason'])
-        with stage_context(video):
-            result=run_probe(command,path,'Checking frame timing: '+label+' · '+reader_label(plan,self.frame_reader_diagnostics),
-                      self.args.timeout,self.guard,float(metadata['duration']),float(metadata.get('start_time',0)),**options)
+        from gpu_frame_reader import sdr_reader_request
+        threads=self.performance_threads()
+        def choose(profile,video):
+            return sdr_reader_request(self.args.ffprobe,source,video,metadata['duration'],
+                profile,threads,[*self.reader_input_options(source),*self.decoder_options(source)],metadata.get('format_name'))
+        result,plan=self.run_frame_inspection(source,path,'Checking frame timing: '+label,metadata,choose)
         if path.with_suffix(path.suffix+'.stderr').stat().st_size:
             raise ValueError('Frame decoder reported errors: '+label)
         if plan['backend']=='cpu' and learning_source:
@@ -716,6 +752,32 @@ class Workflow:
         if any(row.get('best_effort_timestamp_time') in (None,'N/A') for row in compact_rows(path,'width')):
             return self.recover_mpeg4_tail(source,path,label)
         return path
+
+    def run_frame_inspection(self,source,path,label,metadata,choose):
+        from gpu_frame_reader import QualificationAvailable,qualification_wait_guard,qualification_stamp,reader_label
+        from gpu_admission import stage_context
+        for attempt in range(2):
+            video=main_video(self.probe(source)) if self.frame_reader_qualification else None
+            command,options,plan=choose(self.frame_reader_qualification,video)
+            if (not attempt and plan['backend']=='cpu' and sys.platform.startswith('linux')
+                    and float(metadata['duration'])>=60):
+                def can_use(profile):
+                    return choose(profile,main_video(self.probe(source)))[2]['backend']=='cuda'
+                options=dict(options,admission_guard=qualification_wait_guard(
+                    self.reader_cache_root,self.guard,can_use,initial_stamp=self.frame_reader_stamp))
+            progress('Selecting frame inspection backend',detail=plan['reason'])
+            try:
+                with stage_context(video):
+                    result=run_probe(command,path,label+' · '+reader_label(plan,self.frame_reader_diagnostics),
+                        self.args.timeout,self.guard,float(metadata['duration']),float(metadata.get('start_time',0)),**options)
+                return result,plan
+            except QualificationAvailable as ready:
+                self.frame_reader_qualification=ready.profile
+                self.frame_reader_stamp=qualification_stamp(self.reader_cache_root)
+                self.frame_reader_diagnostics=[]
+                progress('GPU inspection became available while waiting',
+                    detail='Switching the queued check to its verified GPU reader; no CPU reader was started')
+        raise AssertionError('Reader admission did not produce an inspection')
 
     def learn_frame_reader(self,source,reference,metadata,result,before):
         if not sys.platform.startswith('linux') or not isinstance(result,dict) or result.get('strict_success') is not True:return
@@ -1527,6 +1589,7 @@ def run(args):
     args.ffmpeg = shutil.which(args.ffmpeg) or args.ffmpeg
     args.ffprobe = shutil.which(args.ffprobe) or args.ffprobe
     baseline = fingerprint(source)
+    logical_source=source
     from savings_policy import requirement
     savings_policy=requirement(baseline['size'],getattr(args,'savings_mode','fixed'),
                                getattr(args,'minimum_savings_percent',25))
@@ -1691,7 +1754,7 @@ def run(args):
     def guard():
         if (directory/'STOP').exists():
             raise KeyboardInterrupt('STOP requested')
-        if fingerprint(source) != baseline:
+        if fingerprint(logical_source) != baseline:
             raise RuntimeError('Source changed during work')
         if shutil.disk_usage(directory).free < args.min_free_gib*1024**3:
             raise RuntimeError('Output free space below safety reserve')
@@ -1708,7 +1771,16 @@ def run(args):
             from source_timing import check_tail
             check_tail(workflow,source,data)
         source_hash = digest(source, guard)
-        workflow.preflight_source(source,data,source_hash)
+        try:workflow.preflight_source(source,data,source_hash)
+        except RuntimeError as exc:
+            from matroska_boundary import prepare
+            recovered=prepare(workflow,source,data,source_hash,exc)
+            if recovered is None:raise
+            source,proof=recovered
+            workflow.source_view=proof;source_hash=proof['view_sha256']
+            state['source_container_warning']='Extra bytes followed the complete container. An exact temporary copy was used; original tracks and playback timing were preserved.'
+            state['source_container_recovery']=proof
+            workflow.preflight_source(source,data,source_hash)
         state['source_audio_warnings']=workflow.audio_crc_warnings
         save(directory/'status.json',state)
         plan['output_container']=workflow.output_suffix.lstrip('.')
@@ -1790,6 +1862,9 @@ def run(args):
                 probe = workflow.probe(reference)
                 window=workflow.reference_window(reference,probe,args.seconds)
                 frames = workflow.frame_file(reference, 'reference-'+str(i), probe['format'])
+                from hdr10plus_preserve import frame_records
+                probe=reference_metadata_from_frames(probe,data,
+                    frame_records(frames) if workflow.hdr_mode else compact_rows(frames,'width'))
             except (ValueError,RuntimeError):
                 from reference_sampling import recover_reference
                 reference,recovery=recover_reference(workflow,source,data,position,args.seconds,
@@ -1797,13 +1872,16 @@ def run(args):
                 probe=workflow.probe(reference)
                 window=workflow.reference_window(reference,probe,max(args.seconds,15))
                 frames = workflow.frame_file(reference, 'reference-'+str(i)+'-recovered', probe['format'])
+                from hdr10plus_preserve import frame_records
+                probe=reference_metadata_from_frames(probe,data,
+                    frame_records(frames) if workflow.hdr_mode else compact_rows(frames,'width'))
             count = workflow.compare_frame_files(frames, frames)
             # Do not accept pathological keyframe preroll spanning another sample.
             window=workflow.reference_window(reference,probe,max(args.seconds,15) if recovery else args.seconds)
             references.append((reference, probe, frames, count))
             reference_bytes=recovery['compressed_source_bytes'] if recovery and recovery.get('method')=='verified-lossless-source-window' else reference.stat().st_size
             report['references'].append(dict(id=str(i),path=str(reference), bytes=reference_bytes, position=position,window=window,
-                                             recovery=recovery))
+                                             recovery=recovery,header_recovery=probe.get('decoded_reference_format_evidence')))
             # Defer expensive VMAF until a candidate can actually save space.
         info = mm.probe(source, args.ffprobe)
         if getattr(args,'dv_declaration_recovery',None):
@@ -1987,8 +2065,8 @@ def run(args):
         if args.encode_best and decision['action'] == 'encode_copy':
             settings = decision['selected']['settings']
             from validated_replace import readable_destination
-            readable=readable_destination(source)
-            output = directory/((readable.stem if readable.stem!=source.stem else 'full-'+settings['codec'])+workflow.output_suffix)
+            readable=readable_destination(logical_source)
+            output = directory/((readable.stem if readable.stem!=logical_source.stem else 'full-'+settings['codec'])+workflow.output_suffix)
             # A complete candidate's CPU inspection can qualify its output
             # codec too. This never authorizes publication or learns from cuts.
             workflow.reader_learning_sources.add(str(output.resolve()))
@@ -2005,12 +2083,11 @@ def run(args):
             actual_savings = 100*(1-output.stat().st_size/baseline['size'])
             if output.stat().st_size >= baseline['size'] or baseline['size']-output.stat().st_size<savings_policy['required_bytes']:
                 guard()
-                if digest(source, guard) != source_hash:
-                    raise RuntimeError('Source hash changed; size decision not reusable')
+                publication_hash=workflow.verified_source_hash(source,source_hash)
                 state.update(state='full-output-rejected-insufficient-savings', candidate=str(output),
                              saved_percent=actual_savings, source_bytes=baseline['size'],
                              output_bytes=output.stat().st_size, minimum_savings_percent=args.minimum_savings_percent,
-                             full_validation_performed=False, source_sha256=source_hash)
+                             full_validation_performed=False, source_sha256=publication_hash)
                 save(directory/'status.json', state)
                 progress('Keeping original: full output did not meet savings target',directory=directory,
                          detail=f'{actual_savings:.2f}% smaller; {args.minimum_savings_percent:g}% required. Full validation not needed for rejection.')
@@ -2030,19 +2107,17 @@ def run(args):
                 workflow.validate(source, output, data, settings['codec'], 'full', frames)
             actual_savings = 100*(1-output.stat().st_size/baseline['size'])
             guard()
-            if digest(source, guard) != source_hash:
-                raise RuntimeError('Source hash changed; output not approved')
+            publication_hash=workflow.verified_source_hash(source,source_hash)
             if output.stat().st_size >= baseline['size'] or baseline['size']-output.stat().st_size<savings_policy['required_bytes']:
                 state.update(state='full-output-rejected-insufficient-savings', candidate=str(output), saved_percent=actual_savings)
             else:
                 state.update(state='validated-copy-awaiting-playback', output=str(output), saved_percent=actual_savings,
-                             source_sha256=source_hash, output_sha256=digest(output, guard))
+                             source_sha256=publication_hash, output_sha256=digest(output, guard))
                 if workflow.output_suffix in ('.mp4','.mov'):
                     state.update(output_container=workflow.output_suffix.lstrip('.'))
         else:
             guard()
-            if digest(source, guard) != source_hash:
-                raise RuntimeError('Source hash changed')
+            workflow.verified_source_hash(source,source_hash)
             state.update(state='trials-completed', decision=decision)
         save(directory/'status.json', state)
         print(json.dumps(state, indent=2))

@@ -4,6 +4,20 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
+## Unreleased
+
+- Let a waiting inspection use a GPU reader verified by another job while it
+  was waiting. Readers already running finish normally; quality checks and
+  shared-server resource limits are unchanged.
+- Read complete Matroska containers with stray trailing bytes through a verified
+  temporary copy when those bytes cause reader errors. Keep the source unchanged,
+  report the recovery, and require the usual full validation before replacement.
+- Read a sample's missing pixel format from all its decoded pictures instead of
+  failing on an incomplete sample header. The pictures must match the source.
+- Preserve original audio packet durations in temporary Matroska samples when
+  muxing rounds them differently. Repeat packet, timing, picture and metadata
+  checks; do not relax timing tolerances or alter the source.
+
 ## 20261028-v66
 
 - Set up supported GPU inspection automatically inside the app. Compare a full
