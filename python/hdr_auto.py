@@ -110,6 +110,7 @@ def encode_preserved(workflow, source, output, settings, info, before, label, du
     args=SimpleNamespace(source=source,encoded=encoded,output_dir=workflow.directory,
         final_output=output,mode=workflow.hdr_mode,repair_only=True,
         reference_frames=workflow.frame_cache.get(str(source.resolve())),
+        reader_cache_root=getattr(workflow,'reader_cache_root',None),
         reference_hdr10plus_json=metadata,
         timeout=workflow.args.timeout,guard=workflow.guard,
         recover_empty_dv=bool(getattr(workflow.args,'dv_declaration_recovery',None)),

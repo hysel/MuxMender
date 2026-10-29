@@ -104,6 +104,7 @@ def standalone_wait_reason(catalog):
 def main():
     env=os.environ
     media,output,bind,port,hosts,password=config(env)
+    env['MUXMENDER_OUTPUT_ROOT']=str(output)
     catalog=Catalog(output,[output])
     expected='Basic '+base64.b64encode(('muxmender:'+password).encode()).decode()
     authorize=(lambda value:hmac.compare_digest(value,expected)) if password else None

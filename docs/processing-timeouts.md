@@ -28,26 +28,21 @@ measured inspection progress, so you can distinguish this from a rejected encode
 
 ## HDR inspection performance
 
-The automatic HDR reader and preservation finalizer now share the same bounded
-CPU-thread selection. Compact JSON keeps every frame field and HDR side-data
-value, including repeated keys, while reducing evidence-file I/O and storage.
-Neither change skips frames or relaxes quality and preservation checks.
+HDR inspection reads every frame, including its timing and color metadata. It
+can take longer than encoding when it needs the CPU reader. The current step
+shows which reader is in use.
 
-A bounded 120-frame UHD HDR source comparison measured roughly 5.9 seconds with
-both two and four slice threads. Compact JSON reduced evidence bytes by about
-35% with identical parsed frame data; it did not materially speed up decoding.
-Frame threading measured about 2.1 seconds on that sample, but remains research
-only because earlier tests found intermittent HDR metadata loss. This short
-result is not full-file qualification or a promise of a 2.8× job speedup.
+GPU frame inspection requires checks for the exact reader build, GPU, driver
+and video format. The app performs these checks automatically, using the complete
+CPU reference from the first matching video and generated damaged-input controls.
+It saves successful results in the output storage and reuses them for later jobs.
+No administrator script or special host mount is needed.
 
-A follow-up compared six longer sections (720 decoded frames each) at early,
-middle and late positions in two UHD HDR sources. All 4,320 frame records matched
-exactly, including repeated HDR metadata keys. Slice/frame elapsed seconds were
-38.0/12.0, 36.0/12.0, 38.0/14.0, 20.0/14.0, 18.0/14.0 and 18.0/12.0. These are
-bounded section measurements on a shared host, not whole-file timings. Source
-size and modification timestamps were unchanged; no media outputs were created.
+The first check adds a full GPU comparison to the normal CPU inspection. If an
+update changes the reader or compatibility rules, or the GPU or driver changes,
+the app checks again. Until it has a matching result with a measured speed benefit,
+it retains complete CPU inspection. GPU encoding can still work normally.
 
-The faster mode remains excluded from v45: matching these sections does not
-resolve the previously observed intermittent metadata loss or prove preservation
-across an entire file. Remaining qualification must include that regression and
-complete-file metadata/timing comparisons before changing the production reader.
+Raising the time limit gives a slow check more time; it does not make the check
+faster. Lowering quality settings does not speed up this metadata check either.
+The app never skips frames or drops preservation checks to meet a deadline.

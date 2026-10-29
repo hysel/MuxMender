@@ -63,6 +63,21 @@ Some checks can use the GPU only after that GPU and driver combination has been
 tested. Otherwise, they run on the CPU; GPU encoding can still work. Don't copy
 another server's acceleration record or disable quality checks to speed things up.
 
+The app checks GPU inspection automatically. On the first matching video, it
+uses the complete CPU reference to compare every GPU frame and tests deliberately
+damaged generated clips. This first check adds work; later matching jobs reuse
+the saved result. No host script or extra qualification mount is required.
+
+Results stay in private app storage under the output folder. Keep this storage
+when upgrading. A changed reader, GPU, driver or compatibility policy can require
+a fresh check, which the app handles itself. If a path cannot be qualified or
+would be slower, inspection stays on the CPU. Encoding can still use the GPU.
+
+With a resource profile that allows parallel work, two different GPU stages can
+share spare capacity after 30 seconds of healthy readings. Busy GPU engines,
+limited memory, storage pressure or another app needing the GPU delay new starts.
+The checks applied to each video stay the same.
+
 ### Age filters and time limits
 
 Use **File creation date** to select all files, files **Created within the last**

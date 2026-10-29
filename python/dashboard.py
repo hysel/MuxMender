@@ -229,7 +229,7 @@ class Catalog:
                                 row=dict(old)
                                 for key in ('phase','updated','stage_percent','stage_eta','stage_started',
                                             'workflow_stage','completed','total','unit','detail',
-                                            'performance_seconds','performance_scope','performance_category','performance_schema'):
+                                            'performance_seconds','performance_scope','performance_category','performance_schema','reader_qualification'):
                                     if key in live:row[key]=live[key]
                             elif live:
                                 self.cached_at=0  # Resolve final outcomes on next discovery.
@@ -372,6 +372,7 @@ class Catalog:
                     progress_kind=job.get('progress_kind', 'legacy'),
                     completed=job.get('completed'), total=job.get('total'), unit=job.get('unit', 'steps'),
                     detail=job.get('detail'), results=report.get('capabilities', []),
+                    reader_qualification=job.get('reader_qualification'),
                     samples=[{k:r.get(k) for k in ('test','passed','output','speed_x','size_change_percent','output_bytes')}
                              for r in report.get('results', []) if 'speed_x' in r],
                     environment=report.get('environment', {}),

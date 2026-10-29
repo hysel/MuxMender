@@ -17,6 +17,7 @@ from pathlib import Path
 import muxmender as mm
 from amd_av1_batch import disjoint, fingerprint
 from task_progress import digest, run_probe
+from source_timing import SourceTimingConflict
 from codec_selection import select_candidate, impossible_size_bound, EVALUATION_POLICY
 from dvd_av1_batch import save
 from encoder_capabilities import probe_encoder, nvidia_adapters, codec_order
@@ -417,6 +418,11 @@ class Workflow:
         self.worker_budget=None
         self.frame_reader_qualification=None
         self.frame_reader_checked=False
+        self.frame_reader_diagnostics=[]
+        from reader_qualification_cache import cache_root
+        self.reader_cache_root=cache_root(os.environ.get('MUXMENDER_OUTPUT_ROOT') or getattr(args,'output_dir',None))
+        original=getattr(args,'source',None)
+        self.reader_learning_sources={str(Path(original).resolve())} if original is not None else set()
 
     @staticmethod
     def audit_identity(path):
@@ -661,28 +667,38 @@ class Workflow:
 
     def frame_file(self, source, label, metadata=None):
         metadata=metadata if metadata is not None else self.probe(source)['format']
+        from reader_qualification import source_identity
+        learning_source=str(Path(source).resolve()) in self.reader_learning_sources
+        reader_before=source_identity(source) if learning_source else None
         path = self.directory/(label+'-frames.jsonl')
         from gpu_frame_reader import load_qualification
         if not self.frame_reader_checked and float(metadata['duration'])>=60:
-            self.frame_reader_qualification=load_qualification()
+            diagnostics=[]
+            self.frame_reader_qualification=load_qualification(diagnostics=diagnostics,app_storage=self.reader_cache_root)
+            self.frame_reader_diagnostics=diagnostics if self.frame_reader_qualification is None else []
+            if self.frame_reader_qualification is None and diagnostics:
+                progress('GPU frame reader needs qualification',detail=diagnostics[-1]['reason'],
+                         frame_reader_diagnostics=diagnostics)
             self.frame_reader_checked=True
         if self.hdr_mode:
-            from gpu_frame_reader import hdr_reader_request
+            from gpu_frame_reader import hdr_reader_request,reader_label
             video=main_video(self.probe(source)) if self.frame_reader_qualification else None
             command,options,plan=hdr_reader_request(self.args.ffprobe,source,video,metadata['duration'],
                 self.hdr_mode,self.frame_reader_qualification,[*self.reader_input_options(source),*self.decoder_options(source)],metadata.get('format_name'))
             progress('Selecting frame inspection backend',detail=plan['reason'])
             from gpu_admission import stage_context
             with stage_context(video):
-                run_probe(command,path,'Checking HDR frame timing: '+label+' · '+('GPU' if plan['backend']=='cuda' else 'CPU')+' reader',
+                result=run_probe(command,path,'Checking HDR frame timing: '+label+' · '+reader_label(plan,self.frame_reader_diagnostics),
                           self.args.timeout,self.guard,float(metadata['duration']),float(metadata.get('start_time',0)),**options)
             if path.with_suffix(path.suffix+'.stderr').stat().st_size:
                 raise ValueError('HDR frame decoder reported errors: '+label)
+            if plan['backend']=='cpu' and learning_source:
+                self.learn_frame_reader(source,path,metadata,result,reader_before)
             self.frame_cache[str(source.resolve())]=path
             return path
         # Bound CPU contention between queue workers. Do not drop side-data or
         # frames: identical validation fields and full EOF draining are retained.
-        from gpu_frame_reader import sdr_reader_request
+        from gpu_frame_reader import sdr_reader_request,reader_label
         from gpu_admission import stage_context
         video=main_video(self.probe(source)) if self.frame_reader_qualification else None
         command,options,plan=sdr_reader_request(self.args.ffprobe,source,video,metadata['duration'],
@@ -690,13 +706,28 @@ class Workflow:
             [*self.reader_input_options(source),*self.decoder_options(source)],metadata.get('format_name'))
         progress('Selecting frame inspection backend',detail=plan['reason'])
         with stage_context(video):
-            run_probe(command,path,'Checking frame timing: '+label+' · '+('GPU' if plan['backend']=='cuda' else 'CPU')+' reader',
+            result=run_probe(command,path,'Checking frame timing: '+label+' · '+reader_label(plan,self.frame_reader_diagnostics),
                       self.args.timeout,self.guard,float(metadata['duration']),float(metadata.get('start_time',0)),**options)
         if path.with_suffix(path.suffix+'.stderr').stat().st_size:
             raise ValueError('Frame decoder reported errors: '+label)
+        if plan['backend']=='cpu' and learning_source:
+            self.learn_frame_reader(source,path,metadata,result,reader_before)
         if any(row.get('best_effort_timestamp_time') in (None,'N/A') for row in compact_rows(path,'width')):
             return self.recover_mpeg4_tail(source,path,label)
         return path
+
+    def learn_frame_reader(self,source,reference,metadata,result,before):
+        if not sys.platform.startswith('linux') or not isinstance(result,dict) or result.get('strict_success') is not True:return
+        from reader_qualification import qualify
+        from gpu_frame_reader import merge_qualifications
+        video=main_video(self.probe(source))
+        profile=qualify(source,reference,video,self.hdr_mode or 'sdr',metadata.get('format_name'),
+            float(metadata['duration']),result,before,self.directory,
+            getattr(self.args,'ffmpeg','ffmpeg'),self.args.ffprobe,self.args.timeout,self.guard,
+            [*self.reader_input_options(source),*self.decoder_options(source)],storage=self.reader_cache_root)
+        if profile is not None:
+            self.frame_reader_qualification=merge_qualifications([q for q in (self.frame_reader_qualification,profile) if q is not None])
+            self.frame_reader_diagnostics=[]
 
     def recover_mpeg4_tail(self, source, evidence, label):
         """Recover a source-only absent final PTS using original coded clocks."""
@@ -1670,6 +1701,11 @@ def run(args):
     save(directory/'status.json', state)
     try:
         guard()
+        if not workflow.hdr_mode:
+            from media_metadata import essence_reader_options
+            workflow.essence_options[str(source.resolve())]=tuple(essence_reader_options(data))
+            from source_timing import check_tail
+            check_tail(workflow,source,data)
         source_hash = digest(source, guard)
         workflow.preflight_source(source,data,source_hash)
         state['source_audio_warnings']=workflow.audio_crc_warnings
@@ -1952,15 +1988,14 @@ def run(args):
             from validated_replace import readable_destination
             readable=readable_destination(source)
             output = directory/((readable.stem if readable.stem!=source.stem else 'full-'+settings['codec'])+workflow.output_suffix)
+            # A complete candidate's CPU inspection can qualify its output
+            # codec too. This never authorizes publication or learns from cuts.
+            workflow.reader_learning_sources.add(str(output.resolve()))
             # Full HDR evidence can exhaust the user's read budget. Collect it
             # before encoding, then reuse it for finalization and validation.
             if workflow.hdr_mode:
                 workflow_stage('inspect')
                 workflow.prepare_full_hdr_reference(source,data)
-            else:
-                workflow_stage('inspect')
-                from source_timing import check_tail
-                check_tail(workflow,source,data)
             workflow_stage('encode')
             workflow.encode_preserving_color(source,output,settings,info,data,'full-encode',duration)
             # Rejection needs no expensive full-picture validation. Encoding has
@@ -2010,6 +2045,16 @@ def run(args):
             state.update(state='trials-completed', decision=decision)
         save(directory/'status.json', state)
         print(json.dumps(state, indent=2))
+        return 0
+    except SourceTimingConflict as exc:
+        guard()
+        state.update(state='stopped-original-retained',
+                     source_issue=dict(code='source_timing_conflict',reason=str(exc)),
+                     full_validation_performed=False,encoding_started=False)
+        save(directory/'status.json',state)
+        progress('Original kept: source timing needs a separate repair',directory=directory,
+                 detail='Confirmed original packet conflict; no sample or full encoding started')
+        print(json.dumps(state,indent=2))
         return 0
     except BaseException as exc:
         state.update(state='stopped-original-retained', error=str(exc))

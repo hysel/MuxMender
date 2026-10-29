@@ -194,15 +194,20 @@ def finalize(args):
         if output.exists() or output.is_symlink() or output.resolve().parent not in (root,run):
             raise ValueError('Final output must be a new file in the owned output directory')
         duration=float(before['format']['duration'])
-        from gpu_frame_reader import load_qualification,hdr_reader_request
+        from gpu_frame_reader import load_qualification,hdr_reader_request,reader_label
         from gpu_admission import stage_context
-        qualification=load_qualification() if duration>=60 else None
+        diagnostics=[]
+        qualification=load_qualification(diagnostics=diagnostics,app_storage=getattr(args,'reader_cache_root',None)) if duration>=60 else None
+        if qualification is not None:diagnostics=[]
+        if qualification is None and diagnostics:
+            progress('GPU frame reader needs qualification',detail=diagnostics[-1]['reason'],
+                     frame_reader_diagnostics=diagnostics)
         def collect_frames(path,destination,label,reader_video):
             container=before['format'].get('format_name') if path==source else 'matroska,webm'
             argv,options,plan=hdr_reader_request(args.ffprobe,path,reader_video,duration,mode,qualification,container=container)
             progress('Selecting frame inspection backend',detail=plan['reason'])
             with stage_context(reader_video):
-                run_probe(argv,destination,label+' · '+('GPU' if plan['backend']=='cuda' else 'CPU')+' reader',args.timeout,guard,duration,**options)
+                run_probe(argv,destination,label+' · '+reader_label(plan,diagnostics),args.timeout,guard,duration,**options)
         source_frames=getattr(args,'reference_frames',None)
         if source_frames is None:
             source_frames=run/'source-frames.json'

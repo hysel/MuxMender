@@ -68,7 +68,7 @@ from validation_resources import validation_limited
 
 
 @validation_limited
-def run_probe(command,path,label,timeout,guard,duration=None,start=0,env=None):
+def run_probe(command,path,label,timeout,guard,duration=None,start=0,env=None,*,expected_fixture_rejection=False):
     from cooperative_pause import configured_lease, OwnedStagePause, launch_owned
     from job_tracking import measured_operation
     lease=configured_lease(command,env)
@@ -110,9 +110,11 @@ def run_probe(command,path,label,timeout,guard,duration=None,start=0,env=None):
                 try:
                     code=child.wait(timeout=min(2,remaining));break
                 except subprocess.TimeoutExpired:pass
-            if code:raise subprocess.CalledProcessError(code,command)
+            if code and not (expected_fixture_rejection and code==1):raise subprocess.CalledProcessError(code,command)
         except BaseException:
             child.kill();child.wait();raise
         finally:
             if pause_measurement is not None:pause_measurement.__exit__(None,None,None)
     progress(label,stage_percent=100,stage_eta=0,detail='Evidence collection complete; validation continues')
+    return dict(seconds=time.monotonic()-started,returncode=code,error='',
+                strict_success=code==0 and path.with_suffix(path.suffix+'.stderr').stat().st_size==0)

@@ -741,6 +741,12 @@ class Controls(CopyApproval, WorkspaceHistory):
                                 job['decision_code']='replacement_qualification_required'
                             job['original_bytes']=job['signature'][0]
                             job['output_bytes']=candidate.stat().st_size
+                    elif (stage=='stopped-original-retained' and result.get('original_retained') is True
+                          and result.get('source')==job['source']
+                          and isinstance(result.get('source_issue'),dict)
+                          and result['source_issue'].get('code')=='source_timing_conflict'):
+                        state,reason='skipped',result['source_issue']['reason']
+                        job.update(decision_code='source_timing_conflict',outcome_category='source_issue',history_decision=True)
                     elif stage=='trials-completed':
                         decision=result.get('decision',{})
                         state='tested' if decision.get('action')=='encode_copy' else 'skipped'

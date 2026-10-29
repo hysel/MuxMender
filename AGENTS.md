@@ -51,6 +51,14 @@ explicit approval to defer that specific error before proceeding. General
 approval to commit or release does not authorize deferring known errors.
 Never bypass quality or preservation checks merely to make a failure disappear.
 
+# Automatic reader compatibility
+
+Increment `reader_qualification_cache.POLICY_VERSION` when changing reader proof
+requirements, field comparisons or the meaning of damaged-input controls. Verify
+that old successful evidence is rechecked automatically, including administrator
+receipts. Ordinary app updates may reuse unchanged valid proofs; failed self-tests
+must be retried after an app update without requiring a host script.
+
 # Existing source audio issues
 
 Existing audio decoding defects (including CRC errors) are reported warnings,

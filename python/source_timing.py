@@ -7,6 +7,10 @@ from artifact_manifest import stamp
 from task_progress import run_probe
 
 
+class SourceTimingConflict(ValueError):
+    """Decoded source clock conflict independently confirmed in source packets."""
+
+
 def terminal_conflict(frames, packets):
     """Confirm a decoded clock conflict against the original compressed packets."""
     by_position={str(row['pos']):row for row in packets if row.get('pos') not in (None,'N/A')}
@@ -71,5 +75,5 @@ def check_tail(workflow, source, metadata):
         scope='terminal-window-only',seconds=10,decoded_frames=len(rows),
         conflict=conflict,full_validation_still_required=True,source_unchanged=True))
     if conflict:
-        raise ValueError('Original video has conflicting presentation timestamps near its end. '
+        raise SourceTimingConflict('Original video has conflicting presentation timestamps near its end. '
                          'Original retained before full encoding; a separate timestamp repair would be required.')
