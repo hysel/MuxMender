@@ -20,6 +20,24 @@ Adding work after an empty or cancelled queue normally starts it automatically.
 An intentional pause or recovery pause still needs Resume. Waiting for resources
 is different from being paused.
 
+## Restart a cancelled queue (next release)
+
+Once cancellation has finished and the queue is empty, choose **Restart cancelled
+jobs**. Review the videos and confirm. The app adds fresh attempts with their
+previous settings and starts them automatically. You do not need to select the
+folders again.
+
+This restores the last cancellation, including jobs from multiple folders.
+Completed jobs stay completed, and the old cancelled entries remain in history.
+A video cancelled during encoding starts again from the beginning. A cancelled
+replacement of an approved copy reuses that copy if it is still valid.
+
+The review explains any exclusions, such as missing or changed sources, a newer
+request for the same video, or an unfinished replacement that needs recovery.
+Items you removed individually are not restored. For cancellations recorded by
+older app versions, only the most recently cancelled batch is available.
+You can close the review without restarting anything.
+
 ## Share the server
 
 The resource profile controls how much parallel work the app may admit. A faster

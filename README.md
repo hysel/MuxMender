@@ -302,3 +302,10 @@ Development test suites and experimental tools are maintained separately; they
 are not installation or everyday-use steps.
 For help, open an issue with the app version and sanitized error details; leave
 out private paths and video names.
+
+### Restart cancelled work (next release)
+
+After cancellation finishes, **Restart cancelled jobs** lets you review and
+restart the last cancelled queue with its previous settings. Completed work stays
+completed. Encoding starts again for an interrupted video; history is retained.
+See [Manage the queue](docs/wiki/Queue.md) for exclusions and approved-copy behavior.

@@ -11,7 +11,7 @@ from pathlib import Path
 from autonomous_queue import read, signature
 
 ACTIVE = ('pending', 'running')
-RETRYABLE = ('failed', 'interrupted', 'skipped')
+RETRYABLE = ('failed', 'interrupted', 'skipped', 'cancelled')
 from replacement_cleanup import MEDIA as GENERATED_MEDIA
 
 
@@ -92,12 +92,19 @@ class WorkspaceHistory:
             if action == 'retry-preview':
                 if not info['retry_allowed']:
                     raise ValueError('Retry is blocked: active, successful or publication-recovery work must not be repeated')
+                if job.get('publication_only'):
+                    raise ValueError('Use Restart cancelled jobs to resume this approved-copy replacement without re-encoding.')
                 source = self.resolve(job['source'])
                 if signature(source) != job['signature']:
                     raise ValueError('Source changed. Select it again and review a new request.')
                 settings = {k: v for k, v in job['settings'].items() if k != 'codecs'}
                 settings.update(path=job['source'], recheck=False, history_mode='retry')
+                # The original request already selected this exact file. Its
+                # relative creation-age window must not expire during a retry.
+                age={k:settings[k] for k in ('age_unit','age_value','age_comparison') if k in settings}
+                settings.update(age_unit='all',age_value=None,age_comparison='within')
                 draft = self.preview(settings)
+                self.drafts[draft['preview_id']]['settings'].update(age)
                 self.drafts[draft['preview_id']]['retry_of'] = job['id']
                 return draft
             if not info['cleanup_allowed']:

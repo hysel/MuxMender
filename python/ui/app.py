@@ -74,7 +74,7 @@ HTML=HTML.replace('<div id="current-work">',
     '<p id="queue-action-status" class="control-note" role="status" aria-live="polite">Connecting to queue controls…</p><p id="queue-clear-feedback" role="status" aria-live="polite"></p><div id="current-work">',1)
 HTML=HTML.replace('</main>', '''<dialog id="queue-clear-dialog" aria-labelledby="queue-clear-title" aria-describedby="queue-clear-description">
 <div class="queue-dialog-heading"><h2 id="queue-clear-title">Cancel jobs?</h2><button id="queue-clear-close" type="button" aria-label="Close cancel jobs dialog">×</button></div><p id="queue-clear-description"></p>
-<p>Active processing stops and waiting jobs are cancelled. The queue pauses. A replacement already committing finishes safely. History is kept; you can retry cancelled videos later.</p>
+<p>Active processing stops and waiting jobs are cancelled. The queue pauses. A replacement already committing finishes safely. History is kept. After stopping finishes, use Restart cancelled jobs to bring these requests back.</p>
 <p id="queue-clear-error" role="alert"></p><div class="control-actions"><button id="queue-clear-cancel" type="button" autofocus>Go back</button><button id="queue-clear-confirm" type="button">Cancel jobs</button></div></dialog></main>''',1)
 HTML=HTML.replace('</head>','<style>dialog{max-width:min(540px,calc(100vw - 32px));border:1px solid var(--border);border-radius:14px;padding:24px;background:var(--panel);color:var(--text)}dialog::backdrop{background:rgb(0 0 0 / .5)}.queue-dialog-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}.queue-dialog-heading h2{margin:0}.queue-dialog-heading button{min-width:44px;min-height:44px;font-size:24px}</style></head>')
 
@@ -101,3 +101,8 @@ HTML=HTML.replace('<strong id="queue-running">—</strong>',
 HTML=HTML.replace('<strong id="queue-waiting">—</strong>',
     '<strong id="queue-waiting">—</strong><small id="queue-waiting-size" class="queue-file-size">—</small>')
 HTML=HTML.replace('</head>', '<style>.queue-file-size{grid-column:1 / -1;color:var(--muted);font-size:.75rem;overflow-wrap:anywhere}.waiting-video-size{display:block;color:var(--muted);font-size:.72rem;margin-top:2px}#queue-source-size{font-size:.78rem;margin:6px 0 8px}</style></head>')
+
+from ui.queue_restart import HTML as RESTART_DIALOG,SCRIPT as RESTART_SCRIPT
+HTML=HTML.replace('<button id="clear-waiting-queue"',
+    '<button id="restart-cancelled-queue" type="button" hidden disabled>Restart cancelled jobs</button><button id="clear-waiting-queue"',1)
+HTML=HTML.replace('</body>',RESTART_DIALOG+RESTART_SCRIPT+'</body>')
