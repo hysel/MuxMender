@@ -78,7 +78,7 @@ share spare capacity after 30 seconds of healthy readings. Busy GPU engines,
 limited memory, storage pressure or another app needing the GPU delay new starts.
 The checks applied to each video stay the same.
 
-The upcoming release also checks for a newly verified GPU reader while an
+The app also checks for a newly verified GPU reader while an
 inspection is waiting for resources. If another job has completed the matching
 qualification, the waiting check can switch before it starts. This needs no
 setting change. An inspection already running is allowed to finish.

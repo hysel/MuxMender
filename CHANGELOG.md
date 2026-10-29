@@ -4,7 +4,7 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
-## Unreleased
+## 20261029-v67
 
 - Let a waiting inspection use a GPU reader verified by another job while it
   was waiting. Readers already running finish normally; quality checks and
