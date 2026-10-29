@@ -4,8 +4,23 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
-## Unreleased
+## 20261028-v66
 
+- Set up supported GPU inspection automatically inside the app. Compare a full
+  CPU/GPU reference and damaged-input controls once, save verified results in
+  private output storage, and reuse matching checks after restarts and updates.
+  No host qualification script, extra mount or new environment setting is needed.
+  Show the outcome in job details; keep full CPU inspection when a check fails.
+
+- Allow two different GPU stages to share spare capacity after sustained healthy
+  resource readings. Keep the two-stage limit, resource backoff and GPU sharing
+  controls; mixed workloads do not count as measured throughput improvements.
+- Explain when an updated GPU frame reader needs fresh qualification instead of
+  silently falling back to lengthy CPU inspection. Existing reader integrity,
+  picture quality and preservation checks remain required.
+- Check source video timing before sample encoding and expensive preflight
+  work. Report confirmed source timestamp conflicts as **Source timing issue —
+  original kept**, separately from processing failures.
 - Recover AVI samples whose copied audio clock rounds differently from the
   video clock. Restore only the temporary sample's timestamps from matching
   original packets, then repeat normal picture, timing and copied-track checks.

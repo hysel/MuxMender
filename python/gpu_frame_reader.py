@@ -1,9 +1,9 @@
 """Select an attested native reader without changing any media validation gate.
 
-An image qualification receipt is installed alongside the reader by the release
-process, not supplied by a media file or dashboard request. Unsupported hardware
-or scope keeps the CPU reader; a selected reader's decode error is never retried
-as a success on another backend.
+Release/admin receipts and private app-computed evidence are verified separately;
+neither comes from a media file or dashboard request. Unsupported hardware or
+scope keeps the CPU reader; a selected reader's decode error is never retried as
+a success on another backend.
 """
 import hashlib
 import json
@@ -56,28 +56,54 @@ def trusted_file(path,limit):
         return stream.read(limit+1)
 
 
-def load_qualification(root=READER_ROOT,qualification_root=None):
+def load_qualification(root=READER_ROOT,qualification_root=None,diagnostics=None,app_storage=None):
     """Reuse host evidence across updates only when the shipped binary still matches.
 
     The optional host mount is administrator-owned and read-only in the app;
     it is never loaded from writable output/media or selected by a web request.
-    Existing private image receipts remain supported.
+    App-owned, complete comparison evidence is loaded from private persistent
+    state as well. Administrator mounts are a compatibility path, not required.
     """
     if not sys.platform.startswith('linux'):return None
     roots=[Path(qualification_root)] if qualification_root is not None else [Path(root),HOST_QUALIFICATION_ROOT]
+    profiles=[]
     for receipt_root in roots:
-        result=_load_qualification(Path(root),receipt_root)
-        if result is not None:return result
-    return None
+        result=_load_qualification(Path(root),receipt_root,diagnostics)
+        if result is not None:profiles.append(result)
+    if qualification_root is None:
+        from reader_qualification_cache import load_profile
+        cached=load_profile(root,app_storage)
+        if cached is not None:profiles.append(cached)
+    return merge_qualifications(profiles)
 
 
-def _load_qualification(root,receipt_root):
+def merge_qualifications(profiles):
+    if not profiles:return None
+    result=dict(profiles[0],scopes=list(profiles[0].get('scopes',[])))
+    for profile in profiles[1:]:
+        if any(profile.get(k)!=result.get(k) for k in ('binary','binary_sha256','adapter')):continue
+        for scope in profile.get('scopes',[]):
+            if scope not in result['scopes']:result['scopes'].append(scope)
+    return result
+
+
+def _load_qualification(root,receipt_root,diagnostics=None):
     try:
         receipt=json.loads(trusted_file(receipt_root/'qualification.json',65536))
         if not isinstance(receipt,dict) or receipt.get('schema')!=1:return None
+        from reader_qualification_cache import POLICY_VERSION
+        # Older administrator receipts belong to the original policy. A future
+        # policy change must not silently bypass fresh automatic checks.
+        policy=receipt.get('reader_policy',1)
+        if type(policy) is not int or policy!=POLICY_VERSION:return None
         binary=root/'ffprobe-cuda'
         data=trusted_file(binary,64*1024*1024)
-        if hashlib.sha256(data).hexdigest()!=receipt.get('binary_sha256'):return None
+        digest=hashlib.sha256(data).hexdigest()
+        if digest!=receipt.get('binary_sha256'):
+            if diagnostics is not None:
+                diagnostics.append(dict(code='reader_build_changed',reason=
+                    'The GPU reader was updated. The app will use a complete CPU reference for automatic compatibility checks.'))
+            return None
         if not os.access(binary,os.X_OK):return None
         from encoder_capabilities import nvidia_adapters
         adapters=nvidia_adapters()
@@ -94,9 +120,9 @@ def _load_qualification(root,receipt_root):
     except (OSError,ValueError,TypeError):return None
 
 
-def select_reader(video,duration,hdr_mode,qualification):
+def select_reader(video,duration,hdr_mode,qualification,*,container=None):
     """Pure planning; CPU fallback is a backend choice, never an input rejection."""
-    cpu=dict(backend='cpu',reason='Using the existing complete CPU frame reader')
+    cpu=dict(backend='cpu',reason='Using complete CPU inspection; supported GPU paths are checked automatically')
     if not isinstance(qualification,dict) or not isinstance(video,dict):return cpu
     side_data=video.get('side_data_list',[])
     if isinstance(side_data,list) and any(isinstance(item,dict) and
@@ -113,6 +139,11 @@ def select_reader(video,duration,hdr_mode,qualification):
         if not isinstance(modes,list):continue
         if (scope.get('codec')!=video.get('codec_name') or scope.get('pixel_format')!=video.get('pix_fmt')
                 or hdr_mode not in modes):continue
+        if container is not None and scope.get('containers') is not None:
+            names=set(container.split(',')) if isinstance(container,str) else set()
+            covered=scope['containers']
+            if (not names or not isinstance(covered,list) or not all(isinstance(n,str) for n in covered)
+                    or not names<=set(covered)):continue
         reduction=scope.get('time_reduction_percent')
         if type(reduction) not in (int,float) or not math.isfinite(reduction) or reduction<=0:continue
         binary=qualification.get('binary')
@@ -126,12 +157,19 @@ def reader_environment():
     return dict(os.environ,MUXMENDER_RESEARCH_CUDA_READER='1')
 
 
+def reader_label(plan,diagnostics=()):
+    if plan['backend']=='cuda':return 'GPU reader'
+    if any(item.get('code')=='reader_build_changed' for item in diagnostics):
+        return 'CPU reader (automatic GPU setup)'
+    return 'CPU reader'
+
+
 SDR_FRAME_FIELDS='pts_time,best_effort_timestamp_time,width,height,pix_fmt,sample_aspect_ratio,interlaced_frame,top_field_first,repeat_pict,color_primaries,color_transfer,color_space,color_range'
 
 
 def sdr_reader_request(cpu,source,video,duration,qualification,threads=2,decoder_options=(),container=None):
     """Complete SDR inspection with exactly the existing fields and output syntax."""
-    plan=select_reader(video,float(duration),'sdr',qualification)
+    plan=select_reader(video,float(duration),'sdr',qualification,container=container)
     names=set(container.split(',')) if isinstance(container,str) else set()
     if plan['backend']=='cuda' and (not names or not names<=NATIVE_DEMUXERS):
         plan=dict(backend='cpu',reason='This native reader lacks the container reader; complete CPU inspection is retained')
@@ -151,7 +189,7 @@ def sdr_reader_request(cpu,source,video,duration,qualification,threads=2,decoder
 def hdr_reader_request(cpu,source,video,duration,mode,qualification,decoder_options=(),container=None):
     """One command policy for automatic and preservation frame-reader callers."""
     from decoder_context import hdr_reader_options
-    plan=select_reader(video,float(duration),mode,qualification)
+    plan=select_reader(video,float(duration),mode,qualification,container=container)
     names=set(container.split(',')) if isinstance(container,str) else set()
     if plan['backend']=='cuda' and (not names or not names<=NATIVE_DEMUXERS):
         plan=dict(backend='cpu',reason='This native reader lacks the container reader; complete CPU inspection is retained')

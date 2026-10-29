@@ -64,6 +64,9 @@ def load(path):
         groups=value.get('groups',{});active=value.get('active',{})
         if not isinstance(groups,dict) or len(groups)>16 or not isinstance(active,dict) or len(active)>2:return {}
         if not isinstance(value.get('status',{}),dict):return {}
+        mixed=value.get('mixed',{})
+        if not isinstance(mixed,dict):return {}
+        if any(mixed.get(k) is not None and not finite(mixed[k]) for k in ('healthy_since','cooldown','sampled_at')):return {}
         for group in groups.values():
             if not isinstance(group,dict) or group.get('mode') not in ('serial','trial','parallel'):return {}
             for field in ('single','paired'):
@@ -88,6 +91,16 @@ def save(path,state):
 def decide(state,data,key,now,waiting,maximum=2,paused=False):
     state.setdefault('schema',1);groups=state.setdefault('groups',{})
     good,reason=headroom(data)
+    # Different work cannot share throughput baselines. It can still share
+    # spare hardware after sustained headroom; keep that admission independent
+    # of the per-family experiment and never label it a measured speed gain.
+    mixed=state.setdefault('mixed',{})
+    if not good or paused or maximum<2:
+        mixed['healthy_since']=None
+    elif (mixed.get('healthy_since') is None or mixed.get('sampled_at') is None or
+          not 0<=now-mixed['sampled_at']<=10):
+        mixed['healthy_since']=now
+    mixed['sampled_at']=now
     group=groups.setdefault(key or 'unknown',dict(single=[],paired=[],mode='serial',updated=now))
     group['updated']=now
     for old in sorted(groups,key=lambda k:groups[k].get('updated',0))[:-16]:groups.pop(old,None)
@@ -110,13 +123,31 @@ def decide(state,data,key,now,waiting,maximum=2,paused=False):
         if group.get('mode')=='trial' and now-group.get('trial_started',now)>300:
             group.update(mode='serial',paired=[],cooldown=now+600)
             limit=1;reason='Two-stage experiment timed out; serial admission restored'
+    active=state.get('active',{})
+    different=bool(active) and any(record.get('family')!=key for record in active.values())
+    if different:
+        allowed=(good and not paused and maximum>=2 and bool(key) and
+                 all(record.get('family') for record in active.values()) and
+                 waiting>=5 and mixed.get('healthy_since') is not None and
+                 now-mixed['healthy_since']>=30 and now>=mixed.get('cooldown',0))
+        limit=2 if allowed else 1
+        if good and not paused and maximum>=2 and key:
+            reason=('Two different GPU stages admitted with sustained resource headroom; throughput gain not measured'
+                    if allowed else 'Waiting for sustained headroom before sharing different GPU stages')
+    if good and not paused and maximum>=2 and now<mixed.get('cooldown',0):
+        limit=1;reason='Draining to one GPU stage after a mixed-stage failure'
     state['status']=dict(limit=limit,reason=reason,updated=now,baseline_samples=len(group.get('single',[])),
-                         trial_samples=len(group.get('paired',[])),throughput_gain=group.get('gain'),
+                         trial_samples=len(group.get('paired',[])),throughput_gain=None if different else group.get('gain'),
                          policy='Bounded GPU-stage learning; pressure drains workers, never interrupts publication')
     return limit
 
 
-def observe(state,key,work,elapsed,overlap,success,now):
+def observe(state,key,work,elapsed,overlap,success,now,mixed=False):
+    if mixed:
+        # Do not count a mixed pair as two comparable workers, or contaminate
+        # either family's serial baseline. Failures temporarily drain to one.
+        if not success:state.setdefault('mixed',{}).update(healthy_since=None,cooldown=now+600)
+        return
     if not key:return
     group=state.get('groups',{}).get(key)
     if not group:return

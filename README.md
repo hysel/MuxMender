@@ -30,6 +30,12 @@ the repository, build an image on TrueNAS, or run conversion scripts. Once the
 container is installed, select videos, set options and manage jobs in the browser.
 Release testing is handled separately by maintainers. You do not need research
 containers, qualification scripts or administrator helper commands to use the app.
+GPU inspection checks also run inside the app. The first matching video may
+need a complete CPU/GPU comparison; later jobs reuse the saved result when the
+reader, GPU and driver still match. Keep the output storage persistent to retain
+these checks and job history across updates. No separate qualification mount or
+administrator script is needed.
+
 See the [release notes and known limits](https://github.com/hysel/MuxMender/releases)
 and [installation guide](docs/wiki/Installation.md). Start with a small folder
 and safe-copy mode; publishing a new image does not update your installed app.

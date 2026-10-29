@@ -16,6 +16,8 @@ clone this repository, build on TrueNAS or run a release script. After installat
 select files, choose settings, manage the queue and review results in the browser.
 Maintainers run release checks separately. You do not need research containers,
 qualification scripts or administrator helper commands for everyday use.
+GPU inspection compatibility is checked automatically inside the app. Keep the
+output storage persistent so saved checks and job history survive upgrades.
 
 ## What you need
 

@@ -197,9 +197,6 @@ def validation_slot(command,guard=lambda:None,timeout=None,*,pool='validation',e
                         key=family(command,estimated_duration)
                         maximum=1 if (os.environ if env is None else env).get('MUXMENDER_GPU_STAGE_MAX')=='1' else 2
                         capacity=decide(gpu_state,gpu_telemetry,key,time.time(),time.monotonic()-started,maximum,paused)
-                        if any(a.get('family')!=key for a in active.values()):
-                            capacity=1
-                            gpu_state['status'].update(limit=1,reason='Waiting for a comparable GPU-stage family')
                         save(path/'adaptive.json',gpu_state)
                     if ticket is None:
                         # Monotonically increasing order even if wall time changes.
@@ -278,10 +275,12 @@ def validation_slot(command,guard=lambda:None,timeout=None,*,pool='validation',e
                                     fd=candidate;slot_name=name;ticket.unlink()
                                     if gpu_state is not None:
                                         gpu_started=time.monotonic()
+                                        mixed=any(record.get('mixed') or record.get('family')!=key for record in gpu_state['active'].values())
                                         for record in gpu_state['active'].values():
                                             record.update(overlap=True,overlap_started=gpu_started)
+                                            if mixed:record['mixed']=True
                                         gpu_state['active'][name]=dict(family=key,overlap=bool(gpu_state['active']),
-                                            overlap_seconds=0,overlap_started=gpu_started if gpu_state['active'] else None)
+                                            mixed=mixed,overlap_seconds=0,overlap_started=gpu_started if gpu_state['active'] else None)
                                         save(path/'adaptive.json',gpu_state)
                                     break
                         except BlockingIOError:pass
@@ -318,7 +317,7 @@ def validation_slot(command,guard=lambda:None,timeout=None,*,pool='validation',e
                         other['overlap_seconds']=other.get('overlap_seconds',0)+max(0,ended-other['overlap_started'])
                         other['overlap_started']=None
                 observe(state,record.get('family'),estimated_duration,elapsed,
-                        min(1,overlap/elapsed) if elapsed>0 else 0,succeeded,time.time())
+                        min(1,overlap/elapsed) if elapsed>0 else 0,succeeded,time.time(),mixed=record.get('mixed',False))
                 save(path/'adaptive.json',state)
             except (OSError,ValueError,TypeError):
                 # Learning is optional evidence. Never strand an OS slot or

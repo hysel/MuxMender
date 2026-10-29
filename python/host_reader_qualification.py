@@ -4,11 +4,13 @@ import json
 from gpu_reader_receipt import qualified_scope
 
 
-def verified_receipt(receipt, evidence, binary):
-    """Pure verification shared by the administrator installer and tests.
+def verified_receipt(receipt, evidence, binary, *, maximum_pairs=8):
+    """Pure verification shared by the installer, private app cache and tests.
 
     This neither grants new scopes nor turns generated controls into full-source
     evidence. Runtime GPU/driver attestation remains the loader's responsibility.
+    The bounded app cache can retain more format pairs than an installer bundle;
+    every pair still requires the same complete proof.
     """
     if not isinstance(receipt, dict) or not isinstance(evidence, dict):
         raise ValueError('Qualification metadata must be structured')
@@ -23,8 +25,9 @@ def verified_receipt(receipt, evidence, binary):
         raise ValueError('Device visibility binding is incomplete')
     if any(value is not None and not isinstance(value,str) for value in visibility.values()):
         raise ValueError('Invalid device visibility binding')
+    if type(maximum_pairs) is not int or not 1<=maximum_pairs<=32:raise ValueError('Invalid reader evidence budget')
     pairs=evidence.get('pairs')
-    if not isinstance(pairs,list) or not 1<=len(pairs)<=8:
+    if not isinstance(pairs,list) or not 1<=len(pairs)<=maximum_pairs:
         raise ValueError('Complete reader evidence pairs are required')
     scopes=[]
     for pair in pairs:

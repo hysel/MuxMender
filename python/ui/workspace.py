@@ -30,6 +30,7 @@ function sourceAudioNotice(job){
   ?'Audio warning: the original audio had decoding issues and was kept unchanged. Those issues remain.'
   :'Audio warning: the source already has decoding issues. Video conversion does not repair the audio.';
 }
+function readerStatusText(job){const q=job.reader_qualification;if(!q)return '';if(q.state==='qualified')return 'GPU inspection setup passed for '+String(q.codec||'video').toUpperCase()+' ('+String(q.mode||'').toUpperCase()+'). Saved for matching future jobs.';if(q.state==='cpu_fallback')return 'Inspection stays on the CPU. GPU check: '+String(q.reason||'Compatibility was not established.');return ''}
 function userReasonBase(job){const raw=String(job.reason||job.detail||job.error||'');const s=job.state;
  if(job.publication_only&&s==='pending')return 'Approved replacement is waiting for its turn. The existing safe copy will be used; no re-encoding.';
  if(job.publication_only&&s==='running')return 'Verifying and publishing the approved copy. The original is removed only after verified publication.';
@@ -155,6 +156,7 @@ function renderActiveCard(job){
  detail.open=activeDetailViews.has(detailKey);
  detail.addEventListener('toggle',()=>{if(detail.open)activeDetailViews.add(detailKey);else activeDetailViews.delete(detailKey)});
  if(job.detail)detail.append(userNode('p',job.detail,'control-note'));
+ if(readerStatusText(job))detail.append(userNode('p',readerStatusText(job),'control-note'));
  detail.append(userNode('p','Percent and ETA apply to the current check only. Stages contain multiple checks; their durations are not equal.','control-note'));
  const measured=Object.entries(job.performance_seconds||{}).filter(([,v])=>Number.isFinite(v)&&v>0);
  if(measured.length&&job.performance_schema>=2){
