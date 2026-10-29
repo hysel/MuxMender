@@ -398,6 +398,7 @@ class Controls(CopyApproval, WorkspaceHistory):
                 server_time=time.time())
             if result['snapshot_stale'] or result['snapshot_error']:
                 result['wait_reason']='Queue paused.' if live['paused'] else live['error'] or (
+                    'Jobs are running. Resource details are updating.' if counts.get('running') else
                     'Waiting for worker admission; resource readings are delayed.' if counts.get('pending') else None)
             return result
 

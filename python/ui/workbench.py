@@ -89,6 +89,7 @@ main{background:var(--bg);border-left:1px solid var(--hairline);border-right:1px
 .job-progress-fill::after{content:'';position:absolute;inset:0;background:repeating-linear-gradient(90deg,transparent 0 12px,var(--panel) 12px 14px);opacity:.45;pointer-events:none}
 .job-progress-head .check-progress{font-family:Consolas,monospace;font-weight:700}
 .job-phase,.job-timing{max-width:65ch}
+.task-explanation{display:block;font-size:.72rem;line-height:1.4;color:var(--muted);margin-top:3px}
 button,.button,.primary,input:not([type=checkbox]),select{border-radius:0}
 button,.button{border-bottom-width:2px}
 .primary{box-shadow:inset 0 0 0 1px var(--panel)}
