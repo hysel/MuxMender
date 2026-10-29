@@ -6,6 +6,11 @@ The version notes below describe the changes included in each package.
 
 ## Unreleased
 
+- Avoid an extra GPU scheduling delay after allowing validation to catch up.
+  Keep GPU-sharing pauses, pressure backoff and concurrency limits in place.
+- Reuse GPU workload measurements when only a generated metric report filename
+  changes; retain separate measurements for different processing settings.
+
 - Restart the last cancelled queue from the UI, keeping its previous settings
   and history. Review eligible videos before starting fresh attempts; completed
   jobs and individually removed items stay untouched.
