@@ -25,6 +25,24 @@ Cancelled attempts appear in completed results, separately from errors. Older
 failed attempts remain in history until a later retry produces a new result.
 
 
+## Time and encoding details (next release)
+
+Open a video's **Details** to see where its recorded processing time went:
+encoding, picture quality checks, file checks, resource waits and pauses. These
+bars show shares of recorded time, not completion percentages. Time waiting in
+the queue before processing and unrecorded gaps are excluded. Older attempts
+may have no breakdown; the app says when evidence is unavailable or cannot be
+combined safely. **Refresh report** updates an open report without changing the
+queue.
+
+**Why this encoding was chosen** compares the tested options and explains why
+an option won or was rejected. Sample encoding times exclude queue waits and
+GPU-sharing pauses. The clip counts matter: a trial stopped after one clip
+cannot be compared directly with a total for three clips. Sample size and speed
+estimates do not guarantee the full-file result or approve a replacement.
+Reports load when you open Details, so a large history does not add report-file
+scans to normal dashboard refreshes.
+
 ## Warnings about original audio
 
 Some source files already have audio decoding problems, such as CRC errors.

@@ -6,6 +6,10 @@ The version notes below describe the changes included in each package.
 
 ## Unreleased
 
+- Add an on-demand time breakdown and encoding-choice comparison inside each
+  video's Details. Distinguish measured work, waiting, partial sample coverage
+  and missing older evidence without adding report scans to live polling.
+
 - Compare up to two faster NVIDIA presets for longer videos after finding a
   passing candidate. Prefer a measured speed gain only within a bounded size
   tradeoff; keep the selected quality, savings and full-file validation checks.

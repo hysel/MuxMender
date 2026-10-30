@@ -488,6 +488,12 @@ class Controls(CopyApproval, WorkspaceHistory, CancelledQueue):
 
     def action(self, data):
         action=data.get('action')
+        if action=='result-insights':
+            with self.mutex:
+                job=next((dict(j) for j in self.state['jobs'] if j['id']==data.get('job_id')),None)
+            if job is None:raise ValueError('Unknown request')
+            from result_insights import result_insights
+            return result_insights(self.request_folder(job),job)
         if action in ('restart-cancelled-preview','restart-cancelled-confirm'):return self.restart_cancelled(data)
         if action in ('approve-copy-preview','approve-copy-confirm'):return self.copy_action(data)
         if action=='remove-queued':return self.remove_queued(data.get('id'))
