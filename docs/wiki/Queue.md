@@ -20,7 +20,7 @@ Adding work after an empty or cancelled queue normally starts it automatically.
 An intentional pause or recovery pause still needs Resume. Waiting for resources
 is different from being paused.
 
-## Restart a cancelled queue (next release)
+## Restart a cancelled queue
 
 Once cancellation has finished and the queue is empty, choose **Restart cancelled
 jobs**. Review the videos and confirm. The app adds fresh attempts with their

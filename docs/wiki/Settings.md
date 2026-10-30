@@ -96,7 +96,7 @@ A processing time limit applies to individual stages, not the entire batch.
 Change it before adding jobs. New settings don't rewrite requests already in
 the queue.
 
-## Encoding speed (next release)
+## Encoding speed
 
 For videos at least five minutes long, automatic encoding can compare up to two
 faster NVIDIA presets after finding a passing option. It uses the same source
