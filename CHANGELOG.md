@@ -4,7 +4,7 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
-## Unreleased
+## 20261030-v69
 
 - Add an on-demand time breakdown and encoding-choice comparison inside each
   video's Details. Distinguish measured work, waiting, partial sample coverage

@@ -25,7 +25,7 @@ Cancelled attempts appear in completed results, separately from errors. Older
 failed attempts remain in history until a later retry produces a new result.
 
 
-## Time and encoding details (next release)
+## Time and encoding details
 
 Open a video's **Details** to see where its recorded processing time went:
 encoding, picture quality checks, file checks, resource waits and pauses. These

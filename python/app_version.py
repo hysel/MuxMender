@@ -1,2 +1,2 @@
 """Release identity shared by the service, durable requests and UI."""
-VERSION = '20261029-v68'
+VERSION = '20261030-v69'
