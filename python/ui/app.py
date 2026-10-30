@@ -106,3 +106,6 @@ from ui.queue_restart import HTML as RESTART_DIALOG,SCRIPT as RESTART_SCRIPT
 HTML=HTML.replace('<button id="clear-waiting-queue"',
     '<button id="restart-cancelled-queue" type="button" hidden disabled>Restart cancelled jobs</button><button id="clear-waiting-queue"',1)
 HTML=HTML.replace('</body>',RESTART_DIALOG+RESTART_SCRIPT+'</body>')
+
+from ui.result_insights import STYLE as INSIGHTS_STYLE,SCRIPT as INSIGHTS_SCRIPT
+HTML=HTML.replace('</head>',INSIGHTS_STYLE+INSIGHTS_SCRIPT+'</head>')
