@@ -21,19 +21,26 @@ class AdmissionBudget:
         from resource_governor import Governor
         self.governor=Governor();self.healthy_since=None;self.checked=-float('inf');self.capacity=1
 
-    def sample(self):
+    def sample(self,command=None):
         from resource_governor import validation_capacity
         now=time.monotonic()
         if now-self.checked<5:return self.capacity
         self.checked=now
-        try:healthy=validation_capacity(self.governor.sample(include_gpu=False))==2
+        try:
+            data=self.governor.sample(include_gpu=False)
+            if command is None:healthy=validation_capacity(data)==2
+            else:
+                from adaptive_resources import validation_plan
+                from resource_workload import demand
+                request=demand(command)
+                healthy=validation_plan(data,request['memory_gib'],request['cpu_cost'])['capacity']==2
         except (OSError,ValueError,TypeError):healthy=False
         if not healthy:self.healthy_since=None
         elif self.healthy_since is None:self.healthy_since=now
         self.capacity=2 if self.healthy_since is not None and now-self.healthy_since>=30 else 1
         return self.capacity
 
-    def gpu_sample(self):
+    def gpu_sample(self,include_gpu=True):
         now=time.monotonic()
         if not hasattr(self,'gpu_checked') or now-self.gpu_checked>=5:
             try:
@@ -42,7 +49,7 @@ class AdmissionBudget:
                 if not hasattr(self,'gpu_checked'):
                     self.governor.sample(include_gpu=False)
                     time.sleep(.25)
-                self.gpu_data=self.governor.sample()
+                self.gpu_data=self.governor.sample(include_gpu=include_gpu)
             except (OSError,ValueError,TypeError):self.gpu_data={}
             self.gpu_checked=now
         return self.gpu_data
@@ -53,7 +60,7 @@ def _open_lock(path):
 
 
 def heavy_reader(command):
-    return '-show_frames' in command or any(
+    return '-show_frames' in command or any(k=='-f' and command[i+1]=='framehash' for i,k in enumerate(command[:-1])) or any(
         word in str(arg) for arg in command for word in ('libvmaf','libplacebo','tonemap'))
 
 
@@ -108,7 +115,7 @@ def reader_threads(command):
 
 def bounded_reader(command,limit):
     """Reduce explicit concurrency only; preserve fields, filters and thresholds."""
-    if type(limit) is not int or limit not in (2,4):return command
+    if type(limit) is not int or limit not in (1,2,4):return command
     result=list(command)
     for i,arg in enumerate(result[:-1]):
         if arg in ('-threads','-threads:v') and str(result[i+1]).isdigit():
@@ -140,6 +147,12 @@ def validation_slot(command,guard=lambda:None,timeout=None,*,pool='validation',e
     if not root or os.name!='posix' or (pool=='validation' and not heavy_reader(command)):
         yield
         return
+    environment=os.environ if env is None else env
+    if pool!='publication' and environment.get('MUXMENDER_RESOURCE_POLICY')=='adaptive-v1':
+        from adaptive_stage import slot
+        with slot(command,guard,pool=pool,env=environment,estimated_duration=estimated_duration,timeout=timeout) as allocation:
+            yield allocation
+        return
     import fcntl
     from job_tracking import progress
     path=Path(root)
@@ -162,7 +175,7 @@ def validation_slot(command,guard=lambda:None,timeout=None,*,pool='validation',e
     try:
         while True:
             guard()
-            capacity=1 if pool in ('publication','gpu') else budget.sample()
+            capacity=1 if pool in ('publication','gpu') else budget.sample(command)
             paused=False
             if pause_lease:
                 from cooperative_pause import lease_reason
@@ -346,25 +359,28 @@ def validation_limited(function):
         pool=resource_pool(values['command'],values.get('env'))
         if pool is None:return function(*args,**kwargs)
         from job_tracking import measured_operation,current_phase,progress
+        from resource_workload import request
         original_phase=current_phase()
         # The wrapped timeout limits actual processing, not time queued behind
         # another reader. The guard still permits cancellation while waiting.
-        options={} if pool=='validation' else dict(pool=pool,env=values.get('env'),
+        options=dict(pool=pool,env=values.get('env'),
             estimated_duration=values.get('seconds',values.get('duration')))
         admission_guard=values.get('admission_guard')
-        with measured_operation('validation_wait' if pool=='validation' else 'gpu_wait'):
-            with validation_slot(values['command'],admission_guard or values.get('guard') or (lambda:None),**options) as limit:
-                if admission_guard:admission_guard()
-                if original_phase:progress(original_phase,detail='Resources acquired; processing'+
-                    (f'; shared validation allocation: {limit} threads' if type(limit) is int else ''))
-                kind=('frame_validation' if '-show_frames' in values['command'] else
-                      'quality_measurement' if heavy_reader(values['command']) else 'encoding')
-                with measured_operation(kind):
-                    if pool=='validation' and type(limit) is int:
-                        bound=signature.bind(*args,**kwargs)
-                        bound.arguments['command']=bounded_reader(values['command'],limit)
-                        return function(*bound.args,**bound.kwargs)
-                    return function(*args,**kwargs)
+        with request(values['command'],values.get('env')) as lease:
+            with measured_operation('validation_wait' if pool=='validation' else 'gpu_wait'):
+                with validation_slot(values['command'],admission_guard or values.get('guard') or (lambda:None),**options) as limit:
+                    if lease is not None:lease.active(limit)
+                    if admission_guard:admission_guard()
+                    if original_phase:progress(original_phase,detail='Resources acquired; processing'+
+                        (f'; shared validation allocation: {limit} threads' if type(limit) is int else ''))
+                    kind=('frame_validation' if '-show_frames' in values['command'] else
+                          'quality_measurement' if heavy_reader(values['command']) else 'encoding')
+                    with measured_operation(kind):
+                        if type(limit) is int and (pool=='validation' or (values.get('env') or os.environ).get('MUXMENDER_RESOURCE_POLICY')=='adaptive-v1'):
+                            bound=signature.bind(*args,**kwargs)
+                            bound.arguments['command']=bounded_reader(values['command'],limit)
+                            return function(*bound.args,**bound.kwargs)
+                        return function(*args,**kwargs)
     return wrapped
 
 

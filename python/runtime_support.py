@@ -11,6 +11,11 @@ import re
 from pathlib import Path
 
 
+def comparison_filter_options():
+    """Keep qualified comparison settings independent of executable aliases."""
+    return ['-filter_threads', '2', '-filter_complex_threads', '2']
+
+
 def bounded_ffmpeg_threads(command, *, decoder_threads=2):
     """Bound implicit FFmpeg worker pools; preserve every explicit thread option.
 

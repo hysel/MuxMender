@@ -257,7 +257,7 @@ async function refreshControls(){if(controlPollBusy)return;controlPollBusy=true;
  if((body.snapshot_stale||body.snapshot_error)&&!freshQueue){controlReady=false;queueStatusUnavailable=true;renderQueueActions(lastQueueControl,true);controlElement('control-availability').textContent=body.snapshot_updated?'Queue status is delayed. Last displayed results may be out of date.':'Loading queue status…';for(const id of ['preview-job','clear-waiting-queue']){const el=controlElement(id);if(el)el.disabled=true}if(typeof connectionUpdate==='function')connectionUpdate('controls',false);return}
  lastQueueControl=body;queueStatusUnavailable=false;renderQueueActions(body,false);
  if(!resourceProfileBusy&&!resourceProfileDirty){controlElement('resource-profile').value=body.resource_profile||'shared';controlElement('resource-profile').initialized=true}
- const savedProfile=controlElement('resource-profile-current');if(savedProfile){const names={quiet:'Quiet — up to one file',shared:'Shared host — up to two files',faster:'Faster — up to four files'};savedProfile.textContent='Saved setting: '+(names[body.resource_profile]||'Unavailable')}
+ const savedProfile=controlElement('resource-profile-current');if(savedProfile){const names={automatic:'Automatic — adapt to server load',quiet:'Quiet — up to one file',shared:'Shared host — up to two files',faster:'Faster — up to four files'};savedProfile.textContent='Saved setting: '+(names[body.resource_profile]||'Unavailable')}
  renderGpuSharing(body);
  const resource=body.resources||{},metrics=resource.telemetry||{};
  const advice=body.cpu_allocation,adviceElement=controlElement('cpu-advice');
@@ -269,6 +269,8 @@ async function refreshControls(){if(controlPollBusy)return;controlPollBusy=true;
  }
  const metric=(key,suffix,digits=0)=>Number.isFinite(metrics[key])?metrics[key].toFixed(digits)+suffix:'Unavailable';
  controlElement('resource-status').textContent=(body.snapshot_stale||body.snapshot_error)?'Resource readings are delayed; queue status is current.':'Host CPU '+metric('cpu_percent','%')+(Number.isFinite(metrics.container_cpu_percent)?' · App CPU allocation '+metric('container_cpu_percent','%'):'')+' · Available RAM '+metric('available_gib',' GiB',1)+' · GPU compute '+metric('gpu_compute_percent','%')+' · GPU encode '+metric('gpu_encode_percent','%')+' · GPU decode '+metric('gpu_decode_percent','%')+' · Free VRAM '+metric('vram_free_gib',' GiB',1)+' · '+(resource.active||0)+' workers · '+(resource.reason||'Collecting measurements');
+ const allocation=resource.adaptive||{};
+ if(allocation.reason&&allocation.reason!==resource.reason&&!body.snapshot_stale&&!body.snapshot_error)controlElement('resource-status').textContent+=' · '+(allocation.mode==='focus'?'Focus':'Overlap trial')+': '+allocation.reason;
  const admission=body.gpu_admission||{};
  const cpuYield=resource.cpu_yield||{};
  if(cpuYield.block_admission&&!body.snapshot_stale&&!body.snapshot_error)controlElement('resource-status').textContent+=' · '+cpuYield.reason;

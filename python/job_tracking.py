@@ -15,6 +15,22 @@ _active = None
 _thread_progress=threading.local()
 
 
+def replace_record(temporary, destination):
+    """Keep atomic writes when a Windows reader briefly holds the old record."""
+    delays = iter((0.01, 0.02, 0.04, 0.08, 0.16, 0.32))
+    while True:
+        try:
+            temporary.replace(destination)
+            return
+        except PermissionError as exc:
+            if getattr(exc, 'winerror', None) not in (5, 32, 33):
+                raise
+            delay = next(delays, None)
+            if delay is None:
+                raise
+            time.sleep(delay)
+
+
 @contextmanager
 def isolated_progress(observer):
     """Let a parent report parallel work without competing stage updates."""
@@ -62,7 +78,7 @@ class Job:
             self.data.update(changes, updated=time.time())
             temporary = self.directory / 'job.json.tmp'
             temporary.write_text(json.dumps(self.data), encoding='utf-8')
-            temporary.replace(self.directory / 'job.json')
+            replace_record(temporary, self.directory / 'job.json')
 
 
 def phase(directory, label, percent):

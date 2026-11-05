@@ -216,6 +216,11 @@ def select_candidate(report, minimum_savings_percent=25.0):
                       reason_code='candidate_selected',cacheable=False,
                       selected={k: winner[k] for k in ('id', 'codec', 'encoder', 'settings')},
                       estimated_savings_percent=savings)
+        from size_forecast import forecast
+        prediction=forecast(report,winner)
+        if prediction:
+            result.update(size_forecast=prediction,sample_savings_percent=savings,
+                          estimated_savings_percent=prediction['estimated_savings_percent'])
     if result.get('encoding_speed_selection'):
         result['reason']='A faster encoding passed the checks with a similar file size'
     if quality_policy is not None:result['quality_policy']=quality_policy

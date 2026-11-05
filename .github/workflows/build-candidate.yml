@@ -51,7 +51,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ${{ runner.temp }}/runtime-cache
-          key: runtime-linux-amd64-${{ inputs.runtime_generation }}-${{ hashFiles('deploy/truenas/Dockerfile.public', 'deploy/truenas/Dockerfile.hdr-gpu-reader', 'deploy/truenas/build_ffmpeg9.sh', 'deploy/truenas/requirements-av1-runtime.txt', 'deploy/truenas/ffmpeg9-source.sha256', 'deploy/install_fel_runtime.py', 'deploy/patch_cuda_ffprobe.py', 'deploy/prepare_hosted_build.py', 'python/dv_fel_runtime.py') }}
+          key: runtime-linux-amd64-${{ inputs.runtime_generation }}-${{ hashFiles('deploy/cuda_score/**', 'deploy/truenas/Dockerfile.public', 'deploy/truenas/Dockerfile.hdr-gpu-reader', 'deploy/truenas/build_ffmpeg9.sh', 'deploy/truenas/requirements-av1-runtime.txt', 'deploy/truenas/ffmpeg9-source.sha256', 'deploy/install_fel_runtime.py', 'deploy/patch_cuda_ffprobe.py', 'deploy/prepare_hosted_build.py', 'python/dv_fel_runtime.py') }}
       - name: Fetch checksum-pinned upstream inputs
         if: steps.runtime-cache.outputs.cache-hit != 'true'
         run: python3 -B deploy/prepare_hosted_build.py

@@ -100,9 +100,11 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None,
     lease = configured_lease(command, env)
     inherited = dict(pass_fds=tuple(pass_fds)) if pass_fds else {}
     launch = launch_owned if lease else subprocess.Popen
+    from live_allocation import attach
     child = launch(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, encoding="utf-8", errors="replace", cwd=cwd, env=env, **inherited)
     pause = OwnedStagePause(child, lease) if lease else None
+    allocation_observer=attach(child.pid)
     lines = queue.Queue()
     def read():
         try:
@@ -138,6 +140,7 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None,
                 advanced += delta
                 pause_accounted = spent
                 if paused:
+                    if allocation_observer:allocation_observer.reset()
                     if pause_measurement is None:
                         pause_measurement=measured_operation('gpu_pause')
                         pause_measurement.__enter__()
@@ -158,6 +161,7 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None,
                     display_pause_accounted = spent
                     stage_progress(last if last >= 0 else None, None, detail='Resumed; measuring processing rate')
                     pause_reported = False
+            if allocation_observer:allocation_observer.sample()
             now = time.monotonic()
             if now - started > timeout or (stall and now - advanced > stall):
                 cause = 'total runtime limit' if now-started > timeout else 'no advancing frame/timestamp progress'

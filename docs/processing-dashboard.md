@@ -119,3 +119,41 @@ Choose **Ready to replace** in Results, or in its Show dropdown. This shows
 the latest results that offer **Replace original with this copy**. Search and
 folder filters still apply. Opening the action checks that the source and copy
 are still available; you must confirm before a replacement is queued.
+
+## Automatic resource use
+
+**Automatic** starts with one video. It checks available CPU and RAM, GPU engine
+activity, storage pressure and the stages already waiting before starting another.
+The app may keep one video active when its checks can use the available capacity.
+It can also overlap an encode with another video's checks when those stages fit.
+
+Quiet, Shared and Faster set upper limits. Choosing Faster does not ask the app
+to keep four videos running. Existing saved profile choices are kept after an
+upgrade; new installations start with Automatic.
+
+The resource status explains whether the app is focusing on current work, trying
+an overlap or waiting for headroom. An overlap trial is not a measured speed gain.
+Per-stage thread counts stay within the tested limits. Container CPU and memory
+limits still apply, and another application's activity can delay new work.
+When capacity falls, running work drains before more work starts. GPU sharing
+can pause supported stages separately when another app needs the GPU.
+
+Resource scheduling does not change the selected quality profile, preservation
+checks or savings target. More active videos is useful only if the batch finishes
+sooner; it is not a goal by itself.
+
+## File-size estimates
+
+New results compare two sample estimates: one based on compression ratios, and
+one based on actual output rates. The larger estimate is shown so the new method
+does not promise more savings than the older one. Their range describes the
+tested scenes and estimates; it does not guarantee the size of unseen content. Files with covers or
+attachments keep the older sample-only estimate until those fixed sizes can be
+accounted for separately. The finished file still has to pass the real savings
+and quality checks before replacement.
+
+Small HDR reference clips can reuse a lossless rendered copy within the same job.
+Every rendered frame is checked against that copy before it is used, and its
+checksum is checked again on reuse. This changes only the picture-comparison
+work, not the delivered video. Cache space is bounded and joins normal task
+cleanup. Long videos and ineligible clips keep the ordinary comparison path.

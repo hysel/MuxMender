@@ -114,6 +114,7 @@ class Controls(CopyApproval, WorkspaceHistory, CancelledQueue):
         self.state = read(self.file) or dict(paused=False, failures=0, jobs=[])
         # Additive migration: keep original records and unknown fields intact.
         self.state.setdefault('view', {})
+        self.state.setdefault('resource_profile','automatic')
         self.state['schema_version'] = 2
         self.error = None
         self.poll_mutex=threading.Lock()
@@ -708,6 +709,7 @@ class Controls(CopyApproval, WorkspaceHistory, CancelledQueue):
                 environment['MUXMENDER_CPU_MODE']=cpu_setting.get('mode','automatic')
                 environment['MUXMENDER_SCORING_CEILING']=str(cpu_setting.get('ceiling') or 2)
                 environment['MUXMENDER_SOURCE_EVIDENCE_ROOT']=str(self.output/'.source-evidence')
+                environment['MUXMENDER_RESOURCE_POLICY']='adaptive-v1'
                 environment['MUXMENDER_GPU_STAGE_MAX']='1' if self.state.get('resource_profile','shared')=='quiet' else '2'
                 if sys.platform.startswith('linux'):environment['MUXMENDER_PAUSE_LEASE']=str(self.gpu_yield.lease)
                 child=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT,start_new_session=True,env=environment)
@@ -885,6 +887,8 @@ class Controls(CopyApproval, WorkspaceHistory, CancelledQueue):
                 self.save();self.ready=True
             while not self.stop_event.is_set():
                 self.workers=[w for w in self.workers if w.is_alive()]
+                from resource_workload import snapshot as workload_snapshot
+                self.governor.workload=workload_snapshot(self.output/'.validation-resources')
                 allowed=self.governor.admit(self.state.get('resource_profile','shared'),len(self.workers))
                 cpu_yield=self.cpu_yield.decide(self.governor.status.get('telemetry',{}))
                 self.governor.status['cpu_yield']=cpu_yield

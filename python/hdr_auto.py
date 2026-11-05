@@ -7,6 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 import shutil
 
+RENDER_FILTER=('zscale=t=linear:npl=100,format=gbrpf32le,'
+               'tonemap=tonemap=hable:desat=0:peak=100,'
+               'zscale=p=bt709:t=bt709:m=bt709:r=tv,format=yuv420p10le')
 
 def admit(video, inspection):
     from hdr_inspection import enforce_automatic_policy
@@ -32,19 +35,19 @@ def check_dependencies(ffmpeg, filters):
         if not shutil.which(name):raise ValueError('HDR preservation dependency missing: '+name)
 
 
-def quality_graph(name, frame_rate, frame_count=None, *, threads=2):
+def quality_graph(name, frame_rate, frame_count=None, *, threads=2, reference_rendered=False):
     from auto_optimize import quality_graph as ordinary_graph
     ordinary_graph(name,frame_rate,threads=threads)  # Validate before filter interpolation.
     rate=Fraction(frame_rate)
     clock=f'settb=AVTB,setpts=N*{rate.denominator}/({rate.numerator}*TB)'
     # Explicit peak prevents each encoder's metadata choosing a different curve.
-    render=('zscale=t=linear:npl=100,format=gbrpf32le,'
-            'tonemap=tonemap=hable:desat=0:peak=100,'
-            'zscale=p=bt709:t=bt709:m=bt709:r=tv,format=yuv420p10le')
+    render=RENDER_FILTER
+    if type(reference_rendered) is not bool:raise ValueError('Invalid rendered-reference state')
     if frame_count is not None and (type(frame_count) is not int or frame_count<=0):
         raise ValueError('Quality prefix requires a positive frame count')
     prefix=f'trim=end_frame={frame_count},' if frame_count is not None else ''
-    return (f'[0:V:0]{prefix}{render},{clock}[d];[1:V:0]{prefix}{render},{clock}[r];'
+    reference_filter='' if reference_rendered else render+','
+    return (f'[0:V:0]{prefix}{render},{clock}[d];[1:V:0]{prefix}{reference_filter}{clock}[r];'
             f'[d][r]libvmaf=n_threads={threads}:log_fmt=json:log_path={name}')
 
 

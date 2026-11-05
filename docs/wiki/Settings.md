@@ -110,3 +110,45 @@ A preset that misses the first-scene speed target is stopped before its remainin
 clips and quality checks. If timing evidence is missing or too short to compare,
 the smallest passing option stays selected. Sample timings are estimates; the full file still needs
 all normal checks before it can replace an original.
+
+## Automatic resource use
+
+**Automatic** starts with one video. It checks available CPU and RAM, GPU engine
+activity, storage pressure and the stages already waiting before starting another.
+The app may keep one video active when its checks can use the available capacity.
+It can also overlap an encode with another video's checks when those stages fit.
+
+Quiet, Shared and Faster set upper limits. Choosing Faster does not ask the app
+to keep four videos running. Existing saved profile choices are kept after an
+upgrade; new installations start with Automatic.
+
+The resource status explains whether the app is focusing on current work, trying
+an overlap or waiting for headroom. An overlap trial is not a measured speed gain.
+Per-stage thread counts stay within the tested limits. Container CPU and memory
+limits still apply, and another application's activity can delay new work.
+When capacity falls, running work drains before more work starts. GPU sharing
+can pause supported stages separately when another app needs the GPU.
+
+Resource scheduling does not change the selected quality profile, preservation
+checks or savings target. More active videos is useful only if the batch finishes
+sooner; it is not a goal by itself.
+
+For supported running stages, Linux CPU and RAM readings also refine the shared
+allowances. After sustained readings, spare capacity can admit useful overlap.
+If demand rises, new starts wait again. This changes scheduling, not the picture
+quality checks or the processing settings of a running video. Resource settings
+remain advisory; Docker CPU and memory limits are still the hard limits.
+
+### Automatic GPU quality checks
+
+For supported comparisons, MuxMender can use the NVIDIA GPU to calculate quality
+scores. It first compares a short trial with the normal CPU check. Later matching
+checks in that job use the GPU only when the scores agree and the GPU is faster.
+The first trial therefore takes a little longer. This check runs inside the app;
+there is no host setup script or extra mount.
+
+Results close to your quality threshold are checked again on CPU. If GPU scoring
+fails, is slower, or does not cover the comparison, the app keeps the CPU check.
+This does not stop a video from being converted. Decoding and HDR rendering keep
+their existing settings, and all preservation and replacement checks still apply.
+GPU quality scoring is separate from GPU encoding and GPU inspection.
