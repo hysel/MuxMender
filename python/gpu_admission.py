@@ -181,6 +181,14 @@ def observe(state,key,work,elapsed,overlap,success,now,mixed=False):
 
 def snapshot(root):
     import time
+    engines={}
+    for engine in ('encode','decode','compute'):
+        status=load(Path(root)/('gpu-'+engine)/'adaptive.json').get('status',{})
+        if status and finite(status.get('updated')) and 0<=time.time()-status['updated']<90:engines[engine]=status
+    if engines:
+        return dict(limit=sum(s.get('limit',1) for s in engines.values()),engines=engines,
+            updated=max(s['updated'] for s in engines.values()),
+            reason='Separate encoder, decoder and render-stage allocations; shared CPU and memory budgets apply')
     state=load(Path(root)/'gpu'/'adaptive.json')
     status=state.get('status',{})
     if status and (not finite(status.get('updated')) or not 0<=time.time()-status['updated']<90):

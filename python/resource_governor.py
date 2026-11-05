@@ -9,6 +9,7 @@ import subprocess
 import time
 
 PROFILES={
+    'automatic':dict(max_jobs=16,cpu=80,memory_gib=6,gpu=85,io=8),
     'quiet':dict(max_jobs=1,cpu=55,memory_gib=8,gpu=60,io=5),
     'shared':dict(max_jobs=2,cpu=70,memory_gib=8,gpu=75,io=8),
     'faster':dict(max_jobs=4,cpu=80,memory_gib=6,gpu=85,io=12),
@@ -159,32 +160,45 @@ class SDRWorkerBudget:
         return self.value
 
     def select(self,data):
+        if os.environ.get('MUXMENDER_RESOURCE_POLICY')=='adaptive-v1':return focused_scoring_threads(data)
         return sdr_thread_budget(data)
+
+
+def focused_scoring_threads(data):
+    """Choose an already-qualified pool; stage admission owns the shared budget."""
+    from adaptive_resources import cpu_room,pressure_ok,memory_room
+    room=cpu_room(data)
+    return 4 if (room is not None and math.ceil(room)>=8 and pressure_ok(data) and memory_room(data)
+                 and type(data.get('container_tasks')) is int and
+                 data.get('container_tasks_available',64)>=32) else 2
 
 
 class HDRQualityWorkerBudget(SDRWorkerBudget):
     """Measured PQ scoring workers; decoder and frame-reader policy are separate."""
     def select(self,data):
+        if os.environ.get('MUXMENDER_RESOURCE_POLICY')=='adaptive-v1':return focused_scoring_threads(data)
         available=data.get('available_gib')
         if type(available) not in (int,float) or not math.isfinite(available) or available<8:return 2
+        from adaptive_resources import cpu_room,pressure_ok,memory_room
+        room=cpu_room(data)
+        if (room is not None and room>=8 and pressure_ok(data) and memory_room(data)
+                and type(data.get('container_tasks')) is int and
+                data.get('container_tasks_available',64)>=32):return 4
         return sdr_thread_budget(data)
 
 
 def validation_capacity(data):
-    """CPU-only validators need CPU/RAM/I/O headroom; GPU work has its own pool."""
-    keys=('cpus','cpu_percent','container_cpu_percent','available_gib',
-          'host_available_gib','io_pressure','memory_pressure')
-    if any(k not in data or not math.isfinite(data[k]) or data[k]<0 for k in keys):return 1
-    usage=max(data['cpu_percent'],data['container_cpu_percent'])
-    return 2 if (data['cpus']>=12 and usage<=50 and data['cpus']*(1-usage/100)>=6
-                 and data['available_gib']>=12 and data['host_available_gib']>=16
-                 and data['io_pressure']<5 and data['memory_pressure']<.1) else 1
+    """Use measured external CPU demand and marginal memory, not fixed 16 GiB."""
+    from adaptive_resources import validation_plan
+    return validation_plan(data)['capacity']
 
 
 class Governor:
     def __init__(self):
         self.previous=None;self.healthy_since=None;self.last_launch=0
         self.previous_container_cpu=None
+        from adaptive_resources import WorkloadPlan
+        self.workload=None;self.workload_plan=WorkloadPlan()
         self.status=dict(reason='Collecting resource measurements',telemetry={})
 
     def sample(self, *, include_gpu=True):
@@ -263,7 +277,7 @@ class Governor:
         elif data.get('container_cpu_percent',0)>limits['cpu']:reason='Waiting for container CPU allocation headroom'
         elif data.get('io_pressure',100)>limits['io']:reason='Waiting for storage pressure to fall'
         elif data.get('memory_pressure',100)>1:reason='Waiting for memory pressure to fall'
-        elif data.get('gpu_percent',0)>limits['gpu']:reason='Waiting for GPU headroom'
+        elif self.workload is None and data.get('gpu_percent',0)>limits['gpu']:reason='Waiting for GPU headroom'
         elif data.get('vram_free_gib',8)<2:reason='Waiting for free GPU memory'
         elif data.get('gpu_temperature',0)>=80:reason='Waiting for GPU temperature to fall'
         # Unknown GPU telemetry: still support other vendors, but only serially.
@@ -271,10 +285,16 @@ class Governor:
         if reason:self.healthy_since=None
         elif self.healthy_since is None:self.healthy_since=now
         if not reason and active>=maximum:reason='Concurrency ceiling reached'
-        if not reason and active and (now-self.healthy_since<30 or now-self.last_launch<60):
+        if self.workload is None and not reason and active and (now-self.healthy_since<30 or now-self.last_launch<60):
             reason='Observing sustained headroom before adding a worker'
         if not reason and cache_assisted and now-self.healthy_since<30:
             reason='Observing memory headroom before one cache-assisted job'
+        adaptive=None
+        if self.workload is not None:
+            self.workload_plan.last_launch=self.last_launch
+            allowed=self.workload_plan.decide(data,self.workload,active,maximum,now)
+            adaptive=dict(self.workload_plan.status)
+            if not reason and not allowed:reason=adaptive['reason']
         self.status=dict(profile=profile,ceiling=maximum,active=active,reason=reason or 'Resources available',
-                         telemetry=data,cache_assisted=cache_assisted,updated=time.time(),policy='Backoff drains running jobs; does not suspend them')
+                         telemetry=data,adaptive=adaptive,cache_assisted=cache_assisted,updated=time.time(),policy='Backoff drains running jobs; does not suspend them')
         return reason is None

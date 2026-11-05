@@ -164,7 +164,7 @@ class WorkspaceHistory:
 
 def decision_evidence(folder, selection):
     """Small recorded summary, never invent scores or convert VMAF into a quality percentage."""
-    result = {k: selection[k] for k in ('estimated_savings_percent','reason_code','candidates') if k in selection}
+    result = {k: selection[k] for k in ('estimated_savings_percent','sample_savings_percent','size_forecast','reason_code','candidates') if k in selection}
     if selection.get('quality_policy'):result['quality_policy']=selection['quality_policy']
     trials = read(Path(folder)/'trials.json').get('trials', [])
     quality = []

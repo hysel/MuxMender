@@ -96,3 +96,10 @@ The app removes eligible temporary artifacts after verified replacement and
 keeps compact history and receipts. Safe-copy outputs stay available for you.
 Interrupted work and unresolved recovery files may need attention rather than
 automatic deletion. Don't manually sweep an active job's folder.
+
+A full-file estimate compares sample compression ratios with measured output
+rates, and shows the larger estimate to avoid overstating savings. It is still a
+prediction.
+Different scenes can compress differently. It is shown separately from the
+actual size measured after a complete encode. Covers and attachments can make a
+rate estimate misleading, so some results retain a sample-only estimate.

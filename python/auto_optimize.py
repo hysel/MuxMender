@@ -188,7 +188,9 @@ def quality_graph(name, frame_rate, *, separate_fields=False, threads=2, referen
 
 def quality_command(ffmpeg, output, reference, graph):
     """Bound decode pools; retain filter threading to preserve metric numerics."""
+    from runtime_support import comparison_filter_options
     return [ffmpeg, '-hide_banner', '-nostdin', '-v', 'warning', '-xerror',
+            *comparison_filter_options(),
             '-noautorotate', '-threads', '2', '-i', str(output),
             '-noautorotate', '-threads', '2', '-i', str(reference), '-filter_complex', graph,
             '-an', '-sn', '-progress', 'pipe:1', '-nostats', '-f', 'null', '-']
@@ -1336,7 +1338,7 @@ class Workflow:
     def quality(self, reference, output, label, count, duration):
         # Safe generated basename and cwd avoid platform/path escaping in filter syntax.
         name = label+'-vmaf.json'
-        video = next(s for s in self.probe(reference)['streams'] if s['codec_type'] == 'video')
+        video = main_video(self.probe(reference))
         from resource_governor import parallel_sdr_profile,parallel_sdr_quality_profile,SDRWorkerBudget
         threads=2
         if parallel_sdr_profile(video):
@@ -1350,6 +1352,8 @@ class Workflow:
         from cpu_allocation import scoring_ceiling
         threads=scoring_ceiling(threads)
         graph = quality_graph(name, video['avg_frame_rate'],threads=threads,reference_filter=reference_filter)
+        metric_reference=reference
+        rendered_reference=False
         if self.hdr_mode:
             from hdr_auto import quality_graph as hdr_quality_graph
             # Only the measured scoring pool changes. Keep HDR decoding,
@@ -1364,14 +1368,24 @@ class Workflow:
                 if not hasattr(self,'hdr_quality_budget'):self.hdr_quality_budget=HDRQualityWorkerBudget()
                 threads=self.hdr_quality_budget.threads(self.guard)
             threads=scoring_ceiling(threads)
-            graph=hdr_quality_graph(name,video['avg_frame_rate'],threads=threads)
-        self.execute(quality_command(self.args.ffmpeg,output,reference,graph),
-                     label+'-quality', duration)
+            from hdr_metric_cache import ReferenceCache
+            if not hasattr(self,'hdr_metric_references'):self.hdr_metric_references=ReferenceCache(self)
+            cached=self.hdr_metric_references.get(reference,count,duration)
+            if cached is not None:
+                metric_reference=cached;rendered_reference=True
+            graph=hdr_quality_graph(name,video['avg_frame_rate'],threads=threads,reference_rendered=rendered_reference)
+        from cuda_quality import Scorer
+        if not hasattr(self,'cuda_quality_scorer'):self.cuda_quality_scorer=Scorer(self)
+        backend=self.cuda_quality_scorer.run(metric_reference,output,graph,label,count,duration,video,
+            preset=identifier,rendered_reference=rendered_reference)
         result = quality_summary(json.loads((self.directory/name).read_text()), count,
                                  self.args.vmaf_mean, self.args.vmaf_p5)
         result['alignment'] = 'verified-frame-ordinal-v1'
+        result['scoring']=backend
         result['output_preset']=identifier
         result['reference_domain']='target-resolution reference' if reference_filter else 'original-resolution reference'
+        if rendered_reference:
+            result['reference_render_cache']=dict(used=True,method='pixel-verified-job-local-lossless-reference',frames=count)
         result['thresholds']=dict(mean=self.args.vmaf_mean,p5=self.args.vmaf_p5)
         result['quality_profile']=getattr(self.args,'quality_profile',None) or 'legacy'
         if not self.hdr_mode and video.get('field_order') in ('tt','bb','tb','bt'):
@@ -1806,7 +1820,9 @@ def run(args):
         plan['output_container']=workflow.output_suffix.lstrip('.')
         save(directory/'plan.json',plan)
         progress('Checking available encoders and quality tools',directory=directory)
-        report = dict(schema='muxmender-codec-trials-v1', source_id=source_hash, source_bytes=baseline['size'], source_duration_seconds=duration, color_mode=workflow.hdr_mode or 'sdr', references=[], trials=[],quality_policy=quality_policy)
+        report = dict(schema='muxmender-codec-trials-v1', source_id=source_hash, source_bytes=baseline['size'], source_duration_seconds=duration, color_mode=workflow.hdr_mode or 'sdr', references=[], trials=[],quality_policy=quality_policy,
+                      source_has_static_payload=any(s.get('codec_type')=='attachment' or
+                          s.get('disposition',{}).get('attached_pic') for s in data['streams']))
         report['output_preset']=args.output_preset
         workflow_stage('compare')
         filters = subprocess.check_output([args.ffmpeg, '-hide_banner', '-filters'], text=True, stderr=subprocess.STDOUT, timeout=30)
