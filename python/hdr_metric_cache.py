@@ -15,6 +15,10 @@ ENTRY_BYTES=256*1024**2
 TOTAL_BYTES=1024**3
 
 
+class CacheSizeLimit(ValueError):
+    """The bounded optimization is too large; ordinary scoring stays valid."""
+
+
 def pixels(path, expected):
     """Compare complete raw-frame payloads; muxed timestamps are not pixel data."""
     rows=[]
@@ -32,7 +36,9 @@ def pixels(path, expected):
 
 
 class ReferenceCache:
-    def __init__(self,workflow):self.workflow=workflow;self.entries={};self.failures=set();self.bytes=0
+    def __init__(self,workflow):
+        self.workflow=workflow;self.entries={};self.failures=set();self.bytes=0
+        self.creation_size_limited=False
 
     def get(self,reference,count,duration):
         from hdr_auto import RENDER_FILTER
@@ -56,6 +62,9 @@ class ReferenceCache:
             path=entry['path'];safe_path(path)
             if path.is_file() and digest(path,work.guard)==entry['sha256']:return path
             self.failures.add(key);return None
+        # Avoid paying for another failed lossless render on every scene.
+        # Existing pixel-verified entries remain usable; only creation stops.
+        if self.creation_size_limited:return None
         limit=min(ENTRY_BYTES,TOTAL_BYTES-self.bytes)
         if limit<64*1024**2 or shutil.disk_usage(root).free<limit+2*1024**3:return None
         name='metric-reference-'+uuid.uuid4().hex
@@ -71,7 +80,8 @@ class ReferenceCache:
                      '-map','[proof]','-an','-sn','-c:v','rawvideo','-threads','2','-pix_fmt','yuv420p10le',
                      '-fps_mode','passthrough','-f','framehash','-hash','sha256',str(before)]
             work.execute(command,'Preparing HDR comparison reference',duration)
-            if not cached.is_file() or not 0<cached.stat().st_size<=limit:raise ValueError('Metric cache size limit')
+            if not cached.is_file() or cached.stat().st_size<=0:raise ValueError('Metric cache output missing or empty')
+            if cached.stat().st_size>limit:raise CacheSizeLimit('Metric cache size limit')
             work.execute([work.args.ffmpeg,'-hide_banner','-v','error','-nostdin','-n','-xerror',
                           *comparison_filter_options(),
                           '-threads','2','-i',str(cached),'-map','0:V:0','-an','-sn','-c:v','rawvideo','-threads','2',
@@ -91,8 +101,10 @@ class ReferenceCache:
         except (OSError,ValueError,RuntimeError,subprocess.SubprocessError) as exc:
             work.guard()  # Source changes and cancellation must still propagate.
             self.failures.add(key)
+            if isinstance(exc,CacheSizeLimit):self.creation_size_limited=True
             from auto_optimize import save
-            save(root/(name+'-fallback.json'),dict(used=False,reason=str(exc),ordinary_quality_checks_required=True))
+            save(root/(name+'-fallback.json'),dict(used=False,reason=str(exc),ordinary_quality_checks_required=True,
+                further_cache_creation_disabled=self.creation_size_limited))
             return None
         finally:
             # Failed entries and temporary frame hashes never accumulate. The

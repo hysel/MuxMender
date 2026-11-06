@@ -620,10 +620,17 @@ class Workflow:
         return command[:-1]+options+command[-1:]
 
     def execute(self, command, label, duration, *, strict_decode=False):
+        self.last_execution_timing=None
         from iso_chapters import mapping_options
         command=mapping_options(command,self.chapter_tracks)
         from runtime_support import bounded_ffmpeg_threads
         threads=self.performance_threads() if Path(str(command[0])).stem.lower()=='ffmpeg' else 2
+        from encode_decode_budget import qualified_encode,EncodeDecoderBudget
+        if qualified_encode(command,self.performance_video or {},self.hdr_mode,
+                source=getattr(self.args,'source',None),output_preset=getattr(self.args,'output_preset','original'),
+                hdr_policy=getattr(self.args,'hdr_policy','preserve')):
+            if not hasattr(self,'encode_decoder_budget'):self.encode_decoder_budget=EncodeDecoderBudget()
+            threads=self.encode_decoder_budget.threads(self.guard)
         command=bounded_ffmpeg_threads(command,decoder_threads=threads)
         if str(command[0])==str(getattr(self.args,'ffmpeg','ffmpeg')):
             for index in reversed(range(len(command)-1)):
@@ -643,7 +650,9 @@ class Workflow:
                 timing={}
                 result=stage(command, duration, 0, 100, timeout=self.args.timeout, stall=120,
                              guard=self.guard, observe=observe, cwd=self.directory, strict_decode=strict_decode,
-                             **({'measurement':timing} if is_encoding else {}))
+                             measurement=timing)
+                if timing.get('completed'):
+                    self.last_execution_timing=dict(timing,label=label)
                 if is_encoding and timing.get('completed'):
                     if not hasattr(self,'encoding_timings'):self.encoding_timings=[]
                     self.encoding_timings.append(timing)
@@ -655,6 +664,20 @@ class Workflow:
         # filenames or timestamps alone, authorize reuse. Original and output
         # metadata reads remain independent; JSON parsing returns fresh data.
         source=Path(source)
+        original=getattr(self.args,'source',None)
+        original=Path(original).resolve() if original is not None else None
+        read_view=(source.resolve()!=original and
+                   str(source.resolve()) in getattr(self,'reader_source_paths',set()))
+        def verify_read_view():
+            if not read_view:return
+            binding=getattr(self,'reader_source_evidence',{}).get(str(source.resolve()))
+            if (not isinstance(binding,dict) or binding.get('source')!=str(original)
+                    or source.is_symlink() or source.resolve().parent!=self.directory.resolve()
+                    or self.audit_identity(source)!=binding.get('view_identity')
+                    or self.audit_identity(original)!=binding.get('source_identity')):
+                raise ValueError('Verified input read view or original source changed')
+            self.guard()
+        verify_read_view()
         cacheable=(not source.is_symlink() and source.is_file() and
                    source.resolve().parent==self.directory.resolve() and
                    source.name.startswith('reference-') and
@@ -690,14 +713,14 @@ class Workflow:
         header_recovery=recover(data,source,self.args.ffprobe,getattr(self.args,'ffmpeg',None))
         if header_recovery:data['dv_header_recovery']=header_recovery
         recovered=getattr(self.args,'dv_declaration_recovery',None)
-        reference=(source.resolve()==Path(self.args.source).resolve() or
+        reference=(read_view or source.resolve()==Path(self.args.source).resolve() or
                    (source.parent.resolve()==self.directory.resolve() and source.name.startswith('reference-'))) if recovered else False
         if recovered and reference:
             hdr_inspection.recover_empty_dv_declaration(main_video(data),recovered)
         elif recovered and hdr_inspection.classify(main_video(data),[])['kind']=='Dolby Vision':
             raise ValueError('Output retains a Dolby Vision declaration absent from the source bitstream')
         resolved=getattr(self.args,'resolved_color',None)
-        if resolved and (source==self.args.source or source.name.startswith('reference-')):
+        if resolved and (read_view or source==self.args.source or source.name.startswith('reference-')):
             video=main_video(data)
             for key,value in resolved.items():
                 if video.get(key) in legacy_color.UNKNOWN:video[key]=value
@@ -705,6 +728,7 @@ class Workflow:
         from iso_chapters import inspect as inspect_chapter_track
         translated=inspect_chapter_track(self,source,data)
         if translated:self.chapter_tracks[str(source.resolve())]=tuple(translated)
+        verify_read_view()
         return data
 
     def prepare_full_hdr_reference(self, source, metadata):
@@ -1335,7 +1359,7 @@ class Workflow:
                     record['indices'].add(output_indices[index])
                 else:self.remember_audio_audit(reference,output,output_indices[index],audio_identity)
 
-    def quality(self, reference, output, label, count, duration):
+    def quality(self, reference, output, label, count, duration, frame_evidence=None):
         # Safe generated basename and cwd avoid platform/path escaping in filter syntax.
         name = label+'-vmaf.json'
         video = main_video(self.probe(reference))
@@ -1375,9 +1399,17 @@ class Workflow:
                 metric_reference=cached;rendered_reference=True
             graph=hdr_quality_graph(name,video['avg_frame_rate'],threads=threads,reference_rendered=rendered_reference)
         from cuda_quality import Scorer
+        scoring_video=video
+        if frame_evidence is not None and video.get('field_order') in (None,'','unknown'):
+            from cuda_quality import comparison_video
+            from hdr10plus_preserve import frame_records
+            rows=frame_records(frame_evidence) if self.hdr_mode else compact_rows(frame_evidence,'width')
+            scoring_video=comparison_video(video,rows,count,self.guard)
         if not hasattr(self,'cuda_quality_scorer'):self.cuda_quality_scorer=Scorer(self)
-        backend=self.cuda_quality_scorer.run(metric_reference,output,graph,label,count,duration,video,
+        backend=self.cuda_quality_scorer.run(metric_reference,output,graph,label,count,duration,scoring_video,
             preset=identifier,rendered_reference=rendered_reference)
+        if scoring_video is not video:
+            backend['scan_evidence']='All comparison frames decoded as progressive; missing container scan tag'
         result = quality_summary(json.loads((self.directory/name).read_text()), count,
                                  self.args.vmaf_mean, self.args.vmaf_p5)
         result['alignment'] = 'verified-frame-ordinal-v1'
@@ -1932,13 +1964,13 @@ def run(args):
             output=directory/(label+workflow.output_suffix)
             ref_report=report['references'][i]
             if 'metric_self_check' not in ref_report:
-                calibration=workflow.quality(reference,reference,'self-'+str(i),count,float(probe['format']['duration']))
+                calibration=workflow.quality(reference,reference,'self-'+str(i),count,float(probe['format']['duration']),frame_evidence=frames)
                 if calibration['mean']<args.vmaf_mean or calibration['p5']<args.vmaf_p5:
                     raise RuntimeError('Reference quality baseline is below configured thresholds; evaluation inconclusive, source retained')
                 ref_report['metric_self_check']=calibration
             try:
                 workflow.validate(reference,output,probe,settings['codec'],label,frames)
-                quality=workflow.quality(reference,output,label,count,float(probe['format']['duration']))
+                quality=workflow.quality(reference,output,label,count,float(probe['format']['duration']),frame_evidence=frames)
                 sample.update(preservation_pass=True,decode_pass=True,quality_pass=quality['passed'],quality=quality)
                 if workflow.hdr_mode:sample['hdr_preservation_pass']=True
             except (ValueError,RuntimeError,subprocess.SubprocessError) as exc:
@@ -1946,7 +1978,21 @@ def run(args):
                 sample['error']=str(exc)
             return all(sample[k] for k in ('quality_pass','preservation_pass','decode_pass'))
 
-        def trial_candidate(settings, adaptive=False, speed_baseline=None):
+        def validate_trial(trial):
+            settings=trial['settings'];trial_id=trial['id']
+            for sample in trial['samples']:
+                i=int(sample['reference_id'])
+                if not sample.get('quality'):
+                    evaluate_sample(settings,trial_id,sample)
+                code=structural_failure_code(sample.get('error',''))
+                if code:trial['structural_failure']=code
+                save(directory/'trials.json',report)
+                if not all(sample[k] for k in ('quality_pass','preservation_pass','decode_pass')):
+                    trial['screened_out']='Scene '+str(i)+' failed; remaining quality checks skipped'
+                    save(directory/'trials.json',report)
+                    return
+
+        def trial_candidate(settings, adaptive=False, speed_baseline=None, defer_quality=False):
             analysis=getattr(args,'nvenc_analysis',None)
             if analysis is not None and settings['encoder'] in ('hevc_nvenc','av1_nvenc'):
                 settings=dict(settings,nvenc_analysis=analysis)
@@ -2020,7 +2066,7 @@ def run(args):
                         progress('Skipping preset: no measured speed gain',directory=directory,
                                  detail='Keeping the passing baseline; quality requirements unchanged')
                         return
-                if (early_quality and len(trial['samples'])==1 and len(references)>1 and
+                if (not defer_quality and early_quality and len(trial['samples'])==1 and len(references)>1 and
                         100*(1-sample['bytes']/report['references'][i]['bytes'])>=args.minimum_savings_percent):
                     if not evaluate_sample(settings,trial_id,sample):
                         code=structural_failure_code(sample.get('error',''))
@@ -2049,20 +2095,21 @@ def run(args):
                          detail=f'{savings:.1f}% sample reduction; {args.minimum_savings_percent:g}% required. Skipping costly quality checks.')
                 save(directory/'trials.json',report)
                 return
-            for sample in trial['samples']:
-                i=int(sample['reference_id'])
-                if not sample.get('quality'):
-                    evaluate_sample(settings,trial_id,sample)
-                code=structural_failure_code(sample.get('error',''))
-                if code:trial['structural_failure']=code
+            if defer_quality:
+                trial['validation_deferred']=True
                 save(directory/'trials.json',report)
-                if not all(sample[k] for k in ('quality_pass','preservation_pass','decode_pass')):
-                    trial['screened_out']='Scene '+str(i)+' failed; remaining quality checks skipped'
-                    save(directory/'trials.json',report)
-                    return
+                return
+            validate_trial(trial)
         for index, settings in enumerate(candidates):
-            trial_candidate(settings)
-            progress('Candidate completed', index+1, len(candidates), directory=directory, unit='candidates')
+            trial_candidate(settings,defer_quality=True)
+            progress('Candidate sample encodes completed', index+1, len(candidates), directory=directory, unit='candidates')
+        from candidate_validation import validate_initial
+        def validation_completed(trial,index,total):
+            save(directory/'trials.json',report)
+            progress('Candidate evaluation completed',index,total,directory=directory,unit='candidates',
+                     detail=('Keeping the smaller fully validated candidate; larger alternative quality not evaluated'
+                             if trial.get('validation_dominance') else trial['id']))
+        validate_initial(report,args.minimum_savings_percent,validate_trial,guard,validation_completed)
         decision = select_candidate(report, args.minimum_savings_percent)
         if getattr(args,'adaptive',False) and decision['action']=='keep_original':
             tested=0

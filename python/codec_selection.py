@@ -9,7 +9,7 @@ import math
 from fractions import Fraction
 
 # Bump when the measured search/evaluation policy changes, not for every UI release.
-EVALUATION_POLICY = 'source-driven-speed-aware-sampling-11'
+EVALUATION_POLICY = 'source-driven-speed-aware-sampling-12'
 
 
 def impossible_size_bound(references, samples, minimum_savings_percent):
@@ -101,6 +101,16 @@ def select_candidate(report, minimum_savings_percent=25.0):
         structural_reasons=list(reasons)
         valid_sizes=all(type(s.get('bytes')) is int and s['bytes']>0 for s in samples)
         encode_evidence=bool(samples) and all(s.get('encode_completed') is True and not s.get('error') for s in samples)
+        if isinstance(trial.get('validation_dominance'),dict):
+            from candidate_validation import dominance_proof
+            proof=dominance_proof(report,trial,trial['validation_dominance'].get('incumbent_id'),minimum_savings_percent)
+            if proof and not structural_reasons:
+                result['candidates'].append(dict(id=trial_id,codec=trial.get('codec'),
+                    output_bytes=proof['candidate_sample_bytes'],assessment='dominated_unmeasured',
+                    rejected_reasons=['not_competitive_with_validated_candidate'],quality_evaluated=False,
+                    incumbent_id=proof['incumbent_id'],
+                    detail='A fully validated smaller candidate already wins; this candidate was not quality-tested.'))
+                continue
         if (not [r for r in structural_reasons if r!='unmatched_reference_samples'] and
                 trial.get('size_screen',{}).get('early_bound') is True):
             bound=impossible_size_bound(refs,samples,minimum_savings_percent)

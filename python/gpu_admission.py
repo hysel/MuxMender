@@ -30,7 +30,9 @@ def family(command,seconds,video=None):
     if not isinstance(video,dict) or any(not finite(video.get(k)) or video[k]<=0 for k in ('width','height')):return None
     options=[]
     for i,arg in enumerate(command[:-1]):
-        if str(arg) in ('-preset','-cq','-pix_fmt','-vf','-filter:v','-filter_complex','-lavfi') or str(arg).startswith(('-c:v','-codec:v')):
+        if str(arg) in ('-preset','-cq','-pix_fmt','-vf','-filter:v','-filter_complex','-lavfi',
+                        '-threads','-threads:v','-filter_threads','-filter_complex_threads',
+                        '-hwaccel','-hwaccel_device','-hwaccel_output_format') or str(arg).startswith(('-c:v','-codec:v','-threads:v:')):
             value=str(command[i+1])
             if str(arg) in ('-vf','-filter:v','-filter_complex','-lavfi'):
                 # Generated metric report basenames do not affect GPU work.
@@ -96,8 +98,19 @@ def save(path,state):
     temporary.replace(path)
 
 
-def decide(state,data,key,now,waiting,maximum=2,paused=False):
+def ensure_group(state,key,now):
+    """Keep bounded throughput evidence for the command actually executed."""
     state.setdefault('schema',1);groups=state.setdefault('groups',{})
+    current=key or 'unknown'
+    group=groups.setdefault(current,dict(single=[],paired=[],mode='serial',updated=now))
+    group['updated']=now
+    older=sorted((name for name in groups if name!=current),key=lambda k:groups[k].get('updated',0))
+    for old in older[:max(0,len(groups)-16)]:groups.pop(old,None)
+    return group
+
+
+def decide(state,data,key,now,waiting,maximum=2,paused=False):
+    group=ensure_group(state,key,now)
     good,reason=headroom(data)
     # Different work cannot share throughput baselines. It can still share
     # spare hardware after sustained headroom; keep that admission independent
@@ -109,9 +122,6 @@ def decide(state,data,key,now,waiting,maximum=2,paused=False):
           not 0<=now-mixed['sampled_at']<=10):
         mixed['healthy_since']=now
     mixed['sampled_at']=now
-    group=groups.setdefault(key or 'unknown',dict(single=[],paired=[],mode='serial',updated=now))
-    group['updated']=now
-    for old in sorted(groups,key=lambda k:groups[k].get('updated',0))[:-16]:groups.pop(old,None)
     if not good or paused or maximum<2 or not key:
         group.update(healthy_since=None,mode='serial',paired=[],cooldown=now+60)
         limit=1

@@ -2,6 +2,8 @@
 import math
 
 POLICY='measured-speed-size-v1'
+MAXIMUM_RELATIVE_EXTRA_PERCENT=5
+MAXIMUM_PROJECTED_EXTRA_BYTES=512*1024**2
 
 def faster_presets(settings):
     if settings.get('encoder') not in ('hevc_nvenc','av1_nvenc','h264_nvenc'):return []
@@ -71,7 +73,7 @@ def choose(report,eligible,smallest):
         if not measured or measured.keys()!=baseline.keys():continue
         extra=(row[0]-smallest[0])*source_bytes/reference_bytes
         projected_gain=(sum(baseline.values())-sum(measured.values()))*scale
-        if (projected_gain<=overhead or row[0]>smallest[0]*1.05 or extra>512*1024**2 or
+        if (projected_gain<=overhead or row[0]>smallest[0]*(1+MAXIMUM_RELATIVE_EXTRA_PERCENT/100) or extra>MAXIMUM_PROJECTED_EXTRA_BYTES or
                 sum(measured.values())>sum(baseline.values())*.8 or
                 any(measured[k]>baseline[k] for k in baseline)):continue
         choices.append((sum(measured.values()),row[0],row[1],row,extra))
@@ -81,6 +83,6 @@ def choose(report,eligible,smallest):
         measured_encoding_seconds=seconds,smallest_encoding_seconds=sum(baseline.values()),
         measured_time_reduction_percent=100*(1-seconds/sum(baseline.values())),
         comparison_seconds=overhead,projected_net_encoding_seconds_saved=(sum(baseline.values())-seconds)*scale-overhead,
-        projected_extra_bytes=math.ceil(extra),maximum_relative_output_increase_percent=5,
-        maximum_projected_extra_bytes=512*1024**2,estimate_only=True,
+        projected_extra_bytes=math.ceil(extra),maximum_relative_output_increase_percent=MAXIMUM_RELATIVE_EXTRA_PERCENT,
+        maximum_projected_extra_bytes=MAXIMUM_PROJECTED_EXTRA_BYTES,estimate_only=True,
         quality_thresholds_unchanged=True)

@@ -9,6 +9,11 @@ and Balanced quality are a useful starting point.
 results. It selects a smaller candidate only when it meets your chosen checks.
 It doesn't quietly fall back to a slow CPU encoder or lower your quality setting.
 
+It checks smaller candidates first. Once one passes, larger alternatives can
+avoid further testing when they cannot improve the existing size or speed
+choice. An untested alternative is never treated as passing. The selected copy
+still needs full output validation before replacement.
+
 A codec name alone doesn't tell you whether a file can shrink. An older H.264
 file may already be compact; a newer codec may still have room to improve.
 
@@ -128,6 +133,11 @@ Per-stage thread counts stay within the tested limits. Container CPU and memory
 limits still apply, and another application's activity can delay new work.
 When capacity falls, running work drains before more work starts. GPU sharing
 can pause supported stages separately when another app needs the GPU.
+
+Supported NVIDIA HDR encodes can use more CPU capacity to keep the encoder fed.
+When a smaller worker pool fits the remaining budget, the app can use it instead
+of waiting for a larger allocation. This changes resource use, not your picture
+quality or preservation requirements.
 
 Resource scheduling does not change the selected quality profile, preservation
 checks or savings target. More active videos is useful only if the batch finishes
