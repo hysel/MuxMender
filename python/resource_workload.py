@@ -30,8 +30,15 @@ def demand(command,env=None):
     decode_cost=0 if gpu_decode else min(8,command.count('-i')*max(threads,default=2))
     cost=decode_cost+max(scoring,default=2) if quality else max(2,decode_cost) if encode else max(threads,default=2)
     kind='mixed-quality' if quality and gpu_render else 'cpu-quality' if quality else 'encode' if encode else 'gpu-decode' if gpu_decode else 'cpu-check'
-    return dict(kind=kind,cpu_cost=min(16,max(1,cost)),memory_gib=2,
+    return dict(kind=kind,cpu_cost=min(16,max(1,cost)),memory_gib=2,cpu_inputs=0 if gpu_decode else command.count('-i'),
         gpu_encode=encode,gpu_decode=gpu_decode,gpu_compute=gpu_render,scoring_threads=max(scoring,default=0))
+
+
+def single_cpu_encode(request):
+    """One software-decoded input feeding the dedicated NVIDIA encoder."""
+    return (request.get('kind')=='encode' and request.get('gpu_encode') is True
+            and not request.get('gpu_decode') and not request.get('gpu_compute')
+            and request.get('cpu_inputs')==1)
 
 
 def safe_root(root):
@@ -58,6 +65,7 @@ class StageLease:
             self.data['allocated_workers']=workers
             if self.data.get('scoring_threads'):self.data['cpu_cost']=max(1,self.data['cpu_cost']-max(0,self.data['scoring_threads']-workers))
             elif self.data['kind']=='cpu-check':self.data['cpu_cost']=min(self.data['cpu_cost'],workers)
+            elif single_cpu_encode(self.data):self.data['cpu_cost']=min(self.data['cpu_cost'],workers)
         self.write()
 
     def close(self):

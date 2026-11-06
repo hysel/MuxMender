@@ -4,6 +4,39 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
+## 20261106-v71
+
+- Check smaller encoding candidates first. Once a fully validated option wins,
+  avoid expensive checks on larger alternatives that cannot improve the choice.
+  Close alternatives, retries and final output validation still get their checks.
+- Feed supported NVIDIA HDR encodes with more CPU decoding capacity when the
+  server has room. Respect CPU limits and other applications; use a smaller
+  worker pool when it fits instead of waiting unnecessarily.
+- Measure active GPU scoring time separately from resource waits and pauses.
+  Explain why CPU scoring was retained and use complete frame evidence when a
+  container omitted its scan-type tag.
+- Avoid repeating an oversized HDR reference-cache attempt for every scene.
+- Preserve verified source color interpretation in temporary container read
+  views, fixing false color-range failures while keeping real conflicts blocked.
+- Keep throughput measurements separate for different decoder worker counts
+  and hardware routes. Report the allocation actually used after a fallback.
+
+Your quality and savings targets, audio, subtitles, timing and replacement
+checks are unchanged. No new mounts, environment variables or host scripts are
+required. Existing resource settings are kept after the update.
+
+## 20261105-v70
+
+- Let supported NVIDIA quality checks use GPU scoring after confirming matching
+  CPU/GPU scores and a speed gain. Confirm near-threshold results on CPU and
+  retain CPU fallback when acceleration is unavailable or unhelpful.
+- Make automatic resource use aware of running stages and available CPU, RAM
+  and GPU engines, rather than keeping a fixed number of videos busy.
+- Reuse pixel-verified lossless HDR comparison references within a job and
+  remove temporary reference files during normal cleanup.
+- Improve sample-based size forecasts and recover dashboard records from brief
+  Windows file-sharing conflicts.
+
 ## 20261030-v69
 
 - Add an on-demand time breakdown and encoding-choice comparison inside each

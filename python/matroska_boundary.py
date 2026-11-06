@@ -89,7 +89,15 @@ def prepare(work,source,metadata,source_sha256,error):
     work.guard()
     if work.audit_identity(source)!=before:raise ValueError('Source changed during container recovery')
     checksum=hashed.hexdigest()
+    view_identity=work.audit_identity(target)
     if digest(target,work.guard)!=checksum:raise ValueError('Input read view failed its complete byte check')
+    if work.audit_identity(target)!=view_identity:raise ValueError('Input read view changed during its complete byte check')
+    # The read view has the original byte-identical header. Bind the already
+    # established source interpretation to this exact private copy, not to a
+    # filename that another output could imitate.
+    if not hasattr(work,'reader_source_evidence'):work.reader_source_evidence={}
+    work.reader_source_evidence[str(target.resolve())]=dict(source=str(source.resolve()),
+        source_identity=before,view_identity=view_identity)
     work.reader_source_paths.add(str(target.resolve()))
     after=work.probe(target)
     metadata_check(original,after,main_video(original)['codec_name'])

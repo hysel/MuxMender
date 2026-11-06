@@ -62,10 +62,10 @@ def _gpu_data(data,engine):
 def slot(command,guard,*,pool,env,estimated_duration=None,timeout=None):
     import fcntl
     from adaptive_resources import cpu_room,pressure_ok,memory_room,finite
-    from resource_workload import demand,safe_root
-    from validation_resources import AdmissionBudget,reader_threads,ticket_rank,validation_rank
+    from resource_workload import demand,safe_root,single_cpu_encode
+    from validation_resources import AdmissionBudget,reader_threads,ticket_rank,validation_rank,bounded_reader
     from job_tracking import progress,current_workflow_stage
-    from gpu_admission import family,load,save,decide,observe
+    from gpu_admission import family,load,save,decide,observe,ensure_group
     from cooperative_pause import configured_lease,lease_reason
     root=Path(env['MUXMENDER_VALIDATION_LOCK_ROOT']);safe_root(root)
     request=demand(command,env);quality=request['kind'] in ('cpu-quality','mixed-quality')
@@ -125,7 +125,11 @@ def slot(command,guard,*,pool,env,estimated_duration=None,timeout=None):
                             capacity=decide(state,_gpu_data(data,engine),key,time.time(),time.monotonic()-started,maximum)
                             save(path/'adaptive.json',state)
                         else:capacity=2 if room>=6 else 1
+                        if ahead:
+                            reason='Waiting for an older '+(engine or 'CPU')+' stage request'
                         if not ahead:
+                            reason=('Waiting for an available '+engine+' stage slot (current limit '+str(capacity)+')'
+                                    if engine else 'Waiting for an available CPU check slot')
                             for name in ('heavy-reader.lock','heavy-reader-2.lock')[:capacity]:
                                 fd=_open(path/name)
                                 try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -135,11 +139,32 @@ def slot(command,guard,*,pool,env,estimated_duration=None,timeout=None):
                                 if quality and wanted>cpu_budget:
                                     selected=2 if limit>=2 else 1;wanted=max(1,wanted-max(0,limit-selected))
                                 tokens=claim_cpu(root,cpu_budget,wanted,solo=True,data=data,memory_gib=request['memory_gib'])
-                                if tokens is None:os.close(fd);continue
+                                # Another stage can hold part of an otherwise
+                                # ample host budget. Try the already-qualified
+                                # smaller scoring/decoder pool against that remainder,
+                                # not only against the total host allocation.
+                                encode_fallback=(single_cpu_encode(request) and selected==4 and wanted==4)
+                                if tokens is None and (quality and selected>2 or encode_fallback):
+                                    smaller=max(1,wanted-(selected-2))
+                                    tokens=claim_cpu(root,cpu_budget,smaller,solo=True,data=data,memory_gib=request['memory_gib'])
+                                    if tokens is not None:selected=2;wanted=smaller
+                                if tokens is None:
+                                    reason='Waiting for CPU or memory capacity reserved by active stages'
+                                    os.close(fd);continue
                                 cpu=tokens;slot_fd=fd;limit=selected
                                 if len(tokens)<wanted:limit=1
                                 ticket.unlink(missing_ok=True);stage_started=time.monotonic()
                                 if state is not None:
+                                    # The wrapper applies this same bound after
+                                    # admission. A smaller decoder/scorer must
+                                    # never train the originally requested pool.
+                                    requested_key=key
+                                    key=family(bounded_reader(command,limit),estimated_duration)
+                                    actual_group=ensure_group(state,key,time.time())
+                                    if key!=requested_key:
+                                        state['status'].update(reason='Using a smaller worker allocation; measuring its throughput separately',
+                                            baseline_samples=len(actual_group.get('single',[])),
+                                            trial_samples=len(actual_group.get('paired',[])),throughput_gain=None)
                                     mixed=any(v.get('family')!=key for v in state['active'].values())
                                     for record in state['active'].values():
                                         record.update(overlap=True,overlap_started=stage_started)
