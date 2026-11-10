@@ -13,6 +13,10 @@ class ReferenceDisplayTimingError(ValueError):
     """Unchanged sample pictures no longer have original display timing."""
 
 
+class ReferencePictureIdentityError(ValueError):
+    """A copied staging GOP cannot prove the original decoded pictures."""
+
+
 class ReferenceTrackTimingError(ValueError):
     """Unchanged copied packets no longer share the original track clock."""
 
@@ -100,7 +104,7 @@ def verify_decoded_slice(source, sample, expected_shift=None, tolerance=Fraction
              and all(a['hash']==b['hash'] and a['size']==b['size']
                     for a,b in zip(source[i:i+len(sample)],sample))]
     if len(matches)!=1:
-        raise ValueError('Decoded reference differs from source pictures')
+        raise ReferencePictureIdentityError('Decoded reference differs from source pictures')
     pairs=list(zip(source[matches[0]:],sample))
     shift=Fraction(pairs[0][1]['pts'])-Fraction(pairs[0][0]['pts'])
     if any(abs(Fraction(b['pts'])-Fraction(a['pts'])-shift)>tolerance for a,b in pairs):
@@ -265,7 +269,7 @@ def recover_reference(workflow, source, metadata, position, seconds, label, *, e
     decoded_source=decoded(source,'source',True);decoded_sample=decoded(output,'sample')
     try:
         decoded_shift=verify_decoded_slice(decoded_source,decoded_sample,shift,tolerance)
-    except ReferenceDisplayTimingError:
+    except (ReferenceDisplayTimingError,ReferencePictureIdentityError):
         if generated_pts and not workflow.hdr_mode and suffix=='.mkv':
             return recover_lossless_reference(workflow,source,metadata,plan,label,original,
                                               decoded_source,decoded,packets,tolerance)

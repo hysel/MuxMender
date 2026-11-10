@@ -9,7 +9,7 @@ import math
 from fractions import Fraction
 
 # Bump when the measured search/evaluation policy changes, not for every UI release.
-EVALUATION_POLICY = 'source-driven-speed-aware-sampling-12'
+EVALUATION_POLICY = 'source-driven-speed-aware-sampling-13'
 
 
 def impossible_size_bound(references, samples, minimum_savings_percent):
@@ -90,6 +90,8 @@ def select_candidate(report, minimum_savings_percent=25.0):
             reasons.append('encoder_not_runtime_verified')
         if trial.get('playback_compatible') is not True:
             reasons.append('target_playback_not_verified')
+        if trial.get('full_source_preservation',{}).get('supported') is False:
+            reasons.append('full_source_metadata_not_preservable_by_candidate')
         if trial.get('codec') not in ('hevc', 'av1','h264'):
             reasons.append('unsupported_codec')
         if not trial.get('encoder') or not isinstance(trial.get('settings'), dict) or not trial['settings']:

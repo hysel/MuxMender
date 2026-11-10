@@ -56,7 +56,10 @@ def sei(header,items):
     return header+escape(b''.join(integer(k)+integer(len(p))+p for k,p in items)+b'\x80')
 
 
-def patch_packet(packet,payload):
+def patch_packet(packet,payload,*,mastering='unchanged'):
+    change_light=payload!='unchanged';change_mastering=mastering!='unchanged'
+    if change_light and (not isinstance(payload,bytes) or len(payload)!=4):raise ValueError('Invalid content-light payload')
+    if change_mastering and (not isinstance(mastering,bytes) or len(mastering)!=24):raise ValueError('Invalid mastering-display payload')
     starts=list(START.finditer(packet));out=bytearray();pictures=0;vcl=hashlib.sha256()
     if not starts or starts[0].start()!=0:raise ValueError('Invalid Annex-B packet')
     for i,match in enumerate(starts):
@@ -70,10 +73,12 @@ def patch_packet(packet,payload):
             if nal[2]&128:
                 pictures+=1
                 # Prefix SEI inherits temporal_id_plus1 from its associated picture.
-                out+=b'\x00\x00\x00\x01'+sei(bytes([39<<1,nal[1]&7]),[(144,payload)])
+                items=([(137,mastering)] if change_mastering else [])+([(144,payload)] if change_light else [])
+                if items:out+=b'\x00\x00\x00\x01'+sei(bytes([39<<1,nal[1]&7]),items)
             vcl.update(prefix+nal)
         if kind in (39,40):
-            items=messages(nal);kept=[item for item in items if item[0]!=144]
+            items=messages(nal);kept=[item for item in items if not (
+                (change_light and item[0]==144) or (change_mastering and item[0]==137))]
             if kept==items:out+=prefix+nal
             elif kept:out+=prefix+sei(nal[:2],kept)
         else:out+=prefix+nal
@@ -89,7 +94,7 @@ def content_light(frame):
     return struct.pack('>HH',*values)
 
 
-def restore(source,destination,source_frames,encoded_frames,guard=lambda:None):
+def restore(source,destination,source_frames,encoded_frames,guard=lambda:None,*,restore_light=True,restore_mastering=False):
     source=Path(source);destination=Path(destination)
     if source.resolve()==destination.resolve() or destination.exists() or destination.is_symlink():
         raise ValueError('Content-light restoration requires a new output')
@@ -100,7 +105,11 @@ def restore(source,destination,source_frames,encoded_frames,guard=lambda:None):
         try:position=int(encoded['pkt_pos'])
         except (KeyError,ValueError,TypeError):raise ValueError('Missing decoded packet position') from None
         if position<0 or position in mapping:raise ValueError('Ambiguous decoded packet position')
-        mapping[position]=content_light(reference)
+        from hdr_mastering import mastering_payload
+        light=content_light(reference) if restore_light else 'unchanged'
+        mastering=mastering_payload(reference) if restore_mastering else 'unchanged'
+        if restore_mastering and mastering is None:raise ValueError('Incomplete source mastering-display timeline')
+        mapping[position]=(light,mastering)
     offsets=sorted(mapping);size=source.stat().st_size
     if not offsets or offsets[0]!=0 or offsets[-1]>=size:raise ValueError('Incomplete encoded packet coverage')
     before=hashlib.sha256();after=hashlib.sha256()
@@ -110,10 +119,13 @@ def restore(source,destination,source_frames,encoded_frames,guard=lambda:None):
             if not 0<length<=64*1024*1024:raise ValueError('Invalid encoded packet length')
             packet=reader.read(length)
             if len(packet)!=length:raise ValueError('Encoded input truncated')
-            patched,digest=patch_packet(packet,mapping[position])
+            light,mastering=mapping[position]
+            patched,digest=patch_packet(packet,light,mastering=mastering)
             # Reparse to independently check that all coded slices remain identical.
-            _,checked=patch_packet(patched,mapping[position])
+            _,checked=patch_packet(patched,light,mastering=mastering)
             before.update(digest);after.update(checked);writer.write(patched)
     if before.digest()!=after.digest():raise ValueError('Coded picture payload changed')
     return dict(frames=len(offsets),coded_picture_sha256=before.hexdigest(),picture_payload_unchanged=True,
-                method='decoded-packet-position-content-light-v1',full_validation_required=True)
+                method='decoded-packet-position-static-hdr-v2' if restore_mastering else 'decoded-packet-position-content-light-v1',
+                mastering_display_restored=restore_mastering,content_light_restored=restore_light,
+                full_validation_required=True)

@@ -116,3 +116,26 @@ class OwnedStagePause:
             self._signal(signal.SIGCONT)
             self.total += time.monotonic()-self.started
             self.paused, self.started, self.reason = False, None, None
+
+
+class OwnedStagePauseGroup:
+    """Pause every directly owned pipeline child under one stage watchdog."""
+    def __init__(self, children, path):
+        self.members=[OwnedStagePause(child,path) for child in children]
+        self.reason=None
+
+    def update(self):
+        states=[member.update() for member in self.members]
+        self.reason=next((member.reason for member in self.members if member.paused),None)
+        return any(states)
+
+    def elapsed(self):
+        return max((member.elapsed() for member in self.members),default=0)
+
+    def resume(self):
+        first=None
+        for member in self.members:
+            try:member.resume()
+            except OSError as exc:
+                if first is None:first=exc
+        if first is not None:raise first

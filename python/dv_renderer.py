@@ -1,6 +1,7 @@
 """Process-scoped hardware renderer discovery; no driver installation or edits."""
 import ctypes.util
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -20,7 +21,7 @@ def selected_device(lines):
     return dict(index=index,name=name,hardware=hardware,software=software)
 
 
-def discover(ffmpeg, directory, guard, *, device=None):
+def discover(ffmpeg, directory, guard, *, device=None, timeout=120):
     """Try visible devices; require actual GPU rendering, not encoder labels.
 
     User-provided Vulkan loader settings are respected. A missing Linux NVIDIA
@@ -29,6 +30,8 @@ def discover(ffmpeg, directory, guard, *, device=None):
     untouched; actual filter execution must still succeed.
     """
     if device is not None and (type(device) is not int or device<0):raise ValueError('Invalid Vulkan device index')
+    if type(timeout) not in (int,float) or not math.isfinite(timeout) or timeout<=0:
+        raise ValueError('Invalid Vulkan startup timeout')
     directory=Path(directory);attempts=[]
     environments=[{}]
     explicit=any(os.environ.get(k) for k in ('VK_ICD_FILENAMES','VK_DRIVER_FILES'))
@@ -57,7 +60,7 @@ def discover(ffmpeg, directory, guard, *, device=None):
                     if 'selected:' in line or re.search(r'\d+: .*\((discrete|integrated|virtual)\)',line):lines.append(line)
                     return False
                 try:
-                    stage(command,1,timeout=30,stall=20,guard=guard,observe=observe,cwd=directory,
+                    stage(command,1,timeout=timeout,stall=min(90,timeout),guard=guard,observe=observe,cwd=directory,
                           env=dict(os.environ,**overrides))
                 except RuntimeError as exc:
                     guard();error=str(exc)[-1000:]

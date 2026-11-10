@@ -440,7 +440,10 @@ class Controls(CopyApproval, WorkspaceHistory, CancelledQueue):
                 path=self.root/('request-'+job['id'])/'worker.log'
                 if path.resolve().is_relative_to(self.root):
                     log=tail(path)
-                    if 'ValueError: Only progressive 8-bit 4:2:0 SDR is supported by measured auto mode' in log:
+                    from worker_failure import terminal_reason
+                    specific=terminal_reason(log)
+                    if specific:job['reason']=specific
+                    elif 'ValueError: Only progressive 8-bit 4:2:0 SDR is supported by measured auto mode' in log:
                         job['reason']='Unsupported input: this workflow requires progressive 8-bit SDR video. Original retained.'
         empty=not any(job['state'] in ('pending','running') for job in jobs)
         pause_reason=(('Queue is empty. Adding new videos starts processing automatically.'
@@ -717,6 +720,10 @@ class Controls(CopyApproval, WorkspaceHistory, CancelledQueue):
             code=child.wait()
             with self.mutex:self.children.pop(job['id'],None)
         state,reason='failed','Worker failed; see worker.log'
+        if code:
+            from dashboard import tail
+            from worker_failure import terminal_reason
+            reason=terminal_reason(tail(folder/'worker.log')) or reason
         results=list(folder.glob('auto-*/status.json'))
         if len(results)==1:
             cleanup=read(results[0].parent/'terminal-cleanup.json')

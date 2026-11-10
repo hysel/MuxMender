@@ -4,6 +4,48 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
+## Unreleased
+
+- Recover older AVI samples through a lossless working copy when a direct
+  copy cannot reproduce the original pictures. Check the pictures, timing and
+  copied tracks before using that sample.
+- Preserve display metadata carried by SDR video instead of rejecting it by
+  category. Every value must still match the original.
+- Preserve changing HDR mastering metadata through HEVC. Recheck alternatives
+  when the smaller candidate cannot preserve the complete source metadata.
+- Recover copied subtitle and secondary-video tracks when their original
+  timestamp order cannot pass through the first muxing attempt.
+- Keep the original declared playback length when a remux recalculates it.
+  Complete picture and copied-track validation remains required.
+- Verify AAC packet-duration representation changes against the original audio
+  instead of reporting them as changed audio.
+- Avoid repeated work when checking audio tracks with missing packet durations.
+- Recover a malformed MPEG-2 initialization header in a verified working copy,
+  keeping the original and compressed media bytes intact.
+- Let matching 10-bit SDR quality checks use GPU scoring after a complete
+  CPU/GPU trial confirms matching scores and a speed gain. CPU fallback and
+  near-threshold confirmation remain in place.
+- Stream native Dolby Vision comparisons into GPU scoring when a matching
+  CPU trial confirms the scores and a speed gain. Share the source render
+  between its self-check and candidate check; both still cover every frame.
+- Let a long Dolby Vision video qualify its own GPU scorer with a bounded
+  comparison when no earlier scene matches. Keep that trial separate from
+  complete video validation.
+- Stop a failed CPU quality check promptly instead of repeating it as a GPU
+  fallback attempt.
+- Use the shared audio checks for native Dolby Vision conversions. Preserve
+  existing source-audio issues with a visible warning, and reuse complete audio
+  checks only while their source and output proofs still match.
+- Pause or cancel all parts of a streaming comparison together, and reserve
+  resources for its renderers as well as its scorer before starting work.
+- Allow bounded shader startup time during hardware-renderer discovery,
+  respecting a shorter user-selected task limit.
+- Show the specific error when a worker fails before creating its result.
+- Keep generated hard links registered for cleanup after metadata restoration.
+
+These changes are under development and have not been published. Quality,
+savings and replacement checks remain in place.
+
 ## 20261106-v71
 
 - Check smaller encoding candidates first. Once a fully validated option wins,

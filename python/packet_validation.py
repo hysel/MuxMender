@@ -230,6 +230,19 @@ def audio_hash_rows(path):
 
 def missing_audio_duration_case(reference, output):
     """Representation candidate only; requires independent decoded audio proof."""
+    return _audio_duration_case(reference, output, materialized=False)
+
+
+def materialized_audio_duration_case(reference, output):
+    """Candidate only: absent source durations acquired positive output values.
+
+    Complete decoded audio equality AND exact native-clock duration projection
+    must be verified before this can authorize any packet comparison exception.
+    """
+    return _audio_duration_case(reference, output, materialized=True)
+
+
+def _audio_duration_case(reference, output, *, materialized):
     count=0;missing=False
     try:
         for a,b in zip_longest(packet_rows(reference),packet_rows(output)):
@@ -237,13 +250,104 @@ def missing_audio_duration_case(reference, output):
             for key in ('pts_time','dts_time'):
                 if abs(Fraction(a[key])-Fraction(b[key]))>Fraction(1,500):return None
             left,right=a.get('duration_time'),b.get('duration_time')
-            if right in (None,'N/A') and left not in (None,'N/A'):
-                if Fraction(left)<=0:return None
+            left_missing=left in (None,'N/A');right_missing=right in (None,'N/A')
+            if (left_missing if materialized else right_missing) and not (right_missing if materialized else left_missing):
+                if Fraction(right if materialized else left)<=0:return None
                 missing=True
             elif left!=right and abs(Fraction(left)-Fraction(right))>Fraction(1,500):return None
             count+=1
         return count if count and missing else None
     except (KeyError,ValueError,TypeError,ZeroDivisionError):return None
+
+
+def verify_materialized_audio_durations(reference, output, decoded, time_base, guard=lambda:None, *, source=None, stream_index=None):
+    """Prove one AAC packet per decoded frame and its whole-native-tick duration.
+
+    PCM equality alone cannot validate a muxer's declared packet duration: an
+    audio decoder can ignore an erroneous duration. Check every newly supplied
+    duration independently against its corresponding complete decoded frame.
+    """
+    tick=Fraction(time_base)
+    if tick<=0:raise ValueError('Positive output audio time base required')
+    if source is not None:
+        return _verify_aac_packet_durations(reference,output,decoded,tick,source,stream_index,guard)
+    count=inferred=0
+    for a,b,frame in zip_longest(packet_rows(reference),packet_rows(output),audio_hash_rows(decoded)):
+        guard();count+=1
+        if a is None or b is None or frame is None:
+            raise ValueError('Audio packet/frame association is incomplete')
+        if not a.get('data_hash') or a.get('data_hash')!=b.get('data_hash'):
+            raise ValueError('Materialized-duration packet payload changed')
+        if any(abs(Fraction(a[key])-Fraction(b[key]))>Fraction(1,500)
+               for key in ('pts_time','dts_time')):
+            raise ValueError('Materialized-duration packet clock changed')
+        if abs(Fraction(a['pts_time'])-frame['pts'])>Fraction(1,500):
+            raise ValueError('Audio packet does not match decoded-frame presentation')
+        if a.get('duration_time') in (None,'N/A') and b.get('duration_time') not in (None,'N/A'):
+            expected=(frame['duration']//tick)*tick
+            if expected<=0 or Fraction(b['duration_time'])!=expected:
+                raise ValueError('Materialized audio duration is not the decoded native-clock projection')
+            inferred+=1
+    if not inferred:raise ValueError('No materialized source audio durations')
+    return dict(packets=count,materialized_durations=inferred,output_time_base=str(tick),
+                method='complete-decoded-audio-native-duration-projection')
+
+
+def _verify_aac_packet_durations(reference,output,decoded,tick,source,stream_index,guard):
+    """Decode unchanged compressed AAC packets before playback priming trims.
+
+    Priming can make the first compressed packets non-output pictures. Derive
+    their sample counts from the actual AAC payload, not the first audible PCM
+    frame or a guessed constant frame size. Full audible PCM/timing equality is
+    checked separately by the caller, including the original trim semantics.
+    """
+    import av,hashlib
+    if type(stream_index) is not int or stream_index<0:raise ValueError('Original AAC stream index required')
+    targets={};count=0
+    for count,(a,b) in enumerate(zip_longest(packet_rows(reference),packet_rows(output)),1):
+        guard()
+        if a is None or b is None or not a.get('data_hash') or a.get('data_hash')!=b.get('data_hash'):
+            raise ValueError('Materialized-duration packet payload/count changed')
+        if any(abs(Fraction(a[k])-Fraction(b[k]))>Fraction(1,500) for k in ('pts_time','dts_time')):
+            raise ValueError('Materialized-duration packet clock changed')
+        if a.get('duration_time') in (None,'N/A') and b.get('duration_time') not in (None,'N/A'):
+            targets[count]=(a['data_hash'],Fraction(b['duration_time']))
+    if not targets:raise ValueError('No materialized source audio durations')
+    last_target=max(targets)
+    decoded_frames=sum(1 for frame in audio_hash_rows(decoded))
+    if not decoded_frames:raise ValueError('Complete decoded audio evidence required')
+    path=Path(source);stat=path.stat();identity=(stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns)
+    found={}
+    with av.open(str(path)) as reader:
+        stream=next((s for s in reader.streams if s.index==stream_index),None)
+        if stream is None or stream.type!='audio' or stream.codec_context.name!='aac':
+            raise ValueError('Materialized packet duration requires the original AAC stream')
+        decoder=av.CodecContext.create('aac','r');decoder.extradata=stream.codec_context.extradata
+        number=0
+        for packet in reader.demux(stream):
+            guard()
+            if not packet.size:continue
+            number+=1;raw=bytes(packet)
+            # New packets deliberately lack decoder trim side data. Nothing is
+            # written back, and the copied playback track retains that side data.
+            frames=decoder.decode(av.Packet(raw))
+            if number in targets:
+                digest,declared=targets[number]
+                if digest!='SHA256:'+hashlib.sha256(raw).hexdigest():raise ValueError('AAC duration source payload changed')
+                if not frames or any(f.samples<=0 or f.sample_rate<=0 for f in frames):
+                    raise ValueError('AAC packet has no unambiguous decoded sample duration')
+                duration=sum((Fraction(f.samples,f.sample_rate) for f in frames),Fraction(0))
+                expected=(duration//tick)*tick
+                if expected<=0 or declared!=expected:
+                    raise ValueError('Materialized audio duration is not the decoded native-clock projection')
+                found[number]=dict(samples=sum(f.samples for f in frames),seconds=str(duration),native_seconds=str(expected))
+            if number>=last_target:break
+    after=path.stat()
+    if identity!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns):raise ValueError('AAC duration source changed')
+    if set(found)!=set(targets):raise ValueError('Incomplete AAC packet duration proof')
+    return dict(packets=count,materialized_durations=len(found),output_time_base=str(tick),
+                decoded_audio_frames=decoded_frames,packet_sample_counts=found,
+                method='original-aac-payload-samples-native-duration-projection')
 
 
 def reconstructed_audio_timestamp_case(reference, output):

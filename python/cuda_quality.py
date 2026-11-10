@@ -15,7 +15,7 @@ import sys
 import time
 
 ROOT = Path('/opt/muxmender-score')
-POLICY = 2
+POLICY = 3
 FRAME_TOLERANCE = 0.0001
 BOUNDARY_MARGIN = 0.01
 
@@ -91,7 +91,8 @@ def covered(video, output, hdr_mode, preset, decoder_options):
         return False
     if video.get('pix_fmt') != output.get('pix_fmt'):
         return False
-    return ((not hdr_mode and video.get('pix_fmt') == 'yuv420p') or
+    return ((not hdr_mode and video.get('pix_fmt') in ('yuv420p','yuv420p10le') and
+             video.get('color_transfer') not in ('smpte2084','arib-std-b67')) or
             (hdr_mode in ('pq', 'hdr10', 'hdr10plus') and video.get('pix_fmt') == 'yuv420p10le'))
 
 
@@ -189,6 +190,7 @@ class Scorer:
             cpu()
             return dict(info, reason='CPU scoring retained until a matching short trial qualifies')
         cpu_seconds, cpu_scope = cpu() if qualifying else (None, None)
+        cpu_running=False;cpu_ready=qualifying
         gpu_name = label + '-cuda-vmaf.json'
         try:
             command = quality_command(self.context['binary'], output, reference, cuda_graph(graph, gpu_name))
@@ -216,7 +218,8 @@ class Scorer:
             near = any(abs(summary[k]-floor) <= BOUNDARY_MARGIN for k, floor in
                        (('mean', w.args.vmaf_mean), ('p5', w.args.vmaf_p5)))
             if near:
-                cpu()
+                cpu_running=True;cpu()
+                cpu_running=False;cpu_ready=True
                 proof = equivalent(destination, gpu_path, count, w.args.vmaf_mean, w.args.vmaf_p5)
                 if not proof['passed']:
                     self.profiles[profile] = False
@@ -228,9 +231,12 @@ class Scorer:
                         gpu_timing_scope=gpu_scope,
                         runtime=self.context['binding'], qualification='matching-job-local-trial')
         except Exception as exc:
+            if cpu_running:
+                self.profiles[profile]=False
+                raise
             w.guard()  # Cancellation/deadlines must not be converted into fallback.
             self.profiles[profile] = False
-            if not qualifying:
+            if not cpu_ready:
                 cpu()
             return dict(info, reason='GPU scoring unavailable; complete CPU check used',
                         diagnostic=type(exc).__name__+': '+str(exc)[:400])

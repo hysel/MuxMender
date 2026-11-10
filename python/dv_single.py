@@ -25,7 +25,11 @@ def encode_candidate(workflow, source, settings, label, *, dovi_tool='dovi_tool'
     directory=Path(workflow.directory)/label;directory.mkdir()
     args=copy(workflow.args);args.source=source
     work=Workflow(args,directory,workflow.guard)
+    work.native_quality_profiles=workflow.native_quality_profiles
     identity=digest(source,work.guard)
+    if source==Path(getattr(workflow.args,'source',source)).resolve():
+        workflow.ensure_source_audio(source,before,identity)
+    work.audio_crc_warnings=list(workflow.audio_crc_warnings)
     duration=float(before['format']['duration']);rate=str(Fraction(main_video(before)['avg_frame_rate']))
     def guard():work.guard()
     guard.phase='Checking complete single-layer DV frames';guard.duration=duration;guard.allow_hdr10plus=True
@@ -67,11 +71,7 @@ def encode_candidate(workflow, source, settings, label, *, dovi_tool='dovi_tool'
     work.check_metadata(source,output,before,after,'hevc','final-metadata',verified_frame_count=count,
                         verified_hdr_frames=True,verified_variable_timing=True)
     work.validate_copied_tracks(source,output,before,after,'final-tracks')
-    primary=main_video(after)['index']
-    indices=[s['index'] for s in after['streams'] if s['codec_type'] in ('video','audio') and s['index']!=primary]
-    if indices:
-        work.execute([args.ffmpeg,'-v','error','-xerror','-nostdin','-threads','2','-i',str(output),
-            *[v for i in indices for v in ('-map','0:'+str(i))],'-f','null','-'],'decode-copied-tracks',duration,strict_decode=True)
+    work.validate_remaining_streams(source,output,before,after,'final-tracks',count)
     quality=measure_native_quality(work,source,output,count,rate,'native-quality',device=device)
     if configuration['dv_profile']==8:
         from hdr_auto import measure_prefix_quality
@@ -85,6 +85,7 @@ def encode_candidate(workflow, source, settings, label, *, dovi_tool='dovi_tool'
         output_bytes=output_bytes,saved_percent=100*(1-output_bytes/original_bytes),frame_checks=checks,
         rpu_frames=count,rpu_digest=final_evidence[1],configuration=configuration,quality=quality,
         copied_tracks_preserved=True,source_unchanged=True,publication_authorized=False,settings=dict(settings),
+        source_audio_warnings=list(work.audio_crc_warnings),
         status='validated-research-copy' if quality['candidate']['passed'] and output_bytes<original_bytes else 'rejected-research-copy')
     with (directory/'validation.json').open('x',encoding='utf-8') as handle:json.dump(result,handle,indent=2)
     return result

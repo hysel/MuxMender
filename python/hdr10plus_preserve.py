@@ -217,7 +217,8 @@ def finalize(args):
         from hdr10plus_validation import hdr_metadata
         dynamic=False;source_frame_count=0
         from hevc_content_light import content_light
-        light_values=set();complete_light=True
+        from hdr_mastering import mastering_payload
+        light_values=set();complete_light=True;first_mastering=None;mastering_changed=False;complete_mastering=True
         for number,frame in enumerate(frame_records(source_frames)):
             source_frame_count+=1
             if number%4096==0:guard()
@@ -225,6 +226,10 @@ def finalize(args):
             dynamic=any('2094-40' in item.get('side_data_type','') or 'HDR10+' in item.get('side_data_type','') for item in items) or dynamic
             try:light_values.add(content_light(frame))
             except ValueError:complete_light=False
+            mastering=mastering_payload(frame)
+            if mastering is None:complete_mastering=False
+            if number==0:first_mastering=mastering
+            elif mastering!=first_mastering:mastering_changed=True
         restore_dynamic=mode=='hdr10plus' or (mode=='pq' and dynamic)
         metadata=None
         if restore_dynamic:
@@ -243,7 +248,9 @@ def finalize(args):
             command([args.hdr10plus_tool,'inject','-i',raw,'-j',metadata,'-o',injected],'Restoring HDR10Plus')
         else:
             injected=raw  # Static metadata must already survive encoding; full validation proves it.
-        if complete_light and len(light_values)>1:
+        restore_light=complete_light and len(light_values)>1
+        restore_mastering=complete_mastering and mastering_changed
+        if restore_light or restore_mastering:
             # Encoder initialization can flatten changing CLL values. Associate
             # source presentation order with decoded encoded-packet positions,
             # never assume coded packet order equals display order (B frames).
@@ -256,7 +263,8 @@ def finalize(args):
                 raise ValueError('Decoder errors in HDR packet-position evidence')
             from hevc_content_light import restore
             restored=run/'content-light.hevc'
-            proof=restore(injected,restored,frame_records(source_frames),frame_records(encoded_positions),guard)
+            proof=restore(injected,restored,frame_records(source_frames),frame_records(encoded_positions),guard,
+                          restore_light=restore_light,restore_mastering=restore_mastering)
             (run/'content-light-preservation.json').write_text(json.dumps(proof,indent=2))
             injected=restored
         progress('Restoring decoded presentation timestamps',directory=run)

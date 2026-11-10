@@ -10,7 +10,7 @@ import uuid
 import re
 import shutil
 
-POLICY_VERSION=1
+POLICY_VERSION=2
 MAXIMUM_PAIRS=32
 
 

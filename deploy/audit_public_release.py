@@ -7,6 +7,17 @@ import re
 import tarfile
 
 
+def audit_shell_scripts(root):
+    """Check the actual packaged bytes, including contexts made on Windows."""
+    root=Path(root).resolve(strict=True)
+    for path in (root/'deploy').rglob('*.sh'):
+        if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(root):
+            raise ValueError('Unsafe build script path')
+        data=path.read_bytes()
+        if b'\r' in data or data.startswith(b'\xef\xbb\xbf'):
+            raise ValueError('Linux build scripts require LF line endings without a BOM: '+str(path.relative_to(root)))
+
+
 def extract_context(archive, destination):
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=False)
@@ -26,6 +37,7 @@ def extract_context(archive, destination):
 
 def audit(root, version, revision):
     root = Path(root).resolve(strict=True)
+    audit_shell_scripts(root)
     if not re.fullmatch(r'\d{8}-v\d+', version) or not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('Use an exact app version and full source commit')
     manifest = json.loads((root / 'public-release.json').read_text())

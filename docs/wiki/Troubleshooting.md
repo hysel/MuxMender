@@ -57,6 +57,10 @@ A verified HEVC or AV1 reader does not automatically accelerate H.264 inspection
 The current-step details identify the selected reader; GPU encoding can still
 be used later even when inspection needs the CPU.
 
+The GPU Encode reading measures encoding. GPU Compute can show quality-scoring
+work. CPU use may stay high because decoding and picture rendering still need
+CPU capacity. Read the current step's details to see which check is running.
+
 Keep enough temporary disk space, check resource pressure and choose a time limit
 appropriate for your files. Lower-resolution copies may be faster or smaller,
 but deliberately change the picture; they aren't a free quality-preserving shortcut.
