@@ -43,8 +43,7 @@ The version notes below describe the changes included in each package.
 - Show the specific error when a worker fails before creating its result.
 - Keep generated hard links registered for cleanup after metadata restoration.
 
-This version is being prepared and has not been published. Quality,
-savings and replacement checks remain in place.
+Quality, savings and replacement checks remain in place.
 
 ## 20261106-v71
 
