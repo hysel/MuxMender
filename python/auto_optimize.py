@@ -409,8 +409,12 @@ class Workflow:
                            'packet=stream_index,pts,duration,pts_time,duration_time','-of','compact=p=0',str(path)],
                           target,'Verifying complete presentation span: '+side,self.args.timeout,self.guard)
                 paths.append(target)
-            evidence=duration_header_evidence(before,after,*paths,guard=self.guard,
-                verified_frame_count=verified.get('verified_frame_count'))
+            try:
+                evidence=duration_header_evidence(before,after,*paths,guard=self.guard,
+                    verified_frame_count=verified.get('verified_frame_count'))
+            except ValueError as exc:
+                from matroska_duration import DurationHeaderError
+                raise DurationHeaderError(str(exc)) from exc
             save(self.directory/(label+'-duration-evidence.json'),evidence)
         metadata_check(before,after,codec,duration_evidence=evidence,chapter_evidence=chapter_evidence,**verified)
 
@@ -441,9 +445,11 @@ class Workflow:
         self.serial = 0
         self.packet_reference_cache = {}
         self.sample_probe_cache = {}
+        self.native_quality_profiles = {}
         self.color_intermediates = {}
         self.hdr_mode=getattr(args,'hdr_mode',None)
         self.frame_cache={}
+        self.sdr_aux_metadata_sources=set()
         self.hdr_metadata_cache={}
         self.hdr_intermediates={}
         self.aac_priming_outputs={}
@@ -518,7 +524,7 @@ class Workflow:
             try:
                 return self._encode_preserving_color(source,output,settings,info,before,label,duration)
             except RuntimeError as exc:
-                # Only a copied audio timestamp regression qualifies. Never
+                # Only an identified copied-track timestamp regression qualifies. Never
                 # swallow cancellation, decoder, encoder or validation errors.
                 from matroska_audio_recovery import eligible, recover
                 if not eligible(source, output, before, label, self.hdr_mode, str(exc)):
@@ -566,7 +572,9 @@ class Workflow:
         # supplemental packets decode correctly but cannot be parsed by FFmpeg's
         # metadata bitstream filter. Full frame/metadata validation still follows.
         if all(main_video(encoded_data).get(key) in legacy_color.UNKNOWN for key in missing):
-            output.hardlink_to(encoded)  # Exclusive: never overwrite a destination.
+            from artifact_manifest import command_outputs
+            with command_outputs(self.directory,[str(output.absolute())]):
+                output.hardlink_to(encoded)  # Exclusive: never overwrite a destination.
             stat=encoded.stat()
             self.color_intermediates[output.resolve()]=(encoded,(stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns))
             return
@@ -709,6 +717,15 @@ class Workflow:
                 json.loads(raw)
                 self.sample_probe_cache[key]=dict(identity=identity,hash=content_hash,raw=raw)
         data=json.loads(raw)
+        if not hasattr(self,'sdr_aux_metadata_sources'):self.sdr_aux_metadata_sources=set()
+        source_key=str(source.resolve())
+        try:primary=main_video(data)
+        except ValueError:primary={}
+        if (primary.get('color_transfer') not in ('smpte2084','arib-std-b67') and
+                any(s.get('side_data_type') in ('Mastering display metadata','Content light level metadata')
+                    for s in (primary.get('side_data_list') or []))):
+            self.sdr_aux_metadata_sources.add(source_key)
+        else:self.sdr_aux_metadata_sources.discard(source_key)
         from dv_header import recover
         header_recovery=recover(data,source,self.args.ffprobe,getattr(self.args,'ffmpeg',None))
         if header_recovery:data['dv_header_recovery']=header_recovery
@@ -783,6 +800,19 @@ class Workflow:
                 self.learn_frame_reader(source,path,metadata,result,reader_before)
             self.frame_cache[str(source.resolve())]=path
             return path
+        if str(source.resolve()) in getattr(self,'sdr_aux_metadata_sources',set()):
+            from sdr_aux_metadata import reader_request
+            path=self.directory/(label+'-mastering-frames.json')
+            def choose_aux(profile,video):
+                return (reader_request(self.args.ffprobe,source,self.performance_threads(),
+                    [*self.reader_input_options(source),*self.decoder_options(source)]),{},
+                    dict(backend='cpu',reason='Complete structured SDR mastering metadata comparison'))
+            self.run_frame_inspection(source,path,'Checking SDR mastering metadata: '+label,metadata,choose_aux)
+            if path.with_suffix(path.suffix+'.stderr').stat().st_size:
+                raise ValueError('Frame decoder reported errors: '+label)
+            if any(row.get('best_effort_timestamp_time') in (None,'N/A') for row in compact_rows(path,'width')):
+                return self.recover_mpeg4_tail(source,path,label)
+            return path
         # Bound CPU contention between queue workers. Do not drop side-data or
         # frames: identical validation fields and full EOF draining are retained.
         from gpu_frame_reader import sdr_reader_request
@@ -793,9 +823,27 @@ class Workflow:
         result,plan=self.run_frame_inspection(source,path,'Checking frame timing: '+label,metadata,choose)
         if path.with_suffix(path.suffix+'.stderr').stat().st_size:
             raise ValueError('Frame decoder reported errors: '+label)
-        if plan['backend']=='cpu' and learning_source:
+        from sdr_aux_metadata import StructuredMetadataRequired,reader_request
+        structured=False
+        try:
+            missing_timestamps=any(row.get('best_effort_timestamp_time') in (None,'N/A') for row in compact_rows(path,'width'))
+        except StructuredMetadataRequired:
+            structured=True
+            path=self.directory/(label+'-mastering-frames.json')
+            # Auxiliary static tags do not change the SDR transfer function.
+            # Read their complete structure and compare every value per frame.
+            command=reader_request(self.args.ffprobe,source,threads,
+                [*self.reader_input_options(source),*self.decoder_options(source)])
+            from gpu_admission import stage_context
+            with stage_context(None):
+                run_probe(command,path,'Checking SDR mastering metadata: '+label,
+                    self.args.timeout,self.guard,float(metadata['duration']),float(metadata.get('start_time',0)))
+            if path.with_suffix(path.suffix+'.stderr').stat().st_size:
+                raise ValueError('Frame decoder reported errors: '+label)
+            missing_timestamps=any(row.get('best_effort_timestamp_time') in (None,'N/A') for row in compact_rows(path,'width'))
+        if not structured and plan['backend']=='cpu' and learning_source:
             self.learn_frame_reader(source,path,metadata,result,reader_before)
-        if any(row.get('best_effort_timestamp_time') in (None,'N/A') for row in compact_rows(path,'width')):
+        if missing_timestamps:
             return self.recover_mpeg4_tail(source,path,label)
         return path
 
@@ -1046,6 +1094,22 @@ class Workflow:
         self.crc_source_proofs[key]=dict(identity=identity,count=count)
         return count
 
+    def ensure_source_audio(self, source, metadata, source_hash):
+        """Reuse only this job's unchanged original-audio preflight."""
+        if not any(s.get('codec_type')=='audio' for s in metadata['streams']):return
+        executable=Path(shutil.which(str(self.args.ffmpeg)) or self.args.ffmpeg).resolve(strict=True)
+        binding=(str(Path(source).resolve()),source_hash,self.audit_identity(source),
+                 str(executable),self.audit_identity(executable),tuple(self.reader_input_options(source)),
+                 tuple((s['index'],s.get('codec_type'),s.get('codec_name')) for s in metadata['streams']))
+        previous=getattr(self,'source_audio_binding',None)
+        if source_hash and previous==binding:
+            self.guard();return
+        self.audio_crc_warnings=[]
+        self.preflight_source_audio(source,metadata,source_hash)
+        if self.audit_identity(source)!=binding[2] or self.audit_identity(executable)!=binding[4]:
+            raise ValueError('Source or decoder changed during audio preflight')
+        self.source_audio_binding=binding if source_hash else None
+
     def preflight_source_audio(self, source, metadata, source_hash=None):
         """Diagnose source audio before codec trials or full encoding.
 
@@ -1146,11 +1210,45 @@ class Workflow:
                                      compact_rows(frames,'width'))
         else:count = self.compare_frame_files(reference_frames, frames,
                          reference_video=main_video(before),output_video=main_video(actual))
-        self.check_metadata(reference,output,expected_metadata(before,identifier),actual,codec,label,
-                            verified_frame_count=count,verified_hdr_frames=bool(self.hdr_mode),
-                            verified_variable_timing=True)
+        from matroska_duration import DurationHeaderError,restore as restore_duration
+        try:
+            self.check_metadata(reference,output,expected_metadata(before,identifier),actual,codec,label,
+                                verified_frame_count=count,verified_hdr_frames=bool(self.hdr_mode),
+                                verified_variable_timing=True)
+        except DurationHeaderError:
+            self.validate_copied_tracks(reference,output,before,actual,label+'-duration-proof')
+            restore_duration(self,reference,output,before,actual,label,count)
+            key=(str(reference.resolve()),str(output.resolve()))
+            self.audio_audits.pop(key,None);self.crc_packet_audits.pop(key,None)
+            actual=self.probe(output)
+            self.check_metadata(reference,output,expected_metadata(before,identifier),actual,codec,label+'-restored-duration',
+                                verified_frame_count=count,verified_hdr_frames=bool(self.hdr_mode),
+                                verified_variable_timing=True)
         self.validate_copied_tracks(reference,output,before,actual,label)
         self.validate_output_preset(output,actual,label)
+        self.validate_remaining_streams(reference,output,before,actual,label,count)
+        temporary=self.color_intermediates.pop(output.resolve(),None)
+        if temporary:
+            path,identity=temporary
+            if path.parent.resolve()!=self.directory.resolve() or path.is_symlink():
+                raise ValueError('Unsafe color intermediate cleanup path')
+            stat=path.stat()
+            if (stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns)!=identity:
+                raise ValueError('Color intermediate changed; retained for inspection')
+            # This exclusively-created encoder temporary is owned by this run.
+            # Source media and pre-existing files never enter this registry.
+            path.unlink()
+        for path,identity in self.hdr_intermediates.pop(output.resolve(),[]):
+            if path.is_symlink() or not path.resolve().is_relative_to(self.directory.resolve()) or path in (reference,output):
+                raise ValueError('Unsafe HDR intermediate cleanup path')
+            stat=path.stat()
+            if (stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns)!=identity:
+                raise ValueError('HDR intermediate changed; retained for inspection')
+            path.unlink()  # Exclusively created by this run; never an input file.
+        return count
+
+    def validate_remaining_streams(self,reference,output,before,actual,label,count):
+        """Finish copied-track decoding using the shared PCM/source-audio proofs."""
         maps,reused=decode_maps_after_frame_audit(actual,count)
         covered=self.audited_audio_indices(reference,output) if reused else set()
         crc_record=self.crc_packet_audits.get((str(reference.resolve()),str(output.resolve())))
@@ -1175,25 +1273,6 @@ class Workflow:
             complete_pcm_audits_reused=sorted(covered),
             unchanged_crc_audio_tracks=sorted(crc_covered),source_audio_warnings=self.audio_crc_warnings,
             note='Complete video comparison; audio strictly decoded or existing source issues preserved by complete packet identity'))
-        temporary=self.color_intermediates.pop(output.resolve(),None)
-        if temporary:
-            path,identity=temporary
-            if path.parent.resolve()!=self.directory.resolve() or path.is_symlink():
-                raise ValueError('Unsafe color intermediate cleanup path')
-            stat=path.stat()
-            if (stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns)!=identity:
-                raise ValueError('Color intermediate changed; retained for inspection')
-            # This exclusively-created encoder temporary is owned by this run.
-            # Source media and pre-existing files never enter this registry.
-            path.unlink()
-        for path,identity in self.hdr_intermediates.pop(output.resolve(),[]):
-            if path.is_symlink() or not path.resolve().is_relative_to(self.directory.resolve()) or path in (reference,output):
-                raise ValueError('Unsafe HDR intermediate cleanup path')
-            stat=path.stat()
-            if (stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns)!=identity:
-                raise ValueError('HDR intermediate changed; retained for inspection')
-            path.unlink()  # Exclusively created by this run; never an input file.
-        return count
 
     def validate_output_preset(self,output,actual,label):
         from output_presets import preset
@@ -1294,7 +1373,10 @@ class Workflow:
                                if stream.get('codec_name')=='truehd' and stream.get('codec_type')=='audio' else None)
                 missing_duration=(missing_audio_duration_case(original[index],encoded[index])
                                   if stream.get('codec_type')=='audio' else None)
-                if missing_duration or reconstructed:
+                from packet_validation import materialized_audio_duration_case,verify_materialized_audio_durations
+                materialized_duration=(materialized_audio_duration_case(original[index],encoded[index])
+                                       if stream.get('codec_type')=='audio' and stream.get('codec_name')=='aac' else None)
+                if missing_duration or reconstructed or materialized_duration:
                     evidence=[]
                     issue_codec=stream.get('codec_name') if self.audio_crc_warnings else None
                     for side,path in [('source',reference),('output',output)]:
@@ -1304,15 +1386,22 @@ class Workflow:
                             float(before['format']['duration']),reuse_source=side=='source',source_issue_codec=issue_codec)
                         evidence.append(hashes)
                     proof=compare_decoded_audio(*evidence)
+                    if materialized_duration:
+                        output_stream=next(s for s in actual['streams'] if s['index']==output_indices[index])
+                        proof['materialized_duration']=verify_materialized_audio_durations(
+                            original[index],encoded[index],evidence[0],output_stream['time_base'],self.guard,
+                            source=reference,stream_index=index)
                     if issue_codec:
                         counts=[self.audio_diagnostic_counts[(str(path.resolve()),i,'pcm_f64le')]
                                 for path,i in ((reference,index),(output,output_indices[index]))]
                         if counts[0]!=counts[1]:raise ValueError('Copied audio decoder diagnostics changed')
                         proof['existing_audio_diagnostics_per_side']=counts
                         proof['audio_repaired']=False
-                    proof['packet_representation_case']='reconstructed-truehd-timestamps' if reconstructed else 'missing-audio-duration'
+                    proof['packet_representation_case']=('reconstructed-truehd-timestamps' if reconstructed else
+                        'materialized-source-audio-duration' if materialized_duration else 'missing-audio-duration')
                     save(self.directory/(label+f'-audio-duration-{index}-presentation.json'),proof)
                     compare_packets(original[index],encoded[index],audio_duration_verified=missing_duration,
+                                    materialized_audio_duration_verified=materialized_duration,
                                     audio_timestamps_verified=reconstructed,guard=self.guard)
                     if issue_codec:
                         if audio_identity!=(self.audit_identity(reference),self.audit_identity(output)):
@@ -1440,6 +1529,11 @@ class Workflow:
 
 def compact_rows(path, required):
     with path.open(encoding='utf-8') as handle:
+        if required=='width' and handle.read(256).lstrip().startswith('{'):
+            from sdr_aux_metadata import frame_rows
+            yield from frame_rows(path)
+            return
+        handle.seek(0)
         yield from compact_record_rows(handle,required)
 
 
@@ -1447,8 +1541,12 @@ def compact_record_rows(lines,required):
     """Same complete evidence parser for files or a bounded streaming reader."""
     for line in lines:
         row = dict(item.split('=', 1) for item in line.strip().split('|') if '=' in item)
-        if required == 'width' and any(word in line.lower() for word in ('dolby', 'dovi', 'mastering display', 'content light', 'hdr dynamic', 'display matrix')):
-            raise ValueError('Unexpected HDR/geometry frame side data')
+        if required == 'width':
+            if any(word in line.lower() for word in ('dolby','dovi','hdr dynamic','display matrix')):
+                raise ValueError('Unexpected HDR/geometry frame side data')
+            if any(word in line.lower() for word in ('mastering display','content light')):
+                from sdr_aux_metadata import StructuredMetadataRequired
+                raise StructuredMetadataRequired('Complete SDR mastering metadata evidence required')
         if required == 'data_hash' and row and 'data_hash' not in row:
             raise ValueError('Missing packet hash evidence')
         if required in row:
@@ -1494,6 +1592,8 @@ def compare_frame_rows(reference,output,*,reference_video=None,output_video=None
                 raise ValueError('HDR transfer found during SDR frame validation')
             if 'side_data_type' in frame and any(x in frame['side_data_type'].lower() for x in ('dovi', 'dolby', 'mastering', 'content light', 'hdr', 'display matrix')):
                 raise ValueError('Unexpected HDR/geometry frame side data')
+        if a.get('_static_hdr_metadata',[])!=b.get('_static_hdr_metadata',[]):
+            raise ValueError('SDR auxiliary mastering metadata changed at frame '+str(count+1))
         timestamps = [Fraction(f['best_effort_timestamp_time']) for f in (a, b)]
         for side, frame in enumerate((a, b)):
             raw=frame.get('pts_time')
@@ -1513,7 +1613,7 @@ def compare_frame_rows(reference,output,*,reference_video=None,output_video=None
     return count
 
 
-def compare_packets(reference, output, cover=False, *, aac_initialization_verified=False, aac_terminal_verified=None, aac_priming_verified=False, audio_duration_verified=None, audio_timestamps_verified=None, guard=lambda:None):
+def compare_packets(reference, output, cover=False, *, aac_initialization_verified=False, aac_terminal_verified=None, aac_priming_verified=False, audio_duration_verified=None, audio_timestamps_verified=None, materialized_audio_duration_verified=None, guard=lambda:None):
     progress('Comparing copied track evidence',detail='Checking packet hashes and timestamps; percentage unavailable')
     count=0
     for a, b in itertools.zip_longest(compact_rows(reference, 'data_hash'), compact_rows(output, 'data_hash')):
@@ -1529,6 +1629,9 @@ def compare_packets(reference, output, cover=False, *, aac_initialization_verifi
             if audio_timestamps_verified is not None and key in ('pts_time','dts_time') and left in (None,'N/A') and right not in (None,'N/A'):
                 Fraction(right)  # finite rational, never NaN/Infinity
                 continue
+            if materialized_audio_duration_verified is not None and key=='duration_time' and left in (None,'N/A') and right not in (None,'N/A'):
+                if Fraction(right)<=0:raise ValueError('Invalid materialized audio packet duration')
+                continue
             if audio_duration_verified is not None and key=='duration_time' and right in (None,'N/A') and left not in (None,'N/A'):
                 if Fraction(left)<=0:raise ValueError('Invalid source audio packet duration')
                 continue
@@ -1541,6 +1644,7 @@ def compare_packets(reference, output, cover=False, *, aac_initialization_verifi
     if cover and count!=1:raise ValueError('Expected exactly one unchanged cover-image packet')
     if aac_terminal_verified is not None and count!=aac_terminal_verified:raise ValueError('Terminal AAC evidence count changed')
     if audio_duration_verified is not None and count!=audio_duration_verified:raise ValueError('Decoded audio evidence packet count changed')
+    if materialized_audio_duration_verified is not None and count!=materialized_audio_duration_verified:raise ValueError('Materialized audio evidence packet count changed')
     if audio_timestamps_verified is not None and count!=audio_timestamps_verified:raise ValueError('Decoded audio timestamp evidence packet count changed')
 
 
@@ -1841,10 +1945,16 @@ def run(args):
         except RuntimeError as exc:
             from matroska_boundary import prepare
             recovered=prepare(workflow,source,data,source_hash,exc)
+            if recovered is None:
+                from mpeg2_context import prepare as prepare_mpeg2
+                recovered=prepare_mpeg2(workflow,source,data,source_hash,exc)
             if recovered is None:raise
             source,proof=recovered
             workflow.source_view=proof;source_hash=proof['view_sha256']
-            state['source_container_warning']='Extra bytes followed the complete container. An exact temporary copy was used; original tracks and playback timing were preserved.'
+            state['source_container_warning']=(
+                'Original MPEG-2 decoder initialization contained an ignored picture extension. A verified temporary read context was used; compressed media bytes were kept intact.'
+                if proof.get('method')=='orphan-mpeg2-private-picture-extension' else
+                'Extra bytes followed the complete container. An exact temporary copy was used; original tracks and playback timing were preserved.')
             state['source_container_recovery']=proof
             workflow.preflight_source(source,data,source_hash)
         state['source_audio_warnings']=workflow.audio_crc_warnings
@@ -2111,8 +2221,8 @@ def run(args):
                              if trial.get('validation_dominance') else trial['id']))
         validate_initial(report,args.minimum_savings_percent,validate_trial,guard,validation_completed)
         decision = select_candidate(report, args.minimum_savings_percent)
+        tested=0
         if getattr(args,'adaptive',False) and decision['action']=='keep_original':
-            tested=0
             # A measured HEVC quality failure may be rate-limited. Try one
             # source-derived ceiling, not a blanket high-bitrate default. This
             # consumes the existing adaptive budget and never bypasses checks.
@@ -2176,6 +2286,32 @@ def run(args):
             return finish(workflow,source,data,info,settings,baseline,source_hash,duration,
                           savings_policy,decision,state)
         if args.encode_best and decision['action'] == 'encode_copy':
+            # Source-wide metadata can invalidate a sampled incumbent without
+            # invalidating the media. Reuse the required complete HDR audit and
+            # finish checking alternative candidates before starting a full encode.
+            if workflow.hdr_mode:
+                workflow_stage('inspect')
+                workflow.prepare_full_hdr_reference(source,data)
+                if main_video(data).get('codec_name')=='hevc':
+                    from hdr10plus_preserve import frame_records
+                    from hdr_mastering import mastering_timeline,constrain_candidates,resume_preservable_candidates
+                    timeline=mastering_timeline(frame_records(workflow.frame_cache[str(source.resolve())]),guard)
+                    save(directory/'full-source-mastering.json',timeline)
+                    if constrain_candidates(report,timeline,'hevc'):
+                        progress('Checking alternatives for changing HDR mastering metadata',directory=directory,
+                                 detail='Preserve the complete source timeline; quality and savings requirements unchanged')
+                        decision=resume_preservable_candidates(report,args.minimum_savings_percent,validate_trial,guard)
+                        if decision['action']=='keep_original' and args.adaptive:
+                            for alternative in adaptive_candidates(report,max(0,args.max_extra_trials-tested)):
+                                if alternative.get('codec')!='hevc':continue
+                                trial_candidate(alternative,adaptive=True);tested+=1
+                                decision=select_candidate(report,args.minimum_savings_percent)
+                                if decision['action']=='encode_copy':break
+                        save(directory/'trials.json',report);save(directory/'selection.json',decision)
+                        if decision['action']!='encode_copy':
+                            guard();workflow.verified_source_hash(source,source_hash)
+                            state.update(state='trials-completed',decision=decision)
+                            save(directory/'status.json',state);print(json.dumps(state,indent=2));return 0
             settings = decision['selected']['settings']
             from validated_replace import readable_destination
             readable=readable_destination(logical_source)
@@ -2185,9 +2321,6 @@ def run(args):
             workflow.reader_learning_sources.add(str(output.resolve()))
             # Full HDR evidence can exhaust the user's read budget. Collect it
             # before encoding, then reuse it for finalization and validation.
-            if workflow.hdr_mode:
-                workflow_stage('inspect')
-                workflow.prepare_full_hdr_reference(source,data)
             workflow_stage('encode')
             workflow.encode_preserving_color(source,output,settings,info,data,'full-encode',duration)
             # Rejection needs no expensive full-picture validation. Encoding has

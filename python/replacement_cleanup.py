@@ -16,7 +16,7 @@ def disposable(path):
             or path.name.endswith(('-frames.jsonl','-frames.json','-all-packets.txt','-preset-packets.txt','-vmaf.json'))
             or re.search(r'-stream-\d+\.txt$',path.name) is not None
             or path.name=='rpu.json' or path.name.endswith(('-rpu.json','.hdr-index.sqlite'))
-            or path.name in ('timestamps.txt','source-rpu-packets.xml')
+            or path.name in ('timestamps.txt','source-rpu-packets.xml','render-0-progress.txt','render-1-progress.txt')
             or (path.name=='metadata.json' and path.parent.name.endswith('-layers')))
 
 

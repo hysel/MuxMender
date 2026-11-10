@@ -38,13 +38,16 @@ def render_command(ffmpeg, source, output, *, device=0):
         '-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv',str(output)]
 
 
-def native_quality_command(ffmpeg, candidate, source, name, rate, *, device=0):
+def native_quality_command(ffmpeg, candidate, source, name, rate, *, device=0, frame_count=None):
     from auto_optimize import quality_command
     if type(device) is not int or device<0:raise ValueError('Invalid Vulkan device index')
+    if frame_count is not None and (type(frame_count) is not int or frame_count<=0):
+        raise ValueError('Invalid native comparison calibration length')
     # No frame trim, scaling, interpolation or temporary video. Preservation
     # checks establish input alignment; the metric must cover all those frames.
     graph=quality_graph(name,rate).replace('[0:V:0]','[dv0]').replace('[1:V:0]','[dv1]')
-    graph=f'[0:V:0]{RENDER_FILTER}[dv0];[1:V:0]{RENDER_FILTER}[dv1];'+graph
+    prefix=f'trim=end_frame={frame_count},' if frame_count is not None else ''
+    graph=f'[0:V:0]{prefix}{RENDER_FILTER}[dv0];[1:V:0]{prefix}{RENDER_FILTER}[dv1];'+graph
     command=quality_command(ffmpeg,candidate,source,graph)
     return command[:1]+['-init_hw_device',f'vulkan=gpu:{device}','-filter_hw_device','gpu']+command[1:]
 
@@ -94,18 +97,31 @@ def measure_native_quality(workflow, source, candidate, frames, rate, label, *, 
     if any(main_video(before).get(k)!=main_video(after).get(k) for k in ('width','height','sample_aspect_ratio')):
         raise ValueError('Native comparison changed geometry or aspect ratio')
     scores={}
-    renderer=discover(work.args.ffmpeg,directory,work.guard,device=device)
+    renderer=discover(work.args.ffmpeg,directory,work.guard,device=device,timeout=min(work.args.timeout,120))
     device=renderer['device']['index']
-    for kind,path in (('self',source),('candidate',candidate)):
-        work.guard()
+    work.native_quality_profiles=workflow.native_quality_profiles
+    from dv_cuda_quality import Scorer
+    scorer=Scorer(work,renderer,before,after,rate)
+    def cpu(kind,path):
         name='native-'+kind+'-vmaf.json'
         command=native_quality_command(work.args.ffmpeg,path,source,name,rate,device=device)
-        progress('Native Dolby Vision '+kind+' quality',unit='frames',detail=f'Comparing all {frames} frames')
-        with (directory/(kind+'.log')).open('x',encoding='utf-8') as log:
+        progress('Native Dolby Vision '+kind+' CPU quality',unit='frames',detail=f'Comparing all {frames} frames')
+        timing={}
+        with (directory/(kind+'.log')).open('w',encoding='utf-8') as log:
             log.write(json.dumps(command)+'\n')
             stage(command,duration,timeout=work.args.timeout,stall=180,guard=work.guard,
                   observe=lambda line:log.write(line) and False,cwd=directory,expected_frames=frames,
-                  env=dict(os.environ,**renderer['environment']))
+                  env=dict(os.environ,**renderer['environment']),measurement=timing)
+        return timing
+    backends=scorer.run_pair(candidate,source,frames,duration,cpu)
+    paired=backends is not None
+    if backends is None:backends={}
+    for kind,path in (('self',source),('candidate',candidate)):
+        work.guard()
+        name='native-'+kind+'-vmaf.json'
+        if not paired:
+            progress('Native Dolby Vision '+kind+' quality',unit='frames',detail=f'Comparing all {frames} frames')
+            backends[kind]=scorer.run(path,source,name,frames,duration,lambda:cpu(kind,path))
         scores[kind]=quality_summary(json.loads((directory/name).read_text()),frames,90,90)
         if kind=='self' and not scores[kind]['passed']:raise ValueError('Native quality self-check failed')
     result=dict(**scores)
@@ -114,6 +130,6 @@ def measure_native_quality(workflow, source, candidate, frames, rate, label, *, 
     result.update(domain='dv-libplacebo-common-render-v1',
         note='Both DV pictures reshaped by libplacebo before common HDR metric; not Dolby certification',
         publication_authorized=False,renderer='libplacebo',vulkan_device=device,
-        intermediate_media_written=False,hardware_renderer=renderer['device'])
+        intermediate_media_written=False,hardware_renderer=renderer['device'],scoring=backends)
     with (directory/'native-quality.json').open('x',encoding='utf-8') as handle:json.dump(result,handle,indent=2)
     return result

@@ -356,7 +356,9 @@ def validation_limited(function):
     @wraps(function)
     def wrapped(*args,**kwargs):
         values=signature.bind(*args,**kwargs).arguments
-        pool=resource_pool(values['command'],values.get('env'))
+        from resource_workload import group_command
+        resource_command=group_command(values['command'],values.get('producer_commands',()))
+        pool=resource_pool(resource_command,values.get('env'))
         if pool is None:return function(*args,**kwargs)
         from job_tracking import measured_operation,current_phase,progress
         from resource_workload import request
@@ -366,19 +368,21 @@ def validation_limited(function):
         options=dict(pool=pool,env=values.get('env'),
             estimated_duration=values.get('seconds',values.get('duration')))
         admission_guard=values.get('admission_guard')
-        with request(values['command'],values.get('env')) as lease:
+        with request(resource_command,values.get('env')) as lease:
             with measured_operation('validation_wait' if pool=='validation' else 'gpu_wait'):
-                with validation_slot(values['command'],admission_guard or values.get('guard') or (lambda:None),**options) as limit:
+                with validation_slot(resource_command,admission_guard or values.get('guard') or (lambda:None),**options) as limit:
                     if lease is not None:lease.active(limit)
                     if admission_guard:admission_guard()
                     if original_phase:progress(original_phase,detail='Resources acquired; processing'+
                         (f'; shared validation allocation: {limit} threads' if type(limit) is int else ''))
                     kind=('frame_validation' if '-show_frames' in values['command'] else
-                          'quality_measurement' if heavy_reader(values['command']) else 'encoding')
+                          'quality_measurement' if heavy_reader(resource_command) else 'encoding')
                     with measured_operation(kind):
                         if type(limit) is int and (pool=='validation' or (values.get('env') or os.environ).get('MUXMENDER_RESOURCE_POLICY')=='adaptive-v1'):
                             bound=signature.bind(*args,**kwargs)
                             bound.arguments['command']=bounded_reader(values['command'],limit)
+                            if values.get('producer_commands'):
+                                bound.arguments['producer_commands']=tuple(bounded_reader(c,limit) for c in values['producer_commands'])
                             return function(*bound.args,**bound.kwargs)
                         return function(*args,**kwargs)
     return wrapped

@@ -99,6 +99,8 @@ def run(workflow_args, source, root, data, baseline):
     work=Workflow(args,directory,guard)
     try:
         guard();identity=digest(source,guard)
+        work.ensure_source_audio(source,data,identity)
+        state['source_audio_warnings']=list(work.audio_crc_warnings)
         workflow_stage('inspect')
         if profile==7:
             inventory=extract_layers(work,source,'admission-layers')
@@ -579,12 +581,17 @@ def _encode_layered(workflow, source, settings, label, *, dovi_tool='dovi_tool',
     args=copy(workflow.args)
     args.source=source
     work=Workflow(args,directory,workflow.guard)
+    work.native_quality_profiles=workflow.native_quality_profiles
     before=work.probe(source)
     video=main_video(before)
     duration=float(before['format']['duration'])
     rate=Fraction(video['avg_frame_rate'])
     if rate<=0:raise ValueError('MEL fallback frame rate is unresolved')
     identity=digest(source,work.guard)
+
+    if source==Path(getattr(workflow.args,'source',source)).resolve():
+        workflow.ensure_source_audio(source,before,identity)
+    work.audio_crc_warnings=list(workflow.audio_crc_warnings)
 
     def frame_guard():work.guard()
     frame_guard.phase='Checking complete layered frames'
@@ -653,14 +660,7 @@ def _encode_layered(workflow, source, settings, label, *, dovi_tool='dovi_tool',
     work.check_metadata(source,output,before,after,'hevc','final-metadata',verified_frame_count=count,
                         verified_hdr_frames=True,verified_variable_timing=True)
     work.validate_copied_tracks(source,output,before,after,'final-tracks')
-    # Main video already has full strict frame evidence. Decode secondary video
-    # and every audio track; copied packet identity is not a decode check.
-    primary=main_video(after)['index']
-    indices=[s['index'] for s in after['streams'] if s['codec_type'] in ('video','audio') and s['index']!=primary]
-    if indices:
-        work.execute([args.ffmpeg,'-v','error','-xerror','-nostdin','-threads','2','-i',str(output),
-                      *[v for i in indices for v in ('-map','0:'+str(i))],'-f','null','-'],
-                     'decode-copied-streams',duration,strict_decode=True)
+    work.validate_remaining_streams(source,output,before,after,'final-tracks',count)
     fallback_quality=measure_prefix_quality(args.ffmpeg,source,output,directory,count,str(rate),work.guard)
     if is_fel:
         from dv_fel_quality import measure_research_quality
@@ -677,6 +677,7 @@ def _encode_layered(workflow, source, settings, label, *, dovi_tool='dovi_tool',
                 output_bytes=output_bytes,saved_percent=100*(1-output_bytes/original_bytes),
                 frame_checks=checks,layer_checks=layers,quality=quality,settings=dict(settings),
                 copied_tracks_preserved=True,source_unchanged=True,publication_authorized=False,
+                source_audio_warnings=list(work.audio_crc_warnings),
                 tools=dict(ffmpeg=args.ffmpeg,ffprobe=args.ffprobe,encoder_ffmpeg=encoding_args.ffmpeg),
                 status='unqualified-fel-research-copy' if fel_research else
                        'validated-research-copy' if quality['candidate']['passed'] and output_bytes<original_bytes

@@ -162,3 +162,8 @@ fails, is slower, or does not cover the comparison, the app keeps the CPU check.
 This does not stop a video from being converted. Decoding and HDR rendering keep
 their existing settings, and all preservation and replacement checks still apply.
 GPU quality scoring is separate from GPU encoding and GPU inspection.
+
+A long Dolby Vision video can begin with a short scorer check when no earlier
+scene matches. That step chooses how to run validation. It does not approve the
+video. The source and encoded copy then get complete quality checks; sharing
+the source render avoids doing the same work twice.

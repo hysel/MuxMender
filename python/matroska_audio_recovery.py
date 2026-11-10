@@ -1,4 +1,4 @@
-"""Recover a copied-audio mux failure without rewriting audio timestamps.
+"""Recover copied-track mux failures without rewriting original timestamps.
 
 This is an encoding route, not validation approval. All normal full-output
 packet, decoded audio, metadata, frame timing and quality checks still run.
@@ -12,13 +12,27 @@ from pathlib import Path
 
 
 def eligible(source, output, before, label, hdr_mode, error):
-    if (label != 'full-encode' or hdr_mode or
+    if (not isinstance(label,str) or not label or
             Path(source).suffix.lower() != '.mkv' or Path(output).suffix.lower() != '.mkv'):
         return False
-    # Require the streamcopy audio diagnostic, not merely a generic DTS error.
-    return bool(re.search(r'\[aost#[^\]]+/copy\s+@[^\]]*\]\s+Non-monotonic DTS;', error)
-                and 'Error submitting a packet to the muxer' in error
-                and any(s.get('codec_type') == 'audio' for s in before['streams']))
+    if hdr_mode:
+        from auto_optimize import main_video
+        transfer='arib-std-b67' if hdr_mode=='hlg' else 'smpte2084'
+        if hdr_mode not in ('pq','hdr10','hdr10plus','hlg') or main_video(before).get('color_transfer')!=transfer:
+            return False
+    # Match an identified copied output stream, never an encoder failure. The
+    # shared encoder maps the original inventory in order. Its main video is
+    # re-encoded; a /copy diagnostic for it is not this recovery route.
+    match=re.search(r'\[([avs])ost#0:(\d+)/copy\s+@[^\]]*\]\s+Non-monotonic DTS;',error)
+    if match is None or 'Error submitting a packet to the muxer' not in error:return False
+    streams=before.get('streams',[]);position=int(match[2])
+    if position>=len(streams):return False
+    stream=streams[position]
+    if stream.get('codec_type')!={'a':'audio','s':'subtitle','v':'video'}[match[1]]:return False
+    if match[1]=='v':
+        from auto_optimize import main_video
+        if stream is main_video(before):return False
+    return True
 
 
 def relay_input_options(identified,relay_identified):
@@ -66,6 +80,44 @@ def relay_mux_command(command, source, relay, identified, relay_identified):
     return result
 
 
+def hdr_video_view(work,source,before,identified,label,duration):
+    """A source-identical primary-video view keeps broken copied DTS out of HDR muxes.
+
+    Every compressed video packet and its clocks must remain exactly equal.
+    This does not approve the final output: original non-video/secondary tracks
+    are restored afterward and receive ordinary complete output validation.
+    """
+    from auto_optimize import main_video,stream_metadata_check
+    from dv_full_file import copied_matroska_packetizer_options
+    from packet_validation import packet_rows
+    from itertools import zip_longest
+    primary=main_video(before)
+    original=[s for s in before['streams'] if s.get('codec_type')!='attachment']
+    position=next(i for i,s in enumerate(original) if s is primary)
+    track=identified['tracks'][position]
+    if track.get('type')!='video':raise ValueError('HDR primary video track mapping changed')
+    view=work.directory/(label+'-original-video-view.mkv')
+    work.execute(['mkvmerge','-o',str(view),*copied_matroska_packetizer_options(before,identified),
+                  '--disable-lacing','--video-tracks',str(track['id']),'--no-audio','--no-subtitles',
+                  '--no-attachments','--no-chapters',str(source)],label+'-isolate-original-video',duration)
+    metadata=work.probe(view)
+    stream_metadata_check(dict(before,streams=[primary]),metadata,primary['codec_name'])
+    a=work.copied_packets(source,label+'-video-view-source',[primary['index']],before['format'])[primary['index']]
+    b=work.copied_packets(view,label+'-video-view-copy',[0],metadata['format'])[0]
+    count=0
+    for left,right in zip_longest(packet_rows(a),packet_rows(b)):
+        work.guard();count+=1
+        if left is None or right is None or left.get('data_hash')!=right.get('data_hash'):
+            raise ValueError('HDR source view changed video packet payload/count')
+        for key in ('pts_time','dts_time','duration_time'):
+            if left.get(key)!=right.get(key):raise ValueError('HDR source view changed an exact video packet clock: '+key)
+    if not count:raise ValueError('HDR source view has no video packets')
+    cached=work.frame_cache.get(str(Path(source).resolve()))
+    if cached is not None:work.frame_cache[str(view.resolve())]=cached
+    return view,metadata,dict(video_packets=count,compressed_payloads_exact=True,packet_clocks_exact=True,
+                              source_frame_evidence_reused=cached is not None)
+
+
 def recover(work, source, output, settings, info, before, label, duration, error):
     from auto_optimize import main_video
     from artifact_manifest import registered_outputs
@@ -87,7 +139,7 @@ def recover(work, source, output, settings, info, before, label, duration, error
     command = matroska_dv_mux_command(video, source, output.with_name(output.stem+'-audio-recovery.mkv'),
                                       before, identified, mkvmerge=binary)
     report = dict(state='retrying', route='video-only-encode-original-track-mux',
-                  reason='Copied audio DTS regression', validation_required=True)
+                  reason='Copied track DTS regression', validation_required=True)
     save(root/'audio-mux-recovery.json', report)
     if any(s.get('codec_type')=='audio' and s.get('codec_name')=='dts' for s in before['streams']):
         relay=output.with_name(output.stem+'-audio-recovery-packets.mka')
@@ -98,7 +150,13 @@ def recover(work, source, output, settings, info, before, label, duration, error
         command=relay_mux_command(command,source,relay,identified,relay_identified)
         report['route']='video-only-encode-exact-audio-packet-relay'
         save(root/'audio-mux-recovery.json',report)
-    work._encode_preserving_color(source, video, settings, info, before,
+    encoding_source,encoding_metadata=source,before
+    view=None
+    if getattr(work,'hdr_mode',None):
+        view,encoding_metadata,proof=hdr_video_view(work,source,before,identified,label,duration)
+        encoding_source=view;report['hdr_video_view']=proof
+        save(root/'audio-mux-recovery.json',report)
+    work._encode_preserving_color(encoding_source, video, settings, info, encoding_metadata,
                                  label+'-audio-recovery-video', duration, video_only=True)
     # copyts leaves the original video clock intact: never apply a sync offset.
     work.execute(command, label+'-audio-recovery-mux', duration)
@@ -118,3 +176,6 @@ def recover(work, source, output, settings, info, before, label, duration, error
         output.hardlink_to(recovered)
     report.update(state='encoded-awaiting-validation')
     save(root/'audio-mux-recovery.json', report)
+    if view is not None:
+        if view not in registered_outputs(root):raise ValueError('Unregistered HDR source view')
+        view.unlink()

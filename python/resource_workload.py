@@ -11,6 +11,17 @@ import threading
 _current=threading.local()
 
 
+class CommandGroup(list):
+    """Actual commands flattened for classification, never for execution."""
+    def __init__(self, commands):
+        self.components = tuple(tuple(c) for c in commands)
+        super().__init__(arg for command in self.components for arg in command)
+
+
+def group_command(command, producers):
+    return CommandGroup((command, *producers)) if producers else command
+
+
 def observed(cpu_cost,resident_gib,peak_cores):
     lease=getattr(_current,'lease',None)
     if lease is not None:
@@ -20,6 +31,12 @@ def observed(cpu_cost,resident_gib,peak_cores):
 
 
 def demand(command,env=None):
+    if isinstance(command, CommandGroup):
+        parts=[demand(c,env) for c in command.components]
+        return dict(kind='mixed-quality',cpu_cost=min(16,sum(p['cpu_cost'] for p in parts)),
+            memory_gib=sum(p['memory_gib'] for p in parts),cpu_inputs=sum(p['cpu_inputs'] for p in parts),
+            gpu_encode=any(p['gpu_encode'] for p in parts),gpu_decode=any(p['gpu_decode'] for p in parts),
+            gpu_compute=any(p['gpu_compute'] for p in parts),scoring_threads=max(p['scoring_threads'] for p in parts))
     graphs=[str(command[i+1]) for i,k in enumerate(command[:-1]) if k in ('-vf','-filter:v','-filter:v:0','-filter_complex','-lavfi')]
     quality=any('libvmaf' in g for g in graphs)
     gpu_render=any(any(v in g for v in ('libplacebo','scale_cuda','scale_npp','libvmaf_cuda')) for g in graphs)

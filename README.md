@@ -36,6 +36,11 @@ reader, GPU and driver still match. Keep the output storage persistent to retain
 these checks and job history across updates. No separate qualification mount or
 administrator script is needed.
 
+Quality scoring has its own CPU/GPU check for each job. For supported NVIDIA
+comparisons, MuxMender checks a short section against the CPU result before
+choosing the faster GPU path. The final quality check still covers every frame.
+Decoding and picture rendering may continue to use CPU capacity.
+
 See the [release notes and known limits](https://github.com/hysel/MuxMender/releases)
 and [installation guide](docs/wiki/Installation.md). Start with a small folder
 and safe-copy mode; publishing a new image does not update your installed app.

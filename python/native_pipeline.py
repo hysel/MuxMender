@@ -89,22 +89,24 @@ def strict_decode_line(line):
 
 
 @validation_limited
-def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None, observe=None, expected_frames=None, cwd=None, strict_decode=False, env=None, pass_fds=(), measurement=None):
+def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None, observe=None, expected_frames=None, cwd=None, strict_decode=False, env=None, pass_fds=(), measurement=None, companions=()):
     """Stream logs/progress to caller; cap both stalls and total elapsed time."""
     from muxmender import stop_process_tree
     from runtime_support import bounded_ffmpeg_threads
     command=bounded_ffmpeg_threads(command)
     from job_tracking import stage_progress,measured_operation
     from runtime_support import guard_ordered_mux_memory
-    from cooperative_pause import configured_lease, OwnedStagePause, launch_owned
+    from cooperative_pause import configured_lease, OwnedStagePauseGroup, launch_owned
     lease = configured_lease(command, env)
     inherited = dict(pass_fds=tuple(pass_fds)) if pass_fds else {}
     launch = launch_owned if lease else subprocess.Popen
     from live_allocation import attach
     child = launch(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, encoding="utf-8", errors="replace", cwd=cwd, env=env, **inherited)
-    pause = OwnedStagePause(child, lease) if lease else None
-    allocation_observer=attach(child.pid)
+    pause = OwnedStagePauseGroup((child,*companions), lease) if lease else None
+    # A consumer's CPU use alone cannot release a pipeline's producer budget.
+    # Retain the admitted group allowance until aggregate telemetry is available.
+    allocation_observer=attach(child.pid) if not companions else None
     lines = queue.Queue()
     def read():
         try:
