@@ -4,7 +4,7 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
-## Unreleased
+## 20261110-v72
 
 - Recover older AVI samples through a lossless working copy when a direct
   copy cannot reproduce the original pictures. Check the pictures, timing and
@@ -43,7 +43,7 @@ The version notes below describe the changes included in each package.
 - Show the specific error when a worker fails before creating its result.
 - Keep generated hard links registered for cleanup after metadata restoration.
 
-These changes are under development and have not been published. Quality,
+This version is being prepared and has not been published. Quality,
 savings and replacement checks remain in place.
 
 ## 20261106-v71
