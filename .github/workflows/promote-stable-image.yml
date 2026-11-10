@@ -21,7 +21,8 @@ jobs:
     environment: container-release
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      # Mark the verified stable version as GitHub's latest release.
+      contents: write
       packages: write
     env:
       VERSION: ${{ inputs.version }}

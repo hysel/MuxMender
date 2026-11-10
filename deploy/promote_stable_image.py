@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
+import time
 import urllib.parse
 import urllib.request
 from release_notes import check as check_release_notes
@@ -25,6 +27,18 @@ def verify(data, digest, review, version, repository):
     if manifest.get('mediaType') not in ACCEPT.split(', '):
         raise ValueError('Expected a qualified single-platform image manifest')
     return manifest['mediaType']
+
+
+def mark_latest(repository, version):
+    """Update release discovery only after the stable image is verified."""
+    subprocess.run(['gh','release','edit',version,'--repo',repository,'--latest'],
+                   check=True,capture_output=True,text=True,timeout=60)
+    for attempt in range(3):
+        latest=subprocess.check_output(['gh','api','repos/'+repository+'/releases/latest',
+            '--header','Cache-Control: no-cache','--jq','.tag_name'],text=True,timeout=30).strip()
+        if latest==version:return
+        if attempt<2:time.sleep(1)
+    raise ValueError('GitHub latest release does not match verified stable')
 
 
 def main():
@@ -65,7 +79,12 @@ def main():
     with urllib.request.urlopen(urllib.request.Request(endpoint+'stable',headers=headers),timeout=30) as response:
         published=response.read()
     verify(published,digest,review,version,repository)
-    result=dict(version=version,stable_digest=digest,qualified_image_id=review['qualified_image_id'],deployed=False)
+    result=dict(version=version,stable_digest=digest,qualified_image_id=review['qualified_image_id'],deployed=False,
+                latest_release_updated=False)
+    # Retain the successful registry receipt even if the metadata update fails.
+    Path('stable-promotion.json').write_text(json.dumps(result,indent=2)+'\n')
+    mark_latest(repository,version)
+    result['latest_release_updated']=True
     Path('stable-promotion.json').write_text(json.dumps(result,indent=2)+'\n')
     print(json.dumps(result))
 
