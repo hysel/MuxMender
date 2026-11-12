@@ -80,6 +80,41 @@ def relay_mux_command(command, source, relay, identified, relay_identified):
     return result
 
 
+def copy_audio_relay(work,source,relay,before,label,duration):
+    """Keep explicit DTS durations before considering decode-clock repair.
+
+    FFmpeg suppresses durations equal to either rounded DefaultDuration. A
+    one-sample fallback makes every real DTS packet carry BlockDuration instead;
+    the copied compressed audio and its original packet clocks are untouched.
+    The complete source/output packet and decoded-audio audits still apply.
+    """
+    command=[work.args.ffmpeg,'-v','error','-nostdin','-n','-copyts','-i',str(source),
+             '-map','0:a','-c','copy','-map_metadata','0','-map_chapters','-1',
+             '-avoid_negative_ts','disabled']
+    audio=[s for s in before['streams'] if s.get('codec_type')=='audio']
+    from dts_terminal_duration import explicit_duration_options
+    command += explicit_duration_options(before['streams'])
+    command+=['-progress','pipe:1','-nostats',str(relay)]
+    try:
+        work.execute(command,label+'-audio-duration-relay',duration)
+        return 'explicit-original-packet-durations'
+    except RuntimeError as exc:
+        # Only an identified copied audio clock regression warrants the older
+        # native relay. Never retry cancellation, a decoder error or bad input.
+        match=re.search(r'\[aost#0:(\d+)/copy\s+@[^\]]*\]\s+Non-monotonic DTS;',str(exc))
+        if (match is None or int(match[1])>=len(audio)
+                or 'Error submitting a packet to the muxer' not in str(exc)):
+            raise
+        from artifact_manifest import registered_outputs
+        if relay.exists():
+            if relay not in registered_outputs(work.directory):
+                raise ValueError('Refusing to remove an unregistered audio relay')
+            relay.unlink()
+        work.execute([sys.executable,'-B',str(Path(__file__).with_name('copied_audio_relay.py')),
+                      '--source',str(source),'--output',str(relay)],label+'-audio-packet-relay',duration)
+        return 'native-original-packet-clocks'
+
+
 def hdr_video_view(work,source,before,identified,label,duration):
     """A source-identical primary-video view keeps broken copied DTS out of HDR muxes.
 
@@ -143,9 +178,7 @@ def recover(work, source, output, settings, info, before, label, duration, error
     save(root/'audio-mux-recovery.json', report)
     if any(s.get('codec_type')=='audio' and s.get('codec_name')=='dts' for s in before['streams']):
         relay=output.with_name(output.stem+'-audio-recovery-packets.mka')
-        work.execute([sys.executable,'-B',str(Path(__file__).with_name('copied_audio_relay.py')),
-                      '--source',str(source),'--output',str(relay)],
-                     label+'-audio-packet-relay',duration)
+        report['audio_relay']=copy_audio_relay(work,source,relay,before,label,duration)
         relay_identified=json.loads(subprocess.check_output([binary,'-J',str(relay)],text=True,timeout=60))
         command=relay_mux_command(command,source,relay,identified,relay_identified)
         report['route']='video-only-encode-exact-audio-packet-relay'

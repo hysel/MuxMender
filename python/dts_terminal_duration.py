@@ -6,6 +6,19 @@ still requires the normal complete metadata, packet, decoded-audio and video tes
 from fractions import Fraction
 import json
 from pathlib import Path
+import shutil
+
+
+def explicit_duration_options(streams):
+    """Write every DTS BlockDuration instead of a rounded default fallback.
+
+    This is a stream-copy container hint, not a decoded audio frame size. The
+    original packet durations and compressed sample bytes remain authoritative.
+    """
+    result=[]
+    for index,stream in enumerate(s for s in streams if s.get('codec_type')=='audio'):
+        if stream.get('codec_name')=='dts':result += [f'-frame_size:a:{index}','1']
+    return result
 
 
 def terminal_plan(source, output, time_base, sample_rate, frame_samples):
@@ -64,13 +77,34 @@ def restore(work, source, encoded, before, label, duration):
     encoded_identity=work.audit_identity(encoded)
     after=work.probe(encoded)
     pairs=paired_streams(before,after)
+    cache=getattr(work,'dts_source_evidence_cache',None)
+    if cache is None:cache={};work.dts_source_evidence_cache=cache
+    binary=shutil.which(str(work.args.ffprobe))
+    tool_identity=work.audit_identity(Path(binary)) if binary is not None else None
     def probe(path,name,options):
+        key=(str(source.resolve()),identity,str(binary),tool_identity,tuple(options))
+        reusable=path==source and tool_identity is not None
+        if reusable and key in cache:
+            evidence,stamp,payload=cache[key]
+            if work.audit_identity(evidence)!=stamp:
+                raise ValueError('Cached source DTS evidence changed')
+            work.guard()
+            return payload
         evidence=work.directory/(label+'-dts-'+name+'.json')
-        run_probe([work.args.ffprobe,'-v','error',*options,'-of','json',str(path)],
+        # Streams are paired from the independent complete metadata read above.
+        # Disable only startup stream-info heuristics: they otherwise decode
+        # unrelated clipped PGS subtitles during an audio-only packet proof.
+        run_probe([work.args.ffprobe,'-v','error','-nofind_stream_info',*options,'-of','json',str(path)],
                   evidence,'Checking copied DTS terminal duration',work.args.timeout,work.guard)
         if evidence.with_suffix(evidence.suffix+'.stderr').stat().st_size:
             raise ValueError('DTS duration evidence probe reported decoder errors')
-        return json.loads(evidence.read_text())
+        payload=json.loads(evidence.read_text())
+        # Small reference evidence can be shared by every CQ/preset trial.
+        # Large full-file inventories remain transient rather than filling a
+        # job-long cache. This is a cache budget, not an input acceptance gate.
+        if reusable and evidence.stat().st_size<=4*1024*1024:
+            cache[key]=(evidence,work.audit_identity(evidence),payload)
+        return payload
     options=['-select_streams','a','-show_packets','-show_data_hash','sha256']
     original=probe(source,'source-packets',options)['packets']
     copied=probe(encoded,'output-packets',options)['packets']
@@ -110,6 +144,7 @@ def restore(work, source, encoded, before, label, duration):
     progress('Restoring original DTS terminal duration',detail='Packet bytes and clocks unchanged; full validation still required')
     command=[work.args.ffmpeg,'-v','error','-nostdin','-n','-copyts','-i',str(encoded),
              '-map','0','-map_metadata','0','-map_chapters','0','-c','copy','-avoid_negative_ts','disabled']
+    command += explicit_duration_options(before['streams'])
     for i,(_,stream) in enumerate(pairs):
         command += [f'-disposition:{i}','+'.join(k for k,v in stream.get('disposition',{}).items() if v) or '0']
     for item in languages:
@@ -117,7 +152,7 @@ def restore(work, source, encoded, before, label, duration):
     for plan in plans:
         index=plan['audio_index']
         expression=r'setts=duration=if(eq(N\,'+str(plan['packet'])+r')\,'+str(plan['duration_ticks'])+r'\,DURATION)'
-        command += [f'-frame_size:a:{index}',str(plan['frame_samples']),f'-bsf:a:{index}',expression]
+        command += [f'-bsf:a:{index}',expression]
     command += ['-progress','pipe:1','-nostats',str(fixed)]
     work.execute(command,label+'-dts-duration-copy',duration)
     if identity!=work.audit_identity(source) or encoded_identity!=work.audit_identity(encoded):
