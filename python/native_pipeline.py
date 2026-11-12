@@ -22,6 +22,15 @@ from encoder_progress import EncoderActivity, timestamp_percent
 from validation_resources import validation_limited
 
 
+class StageTimeout(RuntimeError):
+    """Distinguish an exhausted runtime budget from a stalled process."""
+    def __init__(self, timeout, stall, *, runtime_limit):
+        self.runtime_limit = runtime_limit
+        self.timeout_seconds = timeout
+        cause = 'total runtime limit' if runtime_limit else 'no advancing frame/timestamp progress'
+        super().__init__(f'Stage timed out: {cause} (total limit {timeout}s; progress stall limit {stall}s)')
+
+
 def checked_json(command, timeout=60):
     result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     if result.returncode:
@@ -166,8 +175,7 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None,
             if allocation_observer:allocation_observer.sample()
             now = time.monotonic()
             if now - started > timeout or (stall and now - advanced > stall):
-                cause = 'total runtime limit' if now-started > timeout else 'no advancing frame/timestamp progress'
-                raise RuntimeError(f"Stage timed out: {cause} (total limit {timeout}s; progress stall limit {stall}s)")
+                raise StageTimeout(timeout, stall, runtime_limit=now-started > timeout)
             try:
                 line = lines.get(timeout=0.2)
             except queue.Empty:

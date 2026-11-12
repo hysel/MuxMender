@@ -2043,7 +2043,9 @@ def run(args):
                 from hdr10plus_preserve import frame_records
                 probe=reference_metadata_from_frames(probe,data,
                     frame_records(frames) if workflow.hdr_mode else compact_rows(frames,'width'))
+                count = workflow.compare_frame_files(frames, frames)
             except (ValueError,RuntimeError):
+                workflow.guard()
                 from reference_sampling import recover_reference
                 reference,recovery=recover_reference(workflow,source,data,position,args.seconds,
                                                       'reference-'+str(i)+'-keyframe')
@@ -2053,7 +2055,7 @@ def run(args):
                 from hdr10plus_preserve import frame_records
                 probe=reference_metadata_from_frames(probe,data,
                     frame_records(frames) if workflow.hdr_mode else compact_rows(frames,'width'))
-            count = workflow.compare_frame_files(frames, frames)
+                count = workflow.compare_frame_files(frames, frames)
             # Do not accept pathological keyframe preroll spanning another sample.
             window=workflow.reference_window(reference,probe,max(args.seconds,15) if recovery else args.seconds)
             references.append((reference, probe, frames, count))

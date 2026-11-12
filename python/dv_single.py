@@ -25,6 +25,9 @@ def encode_candidate(workflow, source, settings, label, *, dovi_tool='dovi_tool'
     directory=Path(workflow.directory)/label;directory.mkdir()
     args=copy(workflow.args);args.source=source
     work=Workflow(args,directory,workflow.guard)
+    # Child workflows need the actual source geometry/codec for shared stage
+    # admission too. An unknown family prevents bounded GPU overlap learning.
+    work.performance_video=main_video(before)
     work.native_quality_profiles=workflow.native_quality_profiles
     identity=digest(source,work.guard)
     if source==Path(getattr(workflow.args,'source',source)).resolve():

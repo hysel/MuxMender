@@ -1,7 +1,8 @@
-"""Restore an original declared duration only after complete media validation.
+"""Restore the reference's declared duration after complete media validation.
 
 This edits the generated container's Info element, never media packets, clocks,
-track metadata or the original. Normal validation still decides publication.
+track metadata or the reference. References are the original or owned samples;
+normal validation still decides publication.
 """
 from fractions import Fraction
 from pathlib import Path
@@ -87,16 +88,19 @@ def restore(work,source,output,before,after,label,frames):
     from job_tracking import progress
     source=Path(source);output=Path(output);root=work.directory.resolve()
     original=getattr(work.args,'source',None)
-    if (original is None or source.resolve()!=Path(original).resolve() or
+    owned=registered_outputs(root)
+    original_reference=original is not None and source.resolve()==Path(original).resolve()
+    generated_reference=(not source.is_symlink() and source.resolve().parent==root and source in owned)
+    if (not (original_reference or generated_reference) or
             type(frames) is not int or frames<=0 or output.is_symlink() or
-            output.resolve().parent!=root or output not in registered_outputs(root)):
-        raise ValueError('Duration restoration requires the original and an owned, completely audited output')
+            output.resolve().parent!=root or output not in owned):
+        raise ValueError('Duration restoration requires the original or an owned reference and a completely audited output')
     for data in (before,after):
         names=set(data.get('format',{}).get('format_name','').split(','))
         if not names or not names<={'matroska','webm'}:raise ValueError('Duration restoration requires Matroska headers')
     old_source=work.audit_identity(source);old_output=work.audit_identity(output)
     if old_source[:2]==old_output[:2]:raise ValueError('Output shares original container bytes')
-    aliases=[p for p in registered_outputs(root) if work.audit_identity(p)[:2]==old_output[:2]]
+    aliases=[p for p in owned if work.audit_identity(p)[:2]==old_output[:2]]
     if output.stat().st_nlink!=len(aliases):
         raise ValueError('Duration restoration cannot change an unregistered container link')
     color=getattr(work,'color_intermediates',{}).get(output.resolve())
@@ -130,6 +134,7 @@ def restore(work,source,output,before,after,label,frames):
         work.hdr_intermediates[output.resolve()]=[(path,work.audit_identity(path)[:4] if path in aliases else identity)
                                                 for path,identity in hdr]
     proof=dict(method='original-declared-matroska-duration',original_seconds=str(seconds),
+        reference_kind='original' if original_reference else 'owned-sample',
         previous_seconds=after['format']['duration'],verified_decoded_frames=frames,
         complete_copied_tracks_verified=True,media_packets_unchanged=True,
         changed_bytes='Info duration and its existing CRC only',validation_required=True)

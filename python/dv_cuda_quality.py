@@ -14,6 +14,23 @@ from copy import copy
 from cuda_quality import BOUNDARY_MARGIN,equivalent,scores
 
 
+def gpu_failure(path, error, *, cpu_ready):
+    """Save the GPU failure before a CPU fallback can fail or time out itself."""
+    from dvd_av1_batch import save
+    from job_tracking import progress
+    from native_pipeline import StageTimeout
+    exhausted=isinstance(error,StageTimeout) and error.runtime_limit and not cpu_ready
+    diagnostic=type(error).__name__+': '+str(error)[:400]
+    action='stop-at-time-limit' if exhausted else 'retain-cpu-result' if cpu_ready else 'retry-on-cpu'
+    save(path,dict(action=action,diagnostic=diagnostic,partial_gpu_scores_used=False))
+    if exhausted:
+        raise RuntimeError(f'Native Dolby Vision GPU scoring reached the {error.timeout_seconds/60:g}-minute stage limit. '
+                           'Stopped without restarting the slower CPU check. Original retained.') from error
+    if not cpu_ready:
+        progress('GPU scoring failed; checking Dolby Vision on CPU',detail=diagnostic)
+    return diagnostic
+
+
 def commands(cpu, gpu, candidate, reference, video, rate, name, directory, device, *, paired=False, frame_count=None):
     from dv_render import RENDER_FILTER
     from hdr_auto import RENDER_FILTER as COMMON_RENDER
@@ -182,9 +199,10 @@ class Scorer:
                 self.states[key]=False
                 raise  # A failed CPU check must not be run again as GPU fallback.
             w.guard();self.states[key]=False
+            diagnostic=gpu_failure(Path(w.directory)/'paired-cuda-failure.json',exc,cpu_ready=cpu_ready)
             if not cpu_ready:self.cpu_pair(cpu,candidate,reference,count)
             for k in paths:info[k].update(reason='GPU scoring unavailable; complete CPU check used',
-                                        diagnostic=type(exc).__name__+': '+str(exc)[:400])
+                                        diagnostic=diagnostic)
             return info
 
     def run(self, candidate, reference, name, count, duration, cpu):
@@ -238,6 +256,7 @@ class Scorer:
                 raise
             w.guard()
             self.states[self.profile]=False
+            diagnostic=gpu_failure(destination.with_name(destination.stem+'-cuda-failure.json'),exc,cpu_ready=cpu_ready)
             if not cpu_ready:cpu()
             return dict(info,reason='GPU scoring unavailable; complete CPU check used',
-                        diagnostic=type(exc).__name__+': '+str(exc)[:400])
+                        diagnostic=diagnostic)

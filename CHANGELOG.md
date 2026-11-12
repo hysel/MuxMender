@@ -4,6 +4,24 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
+## 20261112-v73
+
+- Preserve copied DTS audio durations during mux recovery, including short
+  final packets. Keep the original compressed audio and timestamps unchanged.
+- Finish sample comparisons when a remux changes the declared playback length.
+  Restore it only after checking every picture and copied track.
+- Try verified keyframe sampling when an ordinary sample cut introduces
+  conflicting timestamps. Keep the original if its timing cannot be proved.
+- Avoid false audio-inspection failures from unrelated clipped subtitles.
+- Reuse unchanged source-audio evidence between encoding trials instead of
+  scanning the same reference again.
+- Include single-layer Dolby Vision encodes in adaptive GPU resource planning.
+  Extra work still requires measured headroom; this does not force parallel jobs.
+- Stop native Dolby Vision scoring when it reaches the selected runtime limit.
+  Report why it stopped instead of restarting the comparison on the slower CPU.
+- Remove large temporary DTS packet dumps after a job finishes. Keep its result,
+  repair summary and replacement history.
+
 ## 20261110-v72
 
 - Recover older AVI samples through a lossless working copy when a direct
