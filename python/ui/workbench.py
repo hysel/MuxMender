@@ -152,6 +152,9 @@ button,.button{background:var(--soft);border:1px solid var(--border);box-shadow:
 #activity .queue-actions{margin:0 0 8px;gap:8px}#activity .queue-actions button{padding:6px 12px}
 #queue-clear-feedback:empty{margin:0;padding:0}
 #activity #queue-action-status{margin:0 0 6px;font-size:.72rem}
+.queue-order{display:flex;align-items:center;flex-wrap:wrap;gap:4px 12px;padding:6px 0;font-size:.8rem}
+.queue-order select{width:auto;max-width:100%;min-height:44px}.queue-order small{color:var(--muted)}
+#queue-order-feedback{flex-basis:100%;margin:0}#queue-order-feedback:empty{display:none}
 .waiting-queue{border-top:1px solid var(--hairline);margin-top:6px}.waiting-queue>summary{min-height:44px;font-size:.8rem}
 .waiting-queue .control-note{margin:0 0 6px;font-size:.74rem}#waiting-queue-feedback:empty{display:none}
 #waiting-queue-items{max-height:320px;overflow:auto}.waiting-video{display:flex;gap:16px;align-items:center;justify-content:space-between;border-top:1px solid var(--hairline);padding:2px 8px;font-size:.8rem}.waiting-video>span{overflow-wrap:anywhere;min-width:0}.waiting-video>button{min-height:44px;flex-shrink:0}
