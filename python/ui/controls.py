@@ -75,7 +75,7 @@ document.querySelectorAll('a[href="#workflow"]').forEach(link=>link.addEventList
  const section=controlElement('workflow');if(section?.tagName==='DETAILS')section.open=true;
 }));
 async function controlCall(action,extra={}){
- const response=await fetch('/api/control',{method:'POST',...(['resource-profile','gpu-yield','cpu-allocation'].includes(action)?{signal:AbortSignal.timeout(15000)}:{}),headers:{'Content-Type':'application/json','X-MuxMender-CSRF':controlToken||''},body:JSON.stringify({action,...extra})});
+ const response=await fetch('/api/control',{method:'POST',...(['resource-profile','gpu-yield','cpu-allocation','queue-order'].includes(action)?{signal:AbortSignal.timeout(15000)}:{}),headers:{'Content-Type':'application/json','X-MuxMender-CSRF':controlToken||''},body:JSON.stringify({action,...extra})});
  const body=await response.json();if(!response.ok)throw Error(body.error||'Request failed');return body;
 }
 async function browseMedia(path='',offset=0){try{
@@ -230,6 +230,25 @@ controlElement('queue-clear-confirm')?.addEventListener('click',async()=>{
  }catch(error){controlElement('queue-clear-error').textContent=error.message;controlElement('queue-clear-confirm').disabled=false}
  finally{queueClearBusy=false;refreshControls()}
 });
+async function saveQueueOrder(event){
+ const select=event.currentTarget,feedback=controlElement('queue-order-feedback'),order=select.value;
+ if(queueActionBusy||queueStatusUnavailable||!lastQueueControl?.ready)return;
+ const restoreFocus=document.activeElement===select;
+ queueActionBusy=true;queueActionVersion++;feedback.textContent='Saving queue order…';
+ renderQueueActions(lastQueueControl);
+ try{
+  const result=await controlCall('queue-order',{order});
+  lastQueueControl={...lastQueueControl,queue_order:result.queue_order,waiting_job_ids:result.waiting_job_ids};
+  feedback.textContent='Queue order saved.';
+ }catch(error){feedback.textContent='Could not save queue order. '+error.message}
+ finally{
+  queueActionBusy=false;
+  renderQueueActions(lastQueueControl,queueStatusUnavailable);
+  if(restoreFocus&&!select.disabled&&document.activeElement===document.body)select.focus({preventScroll:true});
+  refreshControls();
+ }
+}
+controlElement('queue-order')?.addEventListener('change',saveQueueOrder);
 let controlPollBusy=false;
 let lastQueueControl=null,queueStatusUnavailable=true,queueActionBusy=false,queueActionVersion=0,queueActionError='';
 function renderQueueActions(body,unavailable=false){
@@ -244,6 +263,11 @@ function renderQueueActions(body,unavailable=false){
  let message=queueActionBusy?'Updating queue…':unavailable?(body?'Queue status delayed. Last confirmed state: '+(paused?'paused.':'running.')+(pause.disabled?' Actions will return when status reconnects.':' You can still request a pause; Resume waits for reconnection.'):'Connecting to queue controls…'):!ready?'Queue controls unavailable: '+(body?.error||'worker is starting'):paused?(running?'New starts paused. '+running+' active job(s) are finishing.':'Queue paused.')+(!pending?' No waiting jobs to resume.':' Resume starts the waiting jobs.'):hasWork?'Queue running. Pause new starts lets active jobs finish.':'No active or waiting jobs. Add videos to start a batch.';
  if(queueActionError&&!queueActionBusy)message=queueActionError+' · '+message;
  const status=controlElement('queue-action-status');if(status&&status.textContent!==message)status.textContent=message;
+ const order=controlElement('queue-order');
+ if(order){
+  order.disabled=queueActionBusy||unavailable||!ready;
+  if(!queueActionBusy&&order.value!==(body?.queue_order||'added'))order.value=body?.queue_order||'added';
+ }
  if(typeof renderWaitingQueue==='function')renderWaitingQueue(body,ready&&!unavailable&&!queueActionBusy);
  if(typeof renderCancelledRestart==='function')renderCancelledRestart(body,unavailable);
 }

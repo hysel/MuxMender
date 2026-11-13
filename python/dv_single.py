@@ -38,8 +38,14 @@ def encode_candidate(workflow, source, settings, label, *, dovi_tool='dovi_tool'
     guard.phase='Checking complete single-layer DV frames';guard.duration=duration;guard.allow_hdr10plus=True
     source_frames=directory/'source-frames.json';frame_evidence(args.ffprobe,source,source_frames,guard)
     clock=directory/'timestamps.txt'
-    count=write_decoded_timestamps((dict(f,pts_time=f['best_effort_timestamp_time']) for f in frames(source_frames,True)),
-                                   clock,guard,include_end=True)
+    from dv_preservation_test import hdr10plus_metadata
+    has_hdr10plus=False
+    def decoded_timestamps():
+        nonlocal has_hdr10plus
+        for frame in frames(source_frames,True):
+            has_hdr10plus=has_hdr10plus or bool(hdr10plus_metadata(frame))
+            yield dict(frame,pts_time=frame['best_effort_timestamp_time'])
+    count=write_decoded_timestamps(decoded_timestamps(),clock,guard,include_end=True)
     def raw(path,label):
         output=directory/(label+'.hevc')
         work.execute([args.ffmpeg,'-v','error','-nostdin','-n','-i',str(path),'-map','0:V:0','-c','copy',
@@ -53,10 +59,24 @@ def encode_candidate(workflow, source, settings, label, *, dovi_tool='dovi_tool'
     original_raw=raw(source,'source-bitstream')
     original_rpu,original_evidence=rpu(original_raw,'source-rpu')
     if original_evidence[0]!=count:raise ValueError('Source RPU count differs from decoded frames')
+    metadata=None
+    if has_hdr10plus:
+        from hdr10plus_extraction import validate_coverage
+        metadata=directory/'source-hdr10plus.json'
+        work.execute(['hdr10plus_tool','extract',str(original_raw),'-o',str(metadata)],
+                     'Extracting original HDR10+ metadata',duration)
+        validate_coverage(metadata,count,guard)
     encoded=directory/'encoded.mkv'
     command=encode_command(encoder_ffmpeg or args.ffmpeg,source,encoded,settings,mm.probe(source,args.ffprobe),before['streams'])
+    from hdr10_trial import chroma_options
+    command=command[:-1]+chroma_options(main_video(before))+command[-1:]
     work.execute(work.preserve_covers(command,source,before,'encode'),'encode-single-layer',duration)
     encoded_raw=raw(encoded,'encoded-bitstream')
+    if metadata is not None:
+        hdr_restored=directory/'hdr10plus-restored.hevc'
+        work.execute(['hdr10plus_tool','inject','-i',str(encoded_raw),'-j',str(metadata),'-o',str(hdr_restored)],
+                     'Restoring original HDR10+ metadata',duration)
+        encoded_raw=hdr_restored
     restored=directory/'restored.hevc'
     work.execute([dovi_tool,'inject-rpu','-i',str(encoded_raw),'-r',str(original_rpu),'-o',str(restored)],'restore-rpu',duration)
     _,restored_evidence=rpu(restored,'restored-rpu')
@@ -79,7 +99,9 @@ def encode_candidate(workflow, source, settings, label, *, dovi_tool='dovi_tool'
     if configuration['dv_profile']==8:
         from hdr_auto import measure_prefix_quality
         from dv_render import combine_quality_views
-        fallback=measure_prefix_quality(args.ffmpeg,source,output,directory,count,rate,guard)
+        fallback=measure_prefix_quality(args.ffmpeg,source,output,directory,count,rate,guard,
+            source_probe=before,candidate_probe=after,frame_checks=checks,
+            mean_floor=getattr(args,'vmaf_mean',90),p5_floor=getattr(args,'vmaf_p5',90))
         quality=combine_quality_views(quality,fallback)
     if digest(source,guard)!=identity:raise ValueError('Source content changed during single-layer candidate')
     original_bytes=source.stat().st_size;output_bytes=output.stat().st_size

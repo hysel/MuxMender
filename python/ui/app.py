@@ -79,7 +79,13 @@ HTML=HTML.replace('</main>', '''<dialog id="queue-clear-dialog" aria-labelledby=
 HTML=HTML.replace('</head>','<style>dialog{max-width:min(540px,calc(100vw - 32px));border:1px solid var(--border);border-radius:14px;padding:24px;background:var(--panel);color:var(--text)}dialog::backdrop{background:rgb(0 0 0 / .5)}.queue-dialog-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}.queue-dialog-heading h2{margin:0}.queue-dialog-heading button{min-width:44px;min-height:44px;font-size:24px}</style></head>')
 
 from ui.workbench import restyle
+from queue_order import ORDERS
+queue_order_options=''.join(f'<option value="{key}">{label}</option>' for key,label in ORDERS.items())
 HTML=HTML.replace('<details class="queue-support">',
+    '<div class="queue-order"><label for="queue-order">Start waiting videos by</label>'
+    '<select id="queue-order" aria-describedby="queue-order-help" disabled>'+queue_order_options+'</select>'
+    '<small id="queue-order-help">Applies to waiting videos. Running jobs continue.</small>'
+    '<p id="queue-order-feedback" role="status"></p></div>'
     '<details id="waiting-queue" class="waiting-queue"><summary id="waiting-queue-title">Waiting videos</summary><p class="control-note">Remove a waiting video without stopping other jobs or deleting files. Its history is kept.</p><p id="waiting-queue-feedback" role="status" aria-live="polite"></p><div id="waiting-queue-items" tabindex="0" aria-label="Waiting videos"></div></details><details class="queue-support">',1)
 HTML=restyle(HTML)
 HTML=HTML.replace('<label for="gpu-yield-enabled">', '''<fieldset><legend>CPU allocation advice</legend>

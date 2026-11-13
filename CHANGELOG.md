@@ -4,6 +4,18 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
+## 20261112-v74
+
+- Choose which waiting videos start first by order added, last modified date,
+  file size or file name. Changing the order leaves running jobs alone.
+- Preserve the source's chroma siting and HDR10+ metadata when encoding
+  single-layer Dolby Vision video.
+- Speed up the HDR compatibility check for Dolby Vision Profile 8.1 on
+  qualified NVIDIA GPUs. MuxMender checks GPU scores against the CPU on the
+  same encode and uses the CPU if GPU scoring cannot be verified or the
+  result is close to the quality threshold. Native Dolby Vision validation
+  still runs separately.
+
 ## 20261112-v73
 
 - Preserve copied DTS audio durations during mux recovery, including short

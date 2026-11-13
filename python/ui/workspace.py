@@ -207,15 +207,25 @@ function resultMeta(job){const t=outcomeTime(job),label=Number.isFinite(job.fini
 const queuedRemovals=new Set();let waitingQueueSignature='';
 function renderWaitingQueue(body,available=true){
  const panel=userEl('waiting-queue'),list=userEl('waiting-queue-items');if(!panel||!list)return;
- const rows=(body?.jobs||[]).filter(j=>j.state==='pending');
+ const waiting=(body?.jobs||[]).filter(j=>j.state==='pending');
+ const byId=new Map(waiting.map(job=>[job.id,job]));
+ const rows=[];
+ for(const id of body?.waiting_job_ids||[])if(byId.has(id)){rows.push(byId.get(id));byId.delete(id)}
+ for(const job of byId.values())rows.push(job);
+ const showModified=body?.queue_order?.startsWith('modified-');
  panel.hidden=!rows.length;userEl('waiting-queue-title').textContent='Waiting videos · '+rows.length;
- const signature=JSON.stringify([available,rows.map(j=>[j.id,j.source,sourceBytes(j)]),[...queuedRemovals]]);
+ const signature=JSON.stringify([available,rows.map(j=>[j.id,j.source,sourceBytes(j),showModified?j.signature?.[1]:null]),showModified,[...queuedRemovals]]);
  if(signature===waitingQueueSignature)return;waitingQueueSignature=signature;
  const focused=document.activeElement,focusId=focused?.dataset?.queuedId,hadFocus=list.contains(focused);
  list.replaceChildren();
  for(const job of rows){
   const row=userNode('div',null,'waiting-video'),name=userNode('span',resultName(job)),button=userNode('button','Remove');
-  name.append(userNode('small',sourceBytes(job)===null?'Source size unavailable':'Source: '+fileSizeText(sourceBytes(job)),'waiting-video-size'));
+  let details=sourceBytes(job)===null?'Source size unavailable':'Source: '+fileSizeText(sourceBytes(job));
+  if(showModified){
+   const modified=new Date((job.signature?.[1]??NaN)/1e6);
+   details+=' · '+(Number.isFinite(modified.getTime())?'Modified '+modified.toLocaleString():'Modified date unavailable');
+  }
+  name.append(userNode('small',details,'waiting-video-size'));
   button.type='button';button.dataset.queuedId=job.id;button.setAttribute('aria-label','Remove '+resultName(job)+' from queue');
   button.disabled=!available||queuedRemovals.has(job.id);
   button.title=available?'Remove this waiting request; keep the file and history':'Waiting for current queue status';
@@ -231,7 +241,6 @@ function renderWaitingQueue(body,available=true){
  if(focusId){const button=[...list.querySelectorAll('button')].find(n=>n.dataset.queuedId===focusId);if(button)button.focus();else if(hadFocus)list.focus()}
 }
 function receiveControls(body){requestJobs=body.jobs||[];queueState=body;
- renderWaitingQueue(body,!!body.ready&&!body.snapshot_stale&&!body.snapshot_error);
  renderOutcomeSummary(requestJobs);
  receiveHistory(body);
  if(typeof renderWorkspaceSummary==='function')renderWorkspaceSummary(body);

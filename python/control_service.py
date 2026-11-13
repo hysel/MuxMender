@@ -17,6 +17,7 @@ from autonomous_queue import EXTENSIONS, read, write, signature
 from workspace_history import WorkspaceHistory, decision_evidence
 from copy_approval import CopyApproval
 from queue_restart import CancelledQueue
+from queue_order import valid_order, waiting_key
 from app_version import VERSION
 from codec_selection import EVALUATION_POLICY
 from gpu_admission import snapshot as gpu_admission_snapshot
@@ -336,6 +337,22 @@ class Controls(CopyApproval, WorkspaceHistory, CancelledQueue):
     def save(self):
         write(self.file,self.state)
 
+    def queue_order(self):
+        order=self.state.get('queue_order')
+        return order if valid_order(order) else 'added'
+
+    def next_pending(self):
+        """Choose the next job under the queue mutex."""
+        order=self.queue_order()
+        waiting=(job for job in self.state['jobs'] if job['state']=='pending')
+        return next(waiting,None) if order=='added' else min(waiting,key=lambda job:waiting_key(job,order),default=None)
+
+    def waiting_order(self):
+        order=self.queue_order()
+        waiting=[job for job in self.state['jobs'] if job['state']=='pending']
+        if order!='added':waiting.sort(key=lambda job:waiting_key(job,order))
+        return dict(queue_order=order,waiting_job_ids=[job['id'] for job in waiting])
+
     def submit(self, token, confirm_replace=False):
         with self.mutex:
             if not self.ready: raise ValueError('Control worker is not ready')
@@ -390,7 +407,7 @@ class Controls(CopyApproval, WorkspaceHistory, CancelledQueue):
             for job in jobs:counts[job['state']]=counts.get(job['state'],0)+1
             live=dict(jobs=jobs,counts=counts,paused=self.state['paused'],
                       ready=self.ready,error=self.error,queue_snapshot_updated=time.time(),
-                      resource_profile=self.state.get('resource_profile','shared'))
+                      resource_profile=self.state.get('resource_profile','shared'),**self.waiting_order())
             live['cancelled_queue_restart']=self.cancelled_restart_summary()
         with self.poll_mutex:
             if not self.poll_refreshing and time.monotonic()-self.poll_checked>=3:
@@ -426,9 +443,10 @@ class Controls(CopyApproval, WorkspaceHistory, CancelledQueue):
             jobs=[dict(j) for j in active+finished]
             paused=self.state['paused'];pause_origin=self.state.get('pause_origin')
             resource_profile=self.state.get('resource_profile','shared')
+            waiting_order=self.waiting_order()
             view=dict(self.state.get('view',{}));gpu_yield_enabled=self.state.get('gpu_yield',False)
         # Historical filesystem reads must not hold up queue actions or workers.
-        return self._snapshot_details(jobs,counts,paused,pause_origin,resource_profile,view,gpu_yield_enabled)
+        return dict(self._snapshot_details(jobs,counts,paused,pause_origin,resource_profile,view,gpu_yield_enabled),**waiting_order)
 
     def _snapshot_details(self,jobs,counts,paused,pause_origin,resource_profile,view,gpu_yield_enabled):
         from cpu_allocation import capacity,recommendation
@@ -507,6 +525,19 @@ class Controls(CopyApproval, WorkspaceHistory, CancelledQueue):
         if action in ('inspect-recovery','retry-preview','cleanup-preview','cleanup-confirm'):return self.history_action(data)
         if action=='preview': return self.preview(data.get('settings'))
         if action=='submit': return self.submit(data.get('preview_id'),data.get('confirm_replace',False))
+        if action=='queue-order':
+            order=data.get('order')
+            if not valid_order(order):raise ValueError('Unknown queue order')
+            with self.mutex:
+                if not self.ready:raise ValueError('Control worker is not ready')
+                previous=self.queue_order()
+                if order!=previous:
+                    self.state['queue_order']=order
+                    try:self.save()
+                    except Exception:
+                        self.state['queue_order']=previous
+                        raise
+                return self.waiting_order()
         if action=='gpu-yield':
             enabled=data.get('enabled')
             if type(enabled) is not bool:raise ValueError('GPU yielding requires a boolean setting')
@@ -651,7 +682,7 @@ class Controls(CopyApproval, WorkspaceHistory, CancelledQueue):
     def step(self):
         with self.mutex:
             if self.stop_event.is_set() or self.state['paused']:return
-            next_job=next((j for j in self.state['jobs'] if j['state']=='pending'),None)
+            next_job=self.next_pending()
             publication=next_job if next_job and next_job.get('publication_only') else None
         if publication:return self.step_approved_copy(publication)
         # Standalone-work discovery can scan retained reports. Do not hold up
@@ -659,7 +690,7 @@ class Controls(CopyApproval, WorkspaceHistory, CancelledQueue):
         blocker=self.busy()
         with self.mutex:
             if self.stop_event.is_set() or self.state['paused'] or blocker or self.gpu_yield.status.get('block_admission'):return
-            job=next((j for j in self.state['jobs'] if j['state']=='pending'),None)
+            job=self.next_pending()
             if job is None:return
             # Another worker may have claimed the earlier encode after our
             # dispatch snapshot. Never turn the next publication into an encode.

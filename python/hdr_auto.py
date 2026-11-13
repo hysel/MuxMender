@@ -51,27 +51,39 @@ def quality_graph(name, frame_rate, frame_count=None, *, threads=2, reference_re
             f'[d][r]libvmaf=n_threads={threads}:log_fmt=json:log_path={name}')
 
 
-def measure_prefix_quality(ffmpeg, reference, output, directory, count, rate, guard):
-    """Matched, preservation-verified prefix; shared HDR metric and score policy."""
+def measure_prefix_quality(ffmpeg, reference, output, directory, count, rate, guard, *,
+                           source_probe=None, candidate_probe=None, frame_checks=None, mean_floor=90, p5_floor=90):
+    """Measure the same complete HDR view on CPU or on a calibrated GPU."""
     import json
     from native_pipeline import stage
     from auto_optimize import quality_summary, quality_command
     from job_tracking import progress
-    results={}
-    for label,candidate in (('self',reference),('candidate',output)):
-        progress('HDR quality self-check' if label=='self' else 'Checking HDR candidate quality',
-                 detail=f'Comparing {count} decoded frames',unit='frames',stage_percent=0)
-        name='dv-'+label+'-vmaf.json'
-        command=quality_command(ffmpeg,candidate,reference,quality_graph(name,rate,count))
-        stage(command,float(Fraction(count)/Fraction(rate)),timeout=1800,stall=180,
-              guard=guard,cwd=directory,expected_frames=count)
-        results[label]=quality_summary(json.loads((Path(directory)/name).read_text()),count,
-                                       90,90)
-        if label=='self' and not results[label]['passed']:
-            raise ValueError('HDR quality measurement self-check failed')
-    return dict(**results,domain='hdr-common-render-v1',
-                note='Common HDR10 base-layer render; not a native Dolby Vision perceptual model')
 
+    def cpu_pair(folder, frames, timeout):
+        results, paths, timings = {}, {}, {}
+        for label, candidate in (('self', reference), ('candidate', output)):
+            progress('HDR quality self-check' if label == 'self' else 'Checking HDR candidate quality',
+                     detail=f'Comparing {frames} decoded frames', unit='frames', stage_percent=0)
+            name = 'dv-'+label+'-vmaf.json'
+            command = quality_command(ffmpeg, candidate, reference, quality_graph(name, rate, frames))
+            timings[label] = {}
+            stage(command, float(Fraction(frames)/Fraction(rate)), timeout=timeout, stall=min(timeout, 180),
+                  guard=guard, cwd=folder, expected_frames=frames, measurement=timings[label])
+            paths[label] = Path(folder)/name
+            results[label] = quality_summary(json.loads(paths[label].read_text()), frames, 90, 90)
+            if label == 'self' and not results[label]['passed']:
+                raise ValueError('HDR quality measurement self-check failed')
+        return results, paths, timings
+
+    results = None
+    if source_probe is not None and candidate_probe is not None and frame_checks is not None:
+        from hdr_cuda_pair import measure
+        results = measure(ffmpeg, reference, output, directory, count, rate, guard,
+                          source_probe, candidate_probe, frame_checks, cpu_pair, mean_floor=mean_floor, p5_floor=p5_floor)
+    if results is None:
+        results, _, _ = cpu_pair(directory, count, 1800)
+    return dict(**results, domain='hdr-common-render-v1',
+                note='Common HDR10 base-layer render; not a native Dolby Vision perceptual model')
 
 def encode_preserved(workflow, source, output, settings, info, before, label, duration):
     from auto_optimize import encode_command,main_video

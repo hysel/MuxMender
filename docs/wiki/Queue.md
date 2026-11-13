@@ -3,6 +3,13 @@
 **Overview** shows waiting videos, active work and the current processing step.
 You can add another folder while existing work continues.
 
+Use **Start waiting videos by** to choose which video starts next: order added,
+last modified (newest or oldest first), file size (largest or smallest first),
+or file name. Size and modified time are recorded when the video is added.
+Videos with the same value keep their queue order, and missing values sort last.
+The setting is saved across restarts and applies to all waiting videos. Active
+jobs continue, and new starts still depend on available resources.
+
 ## Pause, resume and cancel
 
 - **Pause new starts:** let active work finish, but don't start another video.

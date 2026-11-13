@@ -112,6 +112,7 @@ class CopyApproval:
         blocker=self.busy()
         with self.mutex:
             if job['state']!='pending' or self.stop_event.is_set() or self.state['paused'] or blocker:return
+            if self.next_pending() is not job:return
             from validated_replace import readable_destination
             key=str(readable_destination(Path(job['source']))).casefold()
             if any(j is not job and j['state']=='running' and str(readable_destination(Path(j['source']))).casefold()==key for j in self.state['jobs']):return
