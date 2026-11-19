@@ -239,7 +239,8 @@ def run(args,source,root,data,baseline):
                     nvenc_maxrate_mbps=peak_rate,
                     seconds=seconds,start=start,whole_source=sampling['whole_source'],work_dir=scene,measure_quality=True,
                     minimum_savings_percent=args.minimum_savings_percent,ffmpeg=args.ffmpeg,
-                    ffprobe=args.ffprobe,dovi_tool='dovi_tool',source_guard=guard)
+                    ffprobe=args.ffprobe,dovi_tool='dovi_tool',source_guard=guard,
+                    vmaf_mean=args.vmaf_mean,vmaf_p5=args.vmaf_p5)
                 code=dv.run(options)
                 evidence=scene_validation(scene,code)
                 sample=sample_evidence(evidence,source,start,seconds,combined,args.vmaf_mean,args.vmaf_p5,

@@ -21,6 +21,7 @@ from mux_integrity import verify_startup_interleaving
 import validate_nvidia as nv
 import job_tracking as jobs
 import dv_tracks
+from gpu_admission import stage_context
 
 
 def require_candidate(info):
@@ -246,9 +247,11 @@ def run(args):
         guard()
         report['commands'].append([str(c) for c in command])
         print(f'PHASE: {phase}', flush=True)
-        return np.stage([str(c) for c in command], args.seconds, offset, span,
-                        timeout=300, stall=90, guard=guard,
-                        strict_decode=phase == 'decode validation')
+        video = dv_tracks.primary(original_streams) if experimental else None
+        with stage_context(video):
+            return np.stage([str(c) for c in command], args.seconds, offset, span,
+                            timeout=300, stall=90, guard=guard,
+                            strict_decode=phase == 'decode validation')
     ff = [args.ffmpeg, '-hide_banner', '-loglevel', 'warning', '-nostdin', '-n']
     progress = ['-progress', 'pipe:1', '-nostats']
     clip = directory / 'reference-clip.mkv'
@@ -490,7 +493,25 @@ def run(args):
             from hdr_auto import measure_prefix_quality
             guard.phase='Measuring shared HDR quality'
             guard.status(95)
-            report['quality']=measure_prefix_quality(args.ffmpeg,clip,final,directory,len(frames),rate,guard)
+            quality_options = {}
+            if experimental:
+                from dv_full_file import frame_picture_signature
+                quality_options = dict(
+                    source_probe=clip_streams,
+                    candidate_probe=final_streams,
+                    frame_checks=dict(
+                        frames=len(frames),
+                        progressive=all(str(f.get('interlaced_frame')) == '0'
+                                        for f in (*frames, *final_frames)),
+                        timing_preserved=True,
+                        frame_picture_preserved=all(
+                            frame_picture_signature(a) == frame_picture_signature(b)
+                            for a, b in zip(frames, final_frames))),
+                    mean_floor=getattr(args,'vmaf_mean',90),
+                    p5_floor=getattr(args,'vmaf_p5',90))
+            with stage_context(video if experimental else None):
+                report['quality']=measure_prefix_quality(
+                    args.ffmpeg,clip,final,directory,len(frames),rate,guard,**quality_options)
             report['sample_qualified']=bool(report['space_saving_candidate'] and report['quality']['candidate']['passed'])
         print(f'STRUCTURAL CHECKS PASSED: {final}\nDolby Vision player review still required.', flush=True)
     except (Exception, KeyboardInterrupt) as exc:
