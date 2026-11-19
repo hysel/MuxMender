@@ -4,6 +4,17 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
+## 20261119-v75
+
+- Use verified GPU scoring in automatic Dolby Vision Profile 8.1 sample tests.
+  This route previously missed the available GPU scorer. CPU fallback and
+  confirmation near the quality threshold remain in place.
+- Apply your selected quality thresholds when checking whether GPU scores
+  can be trusted.
+- Include Dolby Vision sample encoding and scoring in adaptive GPU planning.
+  Extra work still requires measured headroom. MuxMender still yields to other
+  apps when GPU sharing is on.
+
 ## 20261112-v74
 
 - Choose which waiting videos start first by order added, last modified date,
