@@ -41,7 +41,8 @@ class CancelledQueue:
         if not self.recovery_info(job)['retry_allowed']:
             raise ValueError('Publication recovery must be resolved before restarting this video.')
         source=self.resolve(job['source'])
-        if signature(source)!=job['signature'] or not self.identity_matches(job,str(source)):
+        if signature(source)!=job['signature'] or not self.identity_matches(
+                job,str(source),allow_renumbering=not job.get('publication_only')):
             raise ValueError('The source changed. Select it again to review the new file.')
         if job.get('publication_only'):
             evidence=self.copy_evidence(job)
