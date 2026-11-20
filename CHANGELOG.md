@@ -4,6 +4,12 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
+## 20261120-v76
+
+- Restore **Retry skipped, failed or cancelled files** and **Restart cancelled
+  jobs** after TrueNAS reassigns a ZFS device number during a reboot. MuxMender
+  still checks the file's inode, size and timestamps before accepting a retry.
+
 ## 20261119-v75
 
 - Use verified GPU scoring in automatic Dolby Vision Profile 8.1 sample tests.

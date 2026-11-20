@@ -29,6 +29,32 @@ def source_identity(path):
     return [s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns]
 
 
+def zfs_device_reassigned(expected, current, recorded_at):
+    """Recognize a reboot-time Linux device renumbering on a ZFS dataset."""
+    if (not sys.platform.startswith('linux') or not isinstance(expected, list)
+            or len(expected) != len(current) or expected[1:] != current[1:]
+            or type(expected[0]) is not int or expected[0] < 0
+            or expected[0] == current[0]
+            or type(recorded_at) not in (int, float)):
+        return False
+    try:
+        if os.major(expected[0]) or os.major(current[0]):
+            return False
+        with Path('/proc/stat').open(encoding='ascii') as stats:
+            boot = next(int(line.split()[1]) for line in stats if line.startswith('btime '))
+        if not 0 < recorded_at < boot:
+            return False
+        device = f'{os.major(current[0])}:{os.minor(current[0])}'
+        with Path('/proc/self/mountinfo').open(encoding='utf-8') as mounts:
+            for line in mounts:
+                mount, separator, filesystem = line.partition(' - ')
+                if separator and mount.split()[2] == device and filesystem.split()[0] == 'zfs':
+                    return True
+    except (OSError, ValueError, IndexError, StopIteration, OverflowError):
+        return False
+    return False
+
+
 def handler(base, controls):
     class Handler(base):
         def reply(self, data, status=200):
@@ -228,9 +254,10 @@ class Controls(CopyApproval, WorkspaceHistory, CancelledQueue):
             protected=next((j for j in reversed(related) if j['state'] in ('pending','running') or
                             (j['state'] in ('replaced','awaiting-playback','kept-original') and
                              (j.get('published_signature') if j['state']=='replaced' else j['signature'])==fingerprint and
-                             self.identity_matches(j,path))),None)
+                             self.identity_matches(j,path,allow_renumbering=True))),None)
             if protected:return protected
-            latest=next((j for j in reversed(related) if j['signature']==fingerprint and self.identity_matches(j,path)),None)
+            latest=next((j for j in reversed(related) if j['signature']==fingerprint and
+                         self.identity_matches(j,path,allow_renumbering=True)),None)
             if latest and latest['state'] in ('skipped','failed','interrupted','cancelled'):
                 return None
             return dict(id=None,state='not-selected',reason='Retry only: no skipped, failed, interrupted or cancelled result for this file version')
@@ -242,7 +269,7 @@ class Controls(CopyApproval, WorkspaceHistory, CancelledQueue):
             if current!=path or stamp!=fingerprint: continue
             if state in ('pending','running'):
                 return previous
-            if not self.identity_matches(previous,path):continue
+            if not self.identity_matches(previous,path,allow_renumbering=True):continue
             if state=='skipped' and (previous.get('history_decision') or
                     previous.get('decision_code')=='already_efficient_for_settings' or
                     previous.get('reason','').startswith(('Unsupported input:','Full output did not save enough space'))):
@@ -285,11 +312,17 @@ class Controls(CopyApproval, WorkspaceHistory, CancelledQueue):
                 return previous
         return None
 
-    def identity_matches(self,job,path):
+    def identity_matches(self,job,path,*,allow_renumbering=False):
         expected=job.get('published_identity') if job['state']=='replaced' else job.get('source_identity')
         if expected is None:return True  # Legacy history still checks its signature.
-        try:return source_identity(path)==expected
+        try:current=source_identity(path)
         except OSError:return False
+        if current == expected:
+            return True
+        if allow_renumbering:
+            recorded_at=job.get('finished') or job.get('started') or job.get('created')
+            return zfs_device_reassigned(expected,current,recorded_at)
+        return False
 
     def preview(self, data):
         from media_workflow import file_age_match
