@@ -63,7 +63,7 @@ def slot(command,guard,*,pool,env,estimated_duration=None,timeout=None):
     import fcntl
     from adaptive_resources import cpu_room,pressure_ok,memory_room,finite
     from resource_workload import demand,safe_root,single_cpu_encode
-    from validation_resources import AdmissionBudget,reader_threads,ticket_rank,validation_rank,bounded_reader
+    from validation_resources import AdmissionBudget,ResourceAdmissionTimeout,reader_threads,ticket_rank,validation_rank,bounded_reader
     from job_tracking import progress,current_workflow_stage
     from gpu_admission import family,load,save,decide,observe,ensure_group
     from cooperative_pause import configured_lease,lease_reason
@@ -84,13 +84,17 @@ def slot(command,guard,*,pool,env,estimated_duration=None,timeout=None):
             # Threads are indivisible; a tiny telemetry fluctuation must not
             # halve an otherwise fitting qualified pool. OS quotas still apply.
             cpu_budget=min(32,max(1,math.ceil(room))) if room is not None else 1
-            reason='Waiting for measured CPU and memory headroom'
+            reason='Admission coordinator busy'
             ready=room is not None and room>=.25 and pressure_ok(data) and memory_room(data,request['memory_gib'])
+            if not ready:
+                if room is None or room<.25:reason='Waiting for CPU capacity or readings'
+                elif not pressure_ok(data):reason='Waiting for storage or memory pressure to fall'
+                else:reason='Waiting for available RAM'
             if legacy_busy(root):ready=False;reason='Waiting for existing legacy allocations to finish'
             if pause and lease_reason(pause):ready=False;reason='Yielding resources to other applications'
             if engine:
                 needed=('vram_free_gib','gpu_temperature','gpu_encode_percent','gpu_decode_percent','gpu_compute_percent')
-                ready=ready and all(finite(data.get(k)) for k in needed)
+                if ready and not all(finite(data.get(k)) for k in needed):ready=False;reason='Waiting for GPU readings'
                 if ready and (data['vram_free_gib']<1 or data['gpu_temperature']>=80):ready=False;reason='Waiting for GPU memory or cooling headroom'
                 if ready and engine!='compute' and data['gpu_compute_percent']>=95:ready=False;reason='Waiting for shared GPU compute capacity'
             if ready:
@@ -128,7 +132,7 @@ def slot(command,guard,*,pool,env,estimated_duration=None,timeout=None):
                         if ahead:
                             reason='Waiting for an older '+(engine or 'CPU')+' stage request'
                         if not ahead:
-                            reason=('Waiting for an available '+engine+' stage slot (current limit '+str(capacity)+')'
+                            reason=('Waiting for an available '+engine+' stage slot'
                                     if engine else 'Waiting for an available CPU check slot')
                             for name in ('heavy-reader.lock','heavy-reader-2.lock')[:capacity]:
                                 fd=_open(path/name)
@@ -174,9 +178,11 @@ def slot(command,guard,*,pool,env,estimated_duration=None,timeout=None):
                                 break
                     finally:fcntl.flock(coordinator,fcntl.LOCK_UN)
             if slot_fd is None:
-                if timeout is not None and time.monotonic()-started>=timeout:raise TimeoutError('Timed out waiting for adaptive resource allocation')
+                if timeout is not None and time.monotonic()-started>=timeout:
+                    raise ResourceAdmissionTimeout(reason)
                 progress('Waiting for adaptive '+(engine or 'CPU')+' resources',stage_percent=None,stage_eta=None,
-                    detail=reason+'; existing work keeps its allocation. Waiting '+str(int(time.monotonic()-started))+'s.')
+                    detail=reason+'. Waiting '+str(int(time.monotonic()-started))+'s.',
+                    admission_wait=dict(engine=engine,reason=reason) if engine else None)
                 time.sleep(1)
         from live_allocation import scope
         with scope(root,cpu,request):yield limit

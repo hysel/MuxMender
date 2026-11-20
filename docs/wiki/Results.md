@@ -77,6 +77,11 @@ The card explains the current task and shows how long that check has been
 running. A moving bar without a percentage shows activity, not estimated
 completion.
 
+Open **Details** on active work to see why an adaptive GPU stage is waiting,
+such as limited RAM or a busy stage slot. If the optional Dolby Vision HDR
+quality check waits too long for the GPU, the app runs the same comparison on
+the CPU.
+
 An overdue update means progress information is old. A connection warning means
 the browser couldn't obtain fresh information. Neither proves the worker stopped
 or the job finished.

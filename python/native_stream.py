@@ -16,7 +16,8 @@ from validation_resources import validation_limited
 
 @validation_limited
 def stage(command, seconds, *, producer_commands, producer_env, env, directory,
-          expected_frames, guard, timeout=120, stall=30, observe=None, measurement=None):
+          expected_frames, guard, timeout=120, stall=30, observe=None, measurement=None,
+          admission_timeout=None):
     if not sys.platform.startswith('linux'):
         raise RuntimeError('Raw-frame streaming is supported only on Linux')
     if len(producer_commands)!=2 or type(expected_frames) is not int or expected_frames<=0:

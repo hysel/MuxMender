@@ -189,6 +189,15 @@ function renderActiveCard(job){
  }
  if(measured.length&&!(job.performance_schema>=2))detail.append(userNode('p','Legacy timings: validation waiting was not measured separately.','control-note'));
  for(const [name,seconds] of measured)detail.append(userNode('p',name.replaceAll('_',' ')+': '+Math.round(seconds)+' sec'));
+ const admissionWaits=Object.entries(job.admission_wait_seconds||{}).flatMap(([engine,reasons])=>
+  Object.entries(reasons||{}).filter(([,seconds])=>Number.isFinite(seconds)&&seconds>=1)
+   .map(([reason,seconds])=>({engine,reason,seconds}))).sort((a,b)=>b.seconds-a.seconds);
+ if(admissionWaits.length){
+  detail.append(userNode('p','Why GPU stages waited','result-meta'));
+  const waits=userNode('ul');
+  for(const {engine,reason,seconds} of admissionWaits)waits.append(userNode('li','GPU '+engine+' · '+reason+' · '+Math.round(seconds)+' sec'));
+  detail.append(waits);
+ }
  card.append(detail);return card;
 }
 function mergedResults(){const rows=requestJobs.map(job=>{const candidates=catalogJobs.filter(c=>(String(c.directory).replaceAll('\\','/')+'/').includes('request-'+job.id+'/'));const tracked=candidates.filter(c=>/\/job-[^/]+$/.test(String(c.directory).replaceAll('\\','/')));const detail=(tracked.length?tracked:candidates).sort((a,b)=>(b.updated||b.started||0)-(a.updated||a.started||0))[0];return {...detail,...job,telemetry_state:detail?.state,phase:detail?.phase,workflow_stage:detail?.workflow_stage,stage_started:detail?.stage_started,updated:detail?.updated,stage_percent:detail?.stage_percent,stage_eta:detail?.stage_eta,file_savings_percent:detail?.file_savings_percent,detail:detail?.detail,logId:detail?.id,requestId:job.id,sort:job.created||0}});
