@@ -80,9 +80,11 @@ def cuda_views(ffmpeg, context, reference, output, video, directory, count, rate
     progress('Checking compatible HDR quality on GPU', detail=f'Comparing {count} frames in both views',
              unit='frames', stage_percent=0)
     with (directory/'score.log').open('x',encoding='utf-8') as log:
+        # CUDA is an optional speed path. Fall back to the same CPU comparison
+        # if admission would cost more time than a short opportunity to use it.
         stage(command,duration,producer_commands=producers,producer_env=common,env=env,
               directory=directory,expected_frames=count,guard=guard,timeout=timeout,stall=min(180,timeout),
-              observe=lambda line:log.write(line) and False,measurement=timing)
+              observe=lambda line:log.write(line) and False,measurement=timing,admission_timeout=15)
     paths = {key:directory/(key+'-vmaf.json') for key in ('self','candidate')}
     return read_views(paths,count),paths,timing
 
@@ -93,6 +95,7 @@ def measure(ffmpeg, reference, output, directory, count, rate, guard, before, af
     from cuda_quality import discover
     from job_tracking import progress, replace_record
     from native_pipeline import StageTimeout
+    from validation_resources import ResourceAdmissionTimeout
 
     if (type(count) is not int or count < CALIBRATION_FRAMES * 2 or
             any(type(f) not in (int,float) or not math.isfinite(f) or not 0 <= f <= 100
@@ -121,6 +124,10 @@ def measure(ffmpeg, reference, output, directory, count, rate, guard, before, af
                 gpu_time['execution_seconds'] >= sum(t['execution_seconds'] for t in cpu_time.values())*.95):
             progress('GPU HDR calibration did not qualify; checking on CPU')
             return None
+    except ResourceAdmissionTimeout:
+        guard()
+        progress('GPU HDR calibration is waiting for resources; checking on CPU')
+        return None
     except (OSError,RuntimeError,ValueError) as exc:
         guard()
         progress('GPU HDR calibration unavailable; checking on CPU',detail=type(exc).__name__)
@@ -128,6 +135,10 @@ def measure(ffmpeg, reference, output, directory, count, rate, guard, before, af
     try:
         views, gpu_paths, timing = cuda_views(ffmpeg,context,reference,output,video,scratch/'complete',
                                       count,rate,guard,STAGE_LIMIT)
+    except ResourceAdmissionTimeout:
+        guard()
+        progress('GPU HDR comparison is waiting for resources; checking on CPU')
+        return None
     except (OSError,RuntimeError,ValueError) as exc:
         guard()
         if isinstance(exc,StageTimeout) and exc.runtime_limit:

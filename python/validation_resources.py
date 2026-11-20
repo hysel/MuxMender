@@ -15,6 +15,10 @@ import time
 import uuid
 
 
+class ResourceAdmissionTimeout(TimeoutError):
+    """The stage could not acquire resources before its admission deadline."""
+
+
 class AdmissionBudget:
     """Observe sustained headroom before admitting a second reader."""
     def __init__(self):
@@ -310,7 +314,7 @@ def validation_slot(command,guard=lambda:None,timeout=None,*,pool='validation',e
                             ('; allowing validation backlog to drain' if backlogged else '; yielding GPU to other applications' if paused else '')+
                             ('; '+gpu_state.get('status',{}).get('reason','') if pool=='gpu' and gpu_state else ''))
             if timeout is not None and elapsed>=timeout:
-                raise TimeoutError('Timed out waiting for '+pool+' resources; retry when the server is less busy')
+                raise ResourceAdmissionTimeout('Timed out waiting for '+pool+' resources; retry when the server is less busy')
             time.sleep(1)
         if waiting:progress(pool.capitalize()+' resources acquired',detail='Continuing the same checks')
         yield thread_limit
@@ -367,6 +371,8 @@ def validation_limited(function):
         # another reader. The guard still permits cancellation while waiting.
         options=dict(pool=pool,env=values.get('env'),
             estimated_duration=values.get('seconds',values.get('duration')))
+        if values.get('admission_timeout') is not None:
+            options['timeout']=values['admission_timeout']
         admission_guard=values.get('admission_guard')
         with request(resource_command,values.get('env')) as lease:
             with measured_operation('validation_wait' if pool=='validation' else 'gpu_wait'):
@@ -374,7 +380,8 @@ def validation_limited(function):
                     if lease is not None:lease.active(limit)
                     if admission_guard:admission_guard()
                     if original_phase:progress(original_phase,detail='Resources acquired; processing'+
-                        (f'; shared validation allocation: {limit} threads' if type(limit) is int else ''))
+                        (f'; shared validation allocation: {limit} threads' if type(limit) is int else ''),
+                        admission_wait=None)
                     kind=('frame_validation' if '-show_frames' in values['command'] else
                           'quality_measurement' if heavy_reader(resource_command) else 'encoding')
                     with measured_operation(kind):

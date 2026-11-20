@@ -4,6 +4,13 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
+## 20261120-v77
+
+- Switch the optional Dolby Vision HDR quality check to a full CPU comparison
+  if the GPU stage cannot start within 15 seconds.
+- Show why adaptive GPU stages waited in the job's **Details** panel.
+- Speed up the job history scan that runs before the queue starts more work.
+
 ## 20261120-v76
 
 - Restore **Retry skipped, failed or cancelled files** and **Restart cancelled

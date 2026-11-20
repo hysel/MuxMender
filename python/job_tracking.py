@@ -58,7 +58,7 @@ class Job:
         self.last_timing = time.monotonic()
         self.data = dict(title=title, state='running', pid=os.getpid(), started=time.time(),
                          phase='Starting task', stage_started=time.time(), app_version=VERSION,
-                         performance_seconds={}, performance_schema=3,
+                         performance_seconds={}, performance_schema=3, admission_wait_seconds={},
                          performance_scope='Observed job wall time; resource admission and native-stage GPU-sharing pauses are separate. Not CPU time.')
         self.save()
 
@@ -66,8 +66,13 @@ class Job:
         with self.lock:
             now=time.monotonic()
             if self.data.get('state')=='running':
-                accumulate(self.data['performance_seconds'], self.data.get('phase',''), now-self.last_timing,
-                           self.data.get('performance_category'))
+                elapsed=now-self.last_timing
+                category=self.data.get('performance_category')
+                accumulate(self.data['performance_seconds'], self.data.get('phase',''), elapsed, category)
+                wait=self.data.get('admission_wait')
+                if wait and category in ('gpu_wait','validation_wait'):
+                    counts=self.data.setdefault('admission_wait_seconds',{}).setdefault(wait['engine'],{})
+                    counts[wait['reason']]=counts.get(wait['reason'],0)+max(0.0,elapsed)
             self.last_timing=now
             if 'phase' in changes and changes['phase'] != self.data.get('phase'):
                 changes['stage_started']=time.time()
@@ -145,14 +150,15 @@ def measured_operation(category):
         return
     job=_active
     previous=job.data.get('performance_category') if job else None
+    wait_fields={'admission_wait':None} if category in ('gpu_wait','validation_wait') else {}
     try:
         if job:
-            try:job.save(performance_category=category)
+            try:job.save(performance_category=category,**wait_fields)
             except OSError:pass
         yield
     finally:
         if job:
-            try:job.save(performance_category=previous)
+            try:job.save(performance_category=previous,**wait_fields)
             except OSError:pass
 
 

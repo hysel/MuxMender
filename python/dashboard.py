@@ -94,6 +94,17 @@ def contained(path, root):
         return False
 
 
+def covered_by_tracked_run(directory, linked_runs):
+    """Check the resolved directory and its ancestors against indexed run roots."""
+    if not linked_runs:
+        return False
+    try:
+        resolved = directory.resolve()
+    except (OSError, ValueError):
+        return False
+    return resolved in linked_runs or any(parent in linked_runs for parent in resolved.parents)
+
+
 def latest_outcome(directory,root):
     """Read append-only validation/review records; never rewrite execution history."""
     candidates=[]
@@ -229,7 +240,8 @@ class Catalog:
                                 row=dict(old)
                                 for key in ('phase','updated','stage_percent','stage_eta','stage_started',
                                             'workflow_stage','completed','total','unit','detail',
-                                            'performance_seconds','performance_scope','performance_category','performance_schema','reader_qualification'):
+                                            'performance_seconds','performance_scope','performance_category','performance_schema','reader_qualification',
+                                            'admission_wait','admission_wait_seconds'):
                                     if key in live:row[key]=live[key]
                             elif live:
                                 self.cached_at=0  # Resolve final outcomes on next discovery.
@@ -268,10 +280,10 @@ class Catalog:
                     if {'job.json', 'status.json', 'validation.json'} & set(files):
                         directories.add(Path(parent))
             records = [(d, self.read(d/'job.json')) for d in directories]
-            linked = {str(Path(j['linked_run']).resolve()) for _, j in records if j.get('linked_run')}
+            linked = {Path(j['linked_run']).resolve() for _, j in records if j.get('linked_run')}
             jobs, logs = [], {}
             for directory, job in records:
-                if not job and any(contained(directory, Path(parent)) for parent in linked):
+                if not job and covered_by_tracked_run(directory, linked):
                     continue
                 run = Path(job.get('linked_run', directory))
                 if not self.allowed_root(run):
@@ -369,6 +381,7 @@ class Catalog:
                     performance_seconds=job.get('performance_seconds',{}),
                     performance_schema=job.get('performance_schema'),
                     performance_scope=job.get('performance_scope'),
+                    admission_wait=job.get('admission_wait'), admission_wait_seconds=job.get('admission_wait_seconds',{}),
                     progress_kind=job.get('progress_kind', 'legacy'),
                     completed=job.get('completed'), total=job.get('total'), unit=job.get('unit', 'steps'),
                     detail=job.get('detail'), results=report.get('capabilities', []),
