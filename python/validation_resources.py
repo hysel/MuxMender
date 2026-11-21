@@ -145,7 +145,7 @@ def live_waiters(path):
 
 
 @contextmanager
-def validation_slot(command,guard=lambda:None,timeout=None,*,pool='validation',env=None,estimated_duration=None):
+def validation_slot(command,guard=lambda:None,timeout=None,*,pool='validation',env=None,estimated_duration=None,cache_assisted=False):
     if pool not in ('validation','gpu','publication'):raise ValueError('Unknown resource pool')
     root=(os.environ if env is None else env).get('MUXMENDER_VALIDATION_LOCK_ROOT')
     if not root or os.name!='posix' or (pool=='validation' and not heavy_reader(command)):
@@ -154,7 +154,8 @@ def validation_slot(command,guard=lambda:None,timeout=None,*,pool='validation',e
     environment=os.environ if env is None else env
     if pool!='publication' and environment.get('MUXMENDER_RESOURCE_POLICY')=='adaptive-v1':
         from adaptive_stage import slot
-        with slot(command,guard,pool=pool,env=environment,estimated_duration=estimated_duration,timeout=timeout) as allocation:
+        with slot(command,guard,pool=pool,env=environment,estimated_duration=estimated_duration,
+                  timeout=timeout,cache_assisted=cache_assisted) as allocation:
             yield allocation
         return
     import fcntl
@@ -373,6 +374,8 @@ def validation_limited(function):
             estimated_duration=values.get('seconds',values.get('duration')))
         if values.get('admission_timeout') is not None:
             options['timeout']=values['admission_timeout']
+        if values.get('cache_assisted') is True:
+            options['cache_assisted']=True
         admission_guard=values.get('admission_guard')
         with request(resource_command,values.get('env')) as lease:
             with measured_operation('validation_wait' if pool=='validation' else 'gpu_wait'):

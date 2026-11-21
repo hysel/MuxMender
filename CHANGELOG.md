@@ -4,6 +4,15 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
+## 20261121-v78
+
+- Limit native Dolby Vision GPU scoring waits and switch to sequential scoring
+  when resources are busy. Keep the same quality checks.
+- Let one measured Profile 5 scoring stage use reclaimable ZFS cache when the
+  host has room. Switch to sequential scoring if memory pressure rises.
+- Try Dolby Vision encoding settings between a quality pass that was too large
+  and a smaller result that failed quality. Start with the failed scenes.
+
 ## 20261120-v77
 
 - Switch the optional Dolby Vision HDR quality check to a full CPU comparison

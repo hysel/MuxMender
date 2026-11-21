@@ -19,6 +19,7 @@ def gpu_failure(path, error, *, cpu_ready):
     from dvd_av1_batch import save
     from job_tracking import progress
     from native_pipeline import StageTimeout
+    from validation_resources import ResourceAdmissionTimeout
     exhausted=isinstance(error,StageTimeout) and error.runtime_limit and not cpu_ready
     diagnostic=type(error).__name__+': '+str(error)[:400]
     action='stop-at-time-limit' if exhausted else 'retain-cpu-result' if cpu_ready else 'retry-on-cpu'
@@ -27,7 +28,9 @@ def gpu_failure(path, error, *, cpu_ready):
         raise RuntimeError(f'Native Dolby Vision GPU scoring reached the {error.timeout_seconds/60:g}-minute stage limit. '
                            'Stopped without restarting the slower CPU check. Original retained.') from error
     if not cpu_ready:
-        progress('GPU scoring failed; checking Dolby Vision on CPU',detail=diagnostic)
+        phase=('GPU scorer could not start; checking Dolby Vision on CPU'
+               if isinstance(error,ResourceAdmissionTimeout) else 'GPU scoring failed; checking Dolby Vision on CPU')
+        progress(phase,detail=diagnostic,admission_wait=None)
     return diagnostic
 
 
@@ -78,6 +81,7 @@ class Scorer:
                for k,limit in (('width',3840),('height',2160))):
             self.context=None  # Outside tested scoring scope stays on CPU.
         self.states=workflow.native_quality_profiles
+        self.profile5=any(side.get('dv_profile')==5 for side in self.video.get('side_data_list',[]))
         self.prefix_frames=None
         keys=('codec_name','width','height','pix_fmt','field_order','color_range','color_space',
               'color_transfer','color_primaries','chroma_location','side_data_list')
@@ -125,8 +129,9 @@ class Scorer:
         """Render the reference once while retaining two complete quality views."""
         from auto_optimize import quality_summary
         from job_tracking import replace_record,progress
-        from native_stream import stage
+        from native_stream import OPTIONAL_SCORER_ADMISSION_SECONDS, stage
         w=self.workflow;key='paired-v1:'+self.profile;state=self.states.get(key)
+        memory_key='peak-rss:'+key
         qualifying=(self.context is not None and state is None and 0<count<=6000 and duration>0
                     and (duration<=60 or self.prefix_frames is not None and count<=120))
         if self.context is None or state is False:return None
@@ -164,7 +169,9 @@ class Scorer:
                 stage(command,duration,producer_commands=producers,
                     producer_env=dict(os.environ,**self.renderer['environment']),env=environment,directory=folder,
                     expected_frames=count,guard=w.guard,timeout=w.args.timeout,stall=180,
-                    observe=lambda line:log.write(line) and False,measurement=timing)
+                    observe=lambda line:log.write(line) and False,measurement=timing,
+                    admission_timeout=OPTIONAL_SCORER_ADMISSION_SECONDS,
+                    cache_assisted=self.profile5 and self.states.get(memory_key) is not None)
             gpu={k:folder/(k+'-vmaf.json') for k in paths}
             summaries={}
             for k in paths:
@@ -176,6 +183,12 @@ class Scorer:
                         timing.get('scope')=='native-stage-active-v1' and
                         timing['execution_seconds']<sum(t['execution_seconds'] for t in cpu_timing.values())*.95)
                 self.states[key]=all(p['passed'] for p in proofs.values()) and faster
+                peak=timing.get('peak_group_rss_gib')
+                # Six GiB is already reserved for this three-process group.
+                # Use cache only after a matching proof leaves at least 50%
+                # headroom over the measured combined process footprint.
+                if self.profile5 and self.states[key] and count>=120 and type(peak) in (float,int) and 0<peak<=4:
+                    self.states[memory_key]=peak
                 for k in paths:
                     info[k].update(qualification=proofs[k],qualified_for_later_checks=self.states[key],
                         cpu_seconds=cpu_timing[k]['execution_seconds'],paired_gpu_seconds=timing['execution_seconds'])
@@ -208,7 +221,7 @@ class Scorer:
     def run(self, candidate, reference, name, count, duration, cpu):
         from auto_optimize import quality_summary
         from job_tracking import replace_record
-        from native_stream import stage
+        from native_stream import OPTIONAL_SCORER_ADMISSION_SECONDS, stage
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*',name):
             raise ValueError('Invalid native scoring report name')
         w=self.workflow;destination=Path(w.directory)/name
@@ -231,7 +244,8 @@ class Scorer:
                 stage(command,duration,producer_commands=producers,
                     producer_env=dict(os.environ,**self.renderer['environment']),env=environment,directory=folder,
                     expected_frames=count,guard=w.guard,timeout=w.args.timeout,stall=180,
-                    observe=lambda line:log.write(line) and False,measurement=timing)
+                    observe=lambda line:log.write(line) and False,measurement=timing,
+                    admission_timeout=OPTIONAL_SCORER_ADMISSION_SECONDS)
             gpu=folder/'score-vmaf.json';scores(gpu,count)
             result=quality_summary(json.loads(gpu.read_text()),count,mean,p5)
             if qualifying:

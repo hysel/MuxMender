@@ -11,7 +11,7 @@ import uuid
 def _open(path):return os.open(path,os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
 
 
-def claim_cpu(root,budget,wanted,solo=False,*,data=None,memory_gib=0):
+def claim_cpu(root,budget,wanted,solo=False,*,data=None,memory_gib=0,cache_assisted=False):
     """Atomic cross-engine budget; tokens are advisory demand, not OS CPU quotas."""
     import fcntl
     path=Path(root)/'cpu-budget';path.mkdir(exist_ok=True)
@@ -40,7 +40,7 @@ def claim_cpu(root,budget,wanted,solo=False,*,data=None,memory_gib=0):
         if budget-held<cost:return None
         if data is not None:
             from adaptive_resources import memory_room
-            if not memory_room(data,memory_gib+reserved_memory):return None
+            if not memory_room(data,memory_gib+reserved_memory) and not (cache_assisted and held==0):return None
         result=free[:cost]
         if result:os.write(result[0],json.dumps(dict(memory_gib=memory_gib)).encode())
         free=free[cost:];return result
@@ -59,7 +59,7 @@ def _gpu_data(data,engine):
 
 
 @contextmanager
-def slot(command,guard,*,pool,env,estimated_duration=None,timeout=None):
+def slot(command,guard,*,pool,env,estimated_duration=None,timeout=None,cache_assisted=False):
     import fcntl
     from adaptive_resources import cpu_room,pressure_ok,memory_room,finite
     from resource_workload import demand,safe_root,single_cpu_encode
@@ -67,6 +67,7 @@ def slot(command,guard,*,pool,env,estimated_duration=None,timeout=None):
     from job_tracking import progress,current_workflow_stage
     from gpu_admission import family,load,save,decide,observe,ensure_group
     from cooperative_pause import configured_lease,lease_reason
+    from resource_governor import cache_assisted_start
     root=Path(env['MUXMENDER_VALIDATION_LOCK_ROOT']);safe_root(root)
     request=demand(command,env);quality=request['kind'] in ('cpu-quality','mixed-quality')
     engine='encode' if request['gpu_encode'] else 'compute' if request['gpu_compute'] else 'decode' if request['gpu_decode'] else None
@@ -85,7 +86,11 @@ def slot(command,guard,*,pool,env,estimated_duration=None,timeout=None):
             # halve an otherwise fitting qualified pool. OS quotas still apply.
             cpu_budget=min(32,max(1,math.ceil(room))) if room is not None else 1
             reason='Admission coordinator busy'
-            ready=room is not None and room>=.25 and pressure_ok(data) and memory_room(data,request['memory_gib'])
+            ordinary_memory=memory_room(data,request['memory_gib'])
+            cache_memory=(cache_assisted and engine=='compute' and not ordinary_memory
+                          and data.get('container_memory_unlimited') is True
+                          and cache_assisted_start(data,request['memory_gib']+4,cache_credit_gib=4))
+            ready=room is not None and room>=.25 and pressure_ok(data) and (ordinary_memory or cache_memory)
             if not ready:
                 if room is None or room<.25:reason='Waiting for CPU capacity or readings'
                 elif not pressure_ok(data):reason='Waiting for storage or memory pressure to fall'
@@ -142,7 +147,8 @@ def slot(command,guard,*,pool,env,estimated_duration=None,timeout=None):
                                 selected=limit
                                 if quality and wanted>cpu_budget:
                                     selected=2 if limit>=2 else 1;wanted=max(1,wanted-max(0,limit-selected))
-                                tokens=claim_cpu(root,cpu_budget,wanted,solo=True,data=data,memory_gib=request['memory_gib'])
+                                tokens=claim_cpu(root,cpu_budget,wanted,solo=True,data=data,
+                                                 memory_gib=request['memory_gib'],cache_assisted=cache_memory)
                                 # Another stage can hold part of an otherwise
                                 # ample host budget. Try the already-qualified
                                 # smaller scoring/decoder pool against that remainder,
@@ -150,12 +156,14 @@ def slot(command,guard,*,pool,env,estimated_duration=None,timeout=None):
                                 encode_fallback=(single_cpu_encode(request) and selected==4 and wanted==4)
                                 if tokens is None and (quality and selected>2 or encode_fallback):
                                     smaller=max(1,wanted-(selected-2))
-                                    tokens=claim_cpu(root,cpu_budget,smaller,solo=True,data=data,memory_gib=request['memory_gib'])
+                                    tokens=claim_cpu(root,cpu_budget,smaller,solo=True,data=data,
+                                                     memory_gib=request['memory_gib'],cache_assisted=cache_memory)
                                     if tokens is not None:selected=2;wanted=smaller
                                 if tokens is None:
                                     reason='Waiting for CPU or memory capacity reserved by active stages'
                                     os.close(fd);continue
                                 cpu=tokens;slot_fd=fd;limit=selected
+                                request['cache_assisted']=cache_memory
                                 if len(tokens)<wanted:limit=1
                                 ticket.unlink(missing_ok=True);stage_started=time.monotonic()
                                 if state is not None:

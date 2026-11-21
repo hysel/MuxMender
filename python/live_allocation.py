@@ -33,6 +33,35 @@ def attach(pid):
     except (OSError,ValueError,TypeError,KeyError):return None
 
 
+def cache_assisted():
+    allocation=getattr(_active,'value',None)
+    return bool(allocation and allocation['request'].get('cache_assisted'))
+
+
+class GroupMemory:
+    """Sample the combined resident memory of the exact owned FFmpeg group."""
+    def __init__(self,children):
+        self.children=children
+        self.peak_gib=0
+        self.samples=0
+        self.checked=-float('inf')
+
+    def sample(self,now):
+        if now-self.checked<1:return
+        self.checked=now
+        try:
+            resident=0
+            for child in self.children:
+                if child.poll() is not None:return
+                fields=dict(row.split(':',1) for row in Path(f'/proc/{child.pid}/status').read_text().splitlines() if ':' in row)
+                if int(fields['PPid'])!=os.getpid():return
+                resident+=int(fields['VmRSS'].split()[0])
+            if resident<=0:return
+        except (OSError,KeyError,ValueError):return
+        self.samples+=1
+        self.peak_gib=max(self.peak_gib,resident/1024**2)
+
+
 class Child:
     def __init__(self,pid,allocation):
         self.pid=pid;self.allocation=allocation;self.start=time.monotonic();self.previous=None;self.identity=None;self.rates=[]

@@ -78,9 +78,12 @@ running. A moving bar without a percentage shows activity, not estimated
 completion.
 
 Open **Details** on active work to see why an adaptive GPU stage is waiting,
-such as limited RAM or a busy stage slot. If the optional Dolby Vision HDR
-quality check waits too long for the GPU, the app runs the same comparison on
-the CPU.
+such as limited RAM or a busy stage slot. If the optional GPU scorer for
+Dolby Vision cannot start within 15 seconds, the app scores on the CPU
+instead. It uses the same rendering, frames, and quality thresholds.
+On ZFS, native Dolby Vision Profile 5 can start a single measured GPU
+comparison using reclaimable cache. It switches to sequential scoring if
+host memory pressure rises.
 
 An overdue update means progress information is old. A connection warning means
 the browser couldn't obtain fresh information. Neither proves the worker stopped

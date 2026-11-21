@@ -14,10 +14,13 @@ import time
 from validation_resources import validation_limited
 
 
+OPTIONAL_SCORER_ADMISSION_SECONDS = 15
+
+
 @validation_limited
 def stage(command, seconds, *, producer_commands, producer_env, env, directory,
           expected_frames, guard, timeout=120, stall=30, observe=None, measurement=None,
-          admission_timeout=None):
+          admission_timeout=None, cache_assisted=False):
     if not sys.platform.startswith('linux'):
         raise RuntimeError('Raw-frame streaming is supported only on Linux')
     if len(producer_commands)!=2 or type(expected_frames) is not int or expected_frames<=0:
@@ -33,10 +36,23 @@ def stage(command, seconds, *, producer_commands, producer_env, env, directory,
         raise ValueError('Streaming pipeline must share its pause lease')
     from native_pipeline import stage as native_stage
     from muxmender import stop_process_tree
+    from live_allocation import cache_assisted as using_cache
     directory=Path(directory)
     children=[];handles=[]
+    cache_check_due=0.0
+    borrowed_cache=cache_assisted and using_cache()
+    if borrowed_cache:
+        from job_tracking import progress,current_phase
+        phase=current_phase()
+        if phase:progress(phase,detail='Starting with reclaimable ZFS cache and reserved host headroom')
     def check():
+        nonlocal cache_check_due
         guard()
+        if borrowed_cache and time.monotonic()>=cache_check_due:
+            cache_check_due=time.monotonic()+1
+            from resource_governor import cache_scoring_pressure
+            if cache_scoring_pressure():
+                raise RuntimeError('Host memory pressure rose during cache-assisted scoring')
         for child in children:
             code=child.poll()
             if code not in (None,0):raise RuntimeError('Native comparison renderer failed')
