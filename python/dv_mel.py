@@ -342,6 +342,36 @@ def refine_full_candidate(workflow, source, settings, *, source_id, playback_ver
     return report
 
 
+def bracketed_refinements(report, decision, minimum_savings_percent):
+    """Try between a quality pass that was too large and a smaller quality failure."""
+    trials={trial['id']:trial for trial in report['trials']}
+    references=report['references']
+    source_bytes=sum(reference['bytes'] for reference in references)
+    ids={reference['id'] for reference in references}
+    brackets=[]
+    for rejected in decision['candidates']:
+        if rejected['assessment']!='quality_rejected':continue
+        failing=trials[rejected['id']]
+        large_cq=failing['settings'].get('nvenc_cq')
+        if failing['encoder']!='hevc_nvenc' or type(large_cq) is not int:continue
+        samples=failing['samples']
+        if {sample['reference_id'] for sample in samples}!=ids:continue
+        if 100*(1-sum(sample['bytes'] for sample in samples)/source_bytes)<minimum_savings_percent:continue
+        failing_settings=dict(failing['settings']);del failing_settings['nvenc_cq']
+        for oversized in decision['candidates']:
+            if oversized['assessment']!='insufficient_savings':continue
+            passing=trials[oversized['id']]
+            settings=dict(passing['settings']);small_cq=settings.pop('nvenc_cq',None)
+            if settings!=failing_settings or type(small_cq) is not int or large_cq-small_cq<2:continue
+            if not all(sample.get('quality_pass') is True for sample in passing['samples']):continue
+            midpoint=(small_cq+large_cq)//2
+            order=sorted(range(small_cq+1,large_cq),key=lambda cq:(abs(cq-midpoint),-cq))
+            brackets.append((large_cq-small_cq,order,failing_settings,rejected['quality_failed_reference_ids']))
+    for _,order,settings,failed in sorted(brackets,key=lambda row:row[0]):
+        for cq in order:
+            yield dict(settings,nvenc_cq=cq),frozenset(failed)
+
+
 def compare_candidates(workflow, source, candidates, seconds, *, playback_verified_codecs,
                        minimum_savings_percent=25, mean_floor=90, p5_floor=90,
                        dovi_tool='dovi_tool', encoder_ffmpeg=None,profile=7,max_refinements=4,quality_profile=None):
@@ -372,6 +402,7 @@ def compare_candidates(workflow, source, candidates, seconds, *, playback_verifi
     candidates=list(candidates)
     initial_count=len(candidates)
     completed=0
+    priority_scenes={}
     for index,settings in enumerate(candidates):
         workflow.guard()
         trial=dict(id='mel-'+str(index),source_id=prepared['source_id'],codec=settings.get('codec'),
@@ -381,7 +412,9 @@ def compare_candidates(workflow, source, candidates, seconds, *, playback_verifi
         if not trial['playback_compatible']:
             trial['error']='Codec has not been selected as playback-compatible'
             continue
-        for number,reference in enumerate(references):
+        priority=priority_scenes.get(index,())
+        ordered=sorted(references,key=lambda reference:reference['id'] not in priority) if priority else references
+        for number,reference in enumerate(ordered):
             workflow.guard()
             path=Path(reference['path'])
             if digest(path,workflow.guard)!=reference['sha256']:raise ValueError('Shared reference changed')
@@ -408,9 +441,12 @@ def compare_candidates(workflow, source, candidates, seconds, *, playback_verifi
             except (OSError,RuntimeError,ValueError) as exc:
                 workflow.guard()
                 sample['error']=str(exc)
+            early_rejection=reference['id'] in priority and sample.get('quality_pass') is False
+            if early_rejection:trial['quality_early_screen']=True
             completed+=1
             with (Path(workflow.directory)/'mel-trials.json').open('w',encoding='utf-8') as handle:
                 json.dump(report,handle,indent=2)
+            if early_rejection:break
         # Finish the initial matrix before refining. Only complete, measured
         # quality failures justify a retry; runtime/metadata errors never do.
         # Reuse the ordinary search and the same immutable references/floors.
@@ -421,13 +457,19 @@ def compare_candidates(workflow, source, candidates, seconds, *, playback_verifi
                       and not t.get('error') and not any(s.get('error') for s in t['samples'])]
             if current['action']!='encode_copy' and measured:
                 attempted={json.dumps(c,sort_keys=True) for c in candidates}
-                for option in adaptive_candidates(dict(trials=measured)):
-                    parent=next(t for t in reversed(measured) if t['encoder']==option['encoder'])
-                    candidate=dict(parent['settings'],**option)
+                for candidate,failed in bracketed_refinements(report,current,minimum_savings_percent):
                     if json.dumps(candidate,sort_keys=True) not in attempted:
+                        priority_scenes[len(candidates)]=failed
                         candidates.append(candidate)
-                        report['sample_refinements']=len(candidates)-initial_count
                         break
+                else:
+                    for option in adaptive_candidates(dict(trials=measured)):
+                        parent=next(t for t in reversed(measured) if t['encoder']==option['encoder'])
+                        candidate=dict(parent['settings'],**option)
+                        if json.dumps(candidate,sort_keys=True) not in attempted:
+                            candidates.append(candidate)
+                            break
+                if len(candidates)>initial_count:report['sample_refinements']=len(candidates)-initial_count
     if digest(Path(source),workflow.guard)!=prepared['source_id']:raise ValueError('Source changed during MEL comparison')
     decision=select_candidate(report,minimum_savings_percent)
     with (Path(workflow.directory)/'mel-selection.json').open('x',encoding='utf-8') as handle:

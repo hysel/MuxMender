@@ -109,13 +109,15 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None,
     lease = configured_lease(command, env)
     inherited = dict(pass_fds=tuple(pass_fds)) if pass_fds else {}
     launch = launch_owned if lease else subprocess.Popen
-    from live_allocation import attach
+    from live_allocation import GroupMemory,attach,cache_assisted
     child = launch(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, encoding="utf-8", errors="replace", cwd=cwd, env=env, **inherited)
     pause = OwnedStagePauseGroup((child,*companions), lease) if lease else None
     # A consumer's CPU use alone cannot release a pipeline's producer budget.
     # Retain the admitted group allowance until aggregate telemetry is available.
     allocation_observer=attach(child.pid) if not companions else None
+    group_memory=GroupMemory((child,*companions)) if companions and measurement is not None and sys.platform=='linux' else None
+    borrowed_cache=cache_assisted() if group_memory else False
     lines = queue.Queue()
     def read():
         try:
@@ -174,6 +176,10 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None,
                     pause_reported = False
             if allocation_observer:allocation_observer.sample()
             now = time.monotonic()
+            if group_memory:
+                group_memory.sample(now)
+                if borrowed_cache and group_memory.peak_gib>6:
+                    raise RuntimeError('Native scoring exceeded its 6 GiB cache-assisted memory allowance')
             if now - started > timeout or (stall and now - advanced > stall):
                 raise StageTimeout(timeout, stall, runtime_limit=now-started > timeout)
             try:
@@ -223,6 +229,8 @@ def stage(command, seconds, offset=0, span=0, timeout=120, stall=30, guard=None,
         if measurement is not None:
             measurement.update(completed=True,scope='native-stage-active-v1',
                                execution_seconds=max(0,time.monotonic()-started))
+            if group_memory and group_memory.samples>=3:
+                measurement['peak_group_rss_gib']=group_memory.peak_gib
         return "".join(log)
     finally:
         if pause_measurement is not None:pause_measurement.__exit__(None,None,None)

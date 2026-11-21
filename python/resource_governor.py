@@ -47,16 +47,26 @@ def arc_memory(text):
                 zfs_need_free_gib=rows['arc_need_free']/1024**3)
 
 
-def cache_assisted_start(data, required):
+def cache_assisted_start(data, required, *, cache_credit_gib=8):
     """Bounded serial admission, not a promise that cache is immediately free."""
     keys=('host_available_gib','host_free_gib','zfs_reclaimable_gib',
           'zfs_need_free_gib','memory_pressure','io_pressure')
     if any(k not in data or not math.isfinite(data[k]) or data[k]<0 for k in keys):return False
     # Use max rather than adding to MemAvailable, which may include cache already.
-    budget=max(data['host_available_gib'],data['host_free_gib']+min(8,data['zfs_reclaimable_gib']*.5))
+    budget=max(data['host_available_gib'],data['host_free_gib']+min(cache_credit_gib,data['zfs_reclaimable_gib']*.5))
     return (data['host_available_gib']>=6 and data['zfs_reclaimable_gib']>=8
             and data['zfs_need_free_gib']==0 and data['memory_pressure']<.1
             and data['io_pressure']<5 and budget>=required)
+
+
+def cache_scoring_pressure():
+    """Stop optional cache-assisted work if its host headroom erodes."""
+    try:
+        memory=dict(line.split(':',1) for line in Path('/proc/meminfo').read_text().splitlines())
+        pressure=Path('/proc/pressure/memory').read_text().splitlines()[0].split()
+        avg10=float(dict(field.split('=',1) for field in pressure[1:])['avg10'])
+        return not math.isfinite(avg10) or avg10>=.1 or int(memory['MemAvailable'].split()[0])<4*1024**2
+    except (OSError,ValueError,KeyError,IndexError):return True
 
 
 def allocated_cpu_usage(previous, current, cpus):
@@ -222,8 +232,11 @@ class Governor:
             values['cpus']=len(os.sched_getaffinity(0))
             # Respect a container memory limit; host cache is not free container RAM.
             limit=Path('/sys/fs/cgroup/memory.max')
-            if limit.exists() and limit.read_text().strip()!='max':
-                values['container_limit_gib']=int(limit.read_text())/1024**3
+            memory_limit=limit.read_text().strip() if limit.exists() else None
+            if memory_limit=='max':
+                values['container_memory_unlimited']=True
+            elif memory_limit is not None:
+                values['container_limit_gib']=int(memory_limit)/1024**3
                 remaining=values['container_limit_gib']-int(Path('/sys/fs/cgroup/memory.current').read_text())/1024**3
                 values['container_available_gib']=max(0,remaining)
                 values['available_gib']=min(values['available_gib'],remaining)

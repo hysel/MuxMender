@@ -67,7 +67,7 @@ def read_views(paths, count):
 
 def cuda_views(ffmpeg, context, reference, output, video, directory, count, rate, guard, timeout):
     from job_tracking import progress
-    from native_stream import stage
+    from native_stream import OPTIONAL_SCORER_ADMISSION_SECONDS, stage
 
     directory.mkdir()
     command, producers = compatible_commands(ffmpeg, context['binary'], output, reference, video,
@@ -84,7 +84,8 @@ def cuda_views(ffmpeg, context, reference, output, video, directory, count, rate
         # if admission would cost more time than a short opportunity to use it.
         stage(command,duration,producer_commands=producers,producer_env=common,env=env,
               directory=directory,expected_frames=count,guard=guard,timeout=timeout,stall=min(180,timeout),
-              observe=lambda line:log.write(line) and False,measurement=timing,admission_timeout=15)
+              observe=lambda line:log.write(line) and False,measurement=timing,
+              admission_timeout=OPTIONAL_SCORER_ADMISSION_SECONDS)
     paths = {key:directory/(key+'-vmaf.json') for key in ('self','candidate')}
     return read_views(paths,count),paths,timing
 
