@@ -199,6 +199,27 @@ def batch_savings(batch):
     return dict(percent=100 * reduced_bytes / source_bytes, files=count) if count else None
 
 
+def tracked_state(job,status,report,updated):
+    phase=report.get('status') or status.get('phase') or job.get('phase') or 'Starting'
+    structured=job.get('progress_kind')=='structured'
+    if report.get('status')=='running' and structured:
+        phase=job.get('phase') or 'Preparing validation'
+    state=job.get('state','unknown')
+    if str(phase).startswith('verified'):
+        state='verified'
+    elif str(phase).lower() in ('failed','cancelled'):
+        state=str(phase).lower()
+    elif phase=='skipped':
+        state='skipped'
+    elif state=='running' or (not job and status.get('pid')):
+        running=alive(job.get('pid',status.get('pid')))
+        # The PID of a remote mirror belongs to its observer.
+        remote_mirror=job.get('monitor_scope')=='Read-only remote status mirror; PID identifies the local observer'
+        state=('interrupted' if running is False and not remote_mirror else
+               'running' if running and time.time()-updated<90 else 'stale')
+    return state,phase,structured
+
+
 class Catalog:
     def __init__(self, root, artifact_roots=()):
         self.root = Path(root).resolve()
@@ -262,23 +283,28 @@ class Catalog:
     def allowed_root(self, path):
         return next((root for root in self.artifact_roots if contained(path, root)), None)
 
+    def artifact_records(self, filenames, exclude=None):
+        """Discover only report directories under the configured output roots."""
+        directories={}
+        bases=[self.root/'reports',self.root/'test-output',*self.artifact_roots[1:]]
+        for base in dict.fromkeys(bases):
+            if exclude is not None and base.is_relative_to(exclude):continue
+            try:accessible=bool(self.allowed_root(base)) and base.is_dir()
+            except OSError:accessible=False
+            if not accessible:continue
+            for parent,children,files in os.walk(base,followlinks=False):
+                directory=Path(parent)
+                children[:]=[c for c in children if directory/c!=exclude
+                             and not (directory/c).is_symlink() and contained(directory/c,base)]
+                known=filenames.intersection(files)
+                if known:directories[directory]=known
+        return directories
+
     def snapshot(self):
         with self.lock:
             if time.time() - self.cached_at < 3:
                 return self.jobs
-            directories = set()
-            # Only known artifact roots; never enumerate source drives or media contents.
-            bases = [self.root/'reports', self.root/'test-output', *self.artifact_roots[1:]]
-            for base in dict.fromkeys(bases):
-                try:accessible=bool(self.allowed_root(base)) and base.is_dir()
-                except OSError:accessible=False
-                if not accessible:
-                    continue
-                for parent, children, files in os.walk(base, followlinks=False):
-                    children[:] = [c for c in children if contained(Path(parent)/c, base)
-                                   and not (Path(parent)/c).is_symlink()]
-                    if {'job.json', 'status.json', 'validation.json'} & set(files):
-                        directories.add(Path(parent))
+            directories=self.artifact_records({'job.json','status.json','validation.json'})
             records = [(d, self.read(d/'job.json')) for d in directories]
             linked = {Path(j['linked_run']).resolve() for _, j in records if j.get('linked_run')}
             jobs, logs = [], {}
@@ -307,24 +333,7 @@ class Catalog:
                 stamps = [p.stat().st_mtime for p in (run/'status.json', run/'validation.json', logpath)
                           if p.is_file() and self.allowed_root(p)]
                 updated = max(stamps + [job.get('updated', 0)])
-                phase = report.get('status') or status.get('phase') or job.get('phase') or 'Starting'
-                if report.get('status') == 'running' and job.get('progress_kind') == 'structured':
-                    phase = job.get('phase') or 'Preparing validation'
-                state = job.get('state', 'unknown')
-                structured = job.get('progress_kind') == 'structured'
-                if str(phase).startswith('verified'):
-                    state = 'verified'
-                elif str(phase).lower() in ('failed', 'cancelled'):
-                    state = str(phase).lower()
-                elif phase == 'skipped':
-                    state = 'skipped'
-                elif state == 'running' or (not job and status.get('pid')):
-                    running = alive(job.get('pid', status.get('pid')))
-                    # A remote mirror's PID belongs to its observer, not the media worker.
-                    # Losing that observer cannot prove the remote conversion stopped.
-                    remote_mirror = job.get('monitor_scope') == 'Read-only remote status mirror; PID identifies the local observer'
-                    state = ('interrupted' if running is False and not remote_mirror else
-                             'running' if running and time.time()-updated < 90 else 'stale')
+                state,phase,structured=tracked_state(job,status,report,updated)
                 parsed = progress(log)
                 if (run/'status.json').is_file() and logpath.is_file() and (run/'status.json').stat().st_mtime > logpath.stat().st_mtime:
                     parsed = {}  # The log may still contain the previous stage's 100%/ETA.
@@ -400,6 +409,49 @@ class Catalog:
             self.logs = logs
             self.cached_at = time.time()
             return self.jobs
+
+
+class StandaloneActivity:
+    """Check live external work independently of the display-only history."""
+    def __init__(self,catalog,*,exclude_queue=False):
+        self.catalog=catalog
+        self.exclude=catalog.root/'ui-requests' if exclude_queue else None
+        self.lock=threading.Lock()
+        self.checked=-float('inf')
+        self.jobs=[]
+
+    def snapshot(self):
+        with self.lock:
+            if time.monotonic()-self.checked<3:return self.jobs
+            self.jobs=self.live_jobs()
+            self.checked=time.monotonic()
+            return self.jobs
+
+    def live_jobs(self):
+        c=self.catalog
+        directories=c.artifact_records({'job.json','status.json'},exclude=self.exclude)
+        records={d:c.read(d/'job.json') if 'job.json' in files else {} for d,files in directories.items()}
+        linked={Path(job['linked_run']).resolve() for job in records.values() if job.get('linked_run')}
+        rows=[]
+        for directory,job in records.items():
+            if job and job.get('state')!='running':continue
+            if not job and covered_by_tracked_run(directory,linked):continue
+            run=Path(job.get('linked_run',directory))
+            run_root=c.allowed_root(run)
+            if run_root is None:
+                run=directory
+                run_root=c.allowed_root(run)
+                if run_root is None:continue
+            status=c.read(run/'status.json')
+            if not job and not status.get('pid'):continue
+            report,_=latest_outcome(run,run_root)
+            log=directory/'terminal.log'
+            if not log.is_file():log=run/'terminal.log'
+            stamps=[p.stat().st_mtime for p in (run/'status.json',run/'validation.json',log)
+                    if p.is_file() and c.allowed_root(p)]
+            state,_,_=tracked_state(job,status,report,max(stamps+[job.get('updated',0)]))
+            if state=='running':rows.append(dict(state=state,title=job.get('title') or directory.name))
+        return rows
 
 
 def make_handler(catalog, page=HTML, batch_provider=None, review_writer=None, allowed_hosts=(), authorize=None, app_provider=None):

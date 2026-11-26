@@ -262,7 +262,9 @@ def recover_reference(workflow, source, metadata, position, seconds, label, *, e
         from artifact_manifest import command_outputs
         with command_outputs(workflow.directory,[*command,str(evidence)]):
             run_probe(command,evidence,'Verifying decoded sample identity: '+suffix,
-                      workflow.args.timeout,workflow.guard)
+                      workflow.args.timeout,workflow.guard,
+                      duration=float(end-begin if is_source else plan['seconds']),
+                      start=float(begin) if is_source else 0)
         if evidence.with_suffix(evidence.suffix+'.stderr').stat().st_size:
             raise ValueError('Decoder reported errors during sample recovery')
         return parse_framehash(evidence.read_text(encoding='utf-8'))

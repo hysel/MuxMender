@@ -4,6 +4,12 @@ For published versions, read the
 [release notes on GitHub](https://github.com/hysel/MuxMender/releases).
 The version notes below describe the changes included in each package.
 
+## 20261126-v79
+
+- Start queued jobs sooner by checking active standalone work separately from
+  finished report history.
+- Show how far frame verification has progressed through the video.
+
 ## 20261121-v78
 
 - Limit native Dolby Vision GPU scoring waits and switch to sequential scoring
