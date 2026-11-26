@@ -12,7 +12,7 @@ import sys
 import threading
 from http.server import ThreadingHTTPServer
 
-from dashboard import Catalog, make_handler
+from dashboard import Catalog, StandaloneActivity, make_handler
 from ui.app import HTML
 from autonomous_queue import Queue
 from control_service import Controls, handler as control_handler
@@ -132,15 +132,17 @@ def main():
     try:
         if controls_enabled:
             codecs=[c.strip() for c in env.get('MUXMENDER_PLAYBACK_CODECS','').split(',') if c.strip()]
+            activity=StandaloneActivity(catalog,exclude_queue=True)
             controls=Controls(media,output,is_read_only,codecs,
-                              busy=lambda:standalone_wait_reason(catalog),
+                              busy=lambda:standalone_wait_reason(activity),
                               replacement_root=media)
             server.RequestHandlerClass=control_handler(server.RequestHandlerClass,controls)
             controls.start()
         if queue_enabled:
             codecs=[c.strip() for c in env.get('MUXMENDER_PLAYBACK_CODECS','').split(',') if c.strip()]
+            activity=StandaloneActivity(catalog)
             queue=Queue(media,output,codecs,is_read_only,
-                        busy=lambda:any(j.get('state')=='running' for j in catalog.snapshot()))
+                        busy=lambda:bool(activity.snapshot()))
             queue.start()
         command=worker_command(env,media,output)
         if command:

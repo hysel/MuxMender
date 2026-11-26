@@ -42,8 +42,14 @@ def probe_status(path, duration, start=0):
     """Read a bounded tail; never load full-episode evidence into memory."""
     size=path.stat().st_size
     with path.open('rb') as stream:
+        header=stream.read(4096) if path.suffix=='.md5' else b''
         stream.seek(max(0,size-16384));lines=stream.read().decode('utf-8',errors='replace').splitlines()
     times=[]
+    if base:=re.search(rb'^#tb 0:\s*(\d+)/([1-9]\d*)\s*$',header,re.M):
+        scale=int(base[1])/int(base[2])
+        for line in lines[:-1]:
+            if frame:=re.fullmatch(r'\s*0,\s*-?\d+,\s*(-?\d+),\s*\d+,\s*\d+,\s*[0-9a-fA-F]{32}\s*',line):
+                times.append(int(frame[1])*scale-start)
     for line in lines[:-1]:  # Last line may still be in flight.
         # ffprobe JSON frame evidence (HDR) uses quoted key/value pairs.
         match=re.search(r'"(?:best_effort_timestamp_time|pts_time)"\s*:\s*"([^"\r\n]+)"',line)
@@ -59,7 +65,9 @@ def probe_status(path, duration, start=0):
                     number=float(value)-start
                     if math.isfinite(number):times.append(number)
                 except ValueError:pass
-    position=max(times,default=0)
+    if not times:
+        return None,f'Collecting validation evidence · {size/1e6:.1f} MB written'
+    position=max(0,max(times))
     percent=min(99.9,max(0,100*position/duration)) if times and duration and math.isfinite(duration) and duration>0 else None
     return percent,f'{position:.1f} seconds inspected · {size/1e6:.1f} MB of validation evidence'
 
